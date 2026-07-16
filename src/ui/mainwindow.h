@@ -9,8 +9,12 @@
 #include <QTreeWidget>
 #include "core/project.h"
 #include "engine/glwidget.h"
-#include "ui/timeline.h"
-#include "ui/inspector.h"
+#include "ui/components/timeline.h"
+#include "ui/components/inspector.h"
+#include "ui/components/effectsbrowser.h"
+#include "ui/components/mediapool.h"
+#include "ui/components/trackcontrol.h"
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -27,7 +31,7 @@ private slots:
 
     void onClipSelected(const QString& clipId);
     void onTimelineScrubbed(double time);
-    void onEffectSelected(QTreeWidgetItem* item, int column);
+    void onEffectSelected(const QString& targetId);
     void onActiveEffectSelected(QListWidgetItem* item);
     void removeSelectedEffect();
     void onParameterChanged(const QString& effectId, const QString& paramName, double value);
@@ -45,25 +49,17 @@ private:
     GLWidget* glWidget = nullptr;
     Timeline* timelinePanel = nullptr;
     Inspector* inspectorPanel = nullptr;
-    QListWidget* trackList = nullptr;
-    QTreeWidget* effectsTree = nullptr;
+    EffectsBrowser* effectsBrowser = nullptr;
+    MediaPool* mediaPool = nullptr;
+    TrackControl* trackControl = nullptr;
     QListWidget* activeEffectsList = nullptr;
-    QListWidget* mediaList = nullptr;
 
     QTabWidget* bottomTabs = nullptr;
 
     void createActions();
     void createMenus();
-
-    void pushUndoState();
-
 private slots:
-    void undo();
-    void redo();
-
 private:
-    QList<QJsonObject> undoStack;
-    QList<QJsonObject> redoStack;
     void createDocks();
     void refreshTrackList();
     void updateEffectsState();

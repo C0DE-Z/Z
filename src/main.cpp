@@ -1,6 +1,6 @@
 #include <QApplication>
 #include <QStyleFactory>
-#include "core/logging.h"
+#include "utils/logging.h"
 #include "ui/mainwindow.h"
 
 int main(int argc, char *argv[]) {

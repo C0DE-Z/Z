@@ -27,25 +27,44 @@ set(SOURCES
     src/main.cpp
     src/core/keyframe.cpp
     src/core/project.cpp
+    src/core/appstate.cpp
+    src/media/mediaimporter.cpp
+    src/media/mediaexporter.cpp
     src/engine/pluginmanager.cpp
+    src/engine/videodecoder.cpp
+    src/engine/cpueffects.cpp
     src/engine/videoengine.cpp
     src/engine/audioengine.cpp
     src/engine/glwidget.cpp
+    src/engine/shaders.cpp
     src/ui/mainwindow.cpp
-    src/ui/timeline.cpp
-    src/ui/inspector.cpp
+    src/ui/components/timeline.cpp
+    src/ui/components/inspector.cpp
+    src/ui/components/effectsbrowser.cpp
+    src/ui/components/mediapool.cpp
+    src/ui/components/trackcontrol.cpp
 )
 
 set(HEADERS
     src/core/keyframe.h
     src/core/project.h
+    src/core/appstate.h
+    src/media/mediaimporter.h
+    src/media/mediaexporter.h
     src/engine/pluginmanager.h
+    src/engine/videoframe.h
+    src/engine/videodecoder.h
+    src/engine/cpueffects.h
     src/engine/videoengine.h
     src/engine/audioengine.h
     src/engine/glwidget.h
+    src/engine/shaders.h
     src/ui/mainwindow.h
-    src/ui/timeline.h
-    src/ui/inspector.h
+    src/ui/components/timeline.h
+    src/ui/components/inspector.h
+    src/ui/components/effectsbrowser.h
+    src/ui/components/mediapool.h
+    src/ui/components/trackcontrol.h
 )
 
 add_executable(z ${SOURCES} ${HEADERS})

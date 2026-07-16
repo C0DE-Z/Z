@@ -26,92 +26,17 @@
 #include <QProgressDialog>
 #include <QProcess>
 #include <QDir>
+#include <QLineEdit>
 #include <algorithm>
-#include "core/logging.h"
+#include "utils/logging.h"
 #include "engine/videoengine.h"
+#include "media/mediaexporter.h"
+#include "core/appstate.h"
 
-namespace {
-QString standardizedImportDir() {
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/standardized_imports";
-    QDir().mkpath(dir);
-    return dir;
-}
-
-QString standardizedImportPathForSource(const QString& sourcePath) {
-    QFileInfo info(sourcePath);
-    const QByteArray fingerprint = (info.absoluteFilePath() + "|" + QString::number(info.size()) + "|" + QString::number(info.lastModified().toMSecsSinceEpoch())).toUtf8();
-    const QByteArray hash = QCryptographicHash::hash(fingerprint, QCryptographicHash::Sha1).toHex().left(12);
-    const QString safeBase = info.completeBaseName().isEmpty() ? QStringLiteral("clip") : info.completeBaseName();
-    return standardizedImportDir() + "/" + safeBase + "_" + QString::fromLatin1(hash) + ".mp4";
-}
-
-QString transcodeToStandardMp4(const QString& sourcePath) {
-    const QString suffix = QFileInfo(sourcePath).suffix().toLower();
-    if (suffix == "mp4" || suffix == "m4v") {
-        return sourcePath;
-    }
-
-    const QString outputPath = standardizedImportPathForSource(sourcePath);
-    if (QFileInfo::exists(outputPath) && QFileInfo(outputPath).size() > 0) {
-        return outputPath;
-    }
-
-    QProcess proc;
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("PATH", "C:\\msys64\\mingw64\\bin;C:\\msys64\\usr\\bin;" + env.value("PATH"));
-    proc.setProcessEnvironment(env);
-
-    QStringList args;
-    args << "-y"
-         << "-i" << sourcePath
-         << "-map" << "0:v:0"
-         << "-map" << "0:a?"
-         << "-c:v" << "libx264"
-         << "-preset" << "veryfast"
-         << "-crf" << "20"
-         << "-pix_fmt" << "yuv420p"
-         << "-c:a" << "aac"
-         << "-movflags" << "+faststart"
-         << outputPath;
-
-    proc.start("ffmpeg.exe", args);
-    if (!proc.waitForStarted()) {
-        qWarning() << "Import: Failed to start FFmpeg for media conversion.";
-        return QString();
-    }
-
-    QProgressDialog progress("Converting media to MP4...", "Cancel", 0, 0);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.show();
-
-    while (proc.state() != QProcess::NotRunning) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-        if (progress.wasCanceled()) {
-            proc.kill();
-            proc.waitForFinished();
-            QFile::remove(outputPath);
-            qWarning() << "Import: Media conversion canceled.";
-            return QString();
-        }
-        proc.waitForFinished(50);
-    }
-
-    progress.close();
-
-    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 || !QFileInfo::exists(outputPath) || QFileInfo(outputPath).size() == 0) {
-        qWarning() << "Import: FFmpeg conversion failed:" << proc.readAllStandardError();
-        QFile::remove(outputPath);
-        return QString();
-    }
-
-    return outputPath;
-}
-} 
+#include "media/mediaimporter.h" 
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("z");
-
+    setWindowTitle("Z");
     setStyleSheet(R"(
         * {
             font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
@@ -234,42 +159,38 @@ MainWindow::~MainWindow() {
     AudioEngine::instance().shutdown();
 }
 
-void MainWindow::pushUndoState() {
-    undoStack.push_back(Project::instance().toJson());
-    redoStack.clear();
-}
-
-void MainWindow::undo() {
-    if (undoStack.isEmpty()) return;
-    redoStack.push_back(Project::instance().toJson());
-    Project::instance().fromJson(undoStack.takeLast());
-    refreshTrackList();
-    refreshActiveEffectsList();
-    timelinePanel->update();
-    onTimelineScrubbed(currentPlayhead);
-}
-
-void MainWindow::redo() {
-    if (redoStack.isEmpty()) return;
-    undoStack.push_back(Project::instance().toJson());
-    Project::instance().fromJson(redoStack.takeLast());
-    refreshTrackList();
-    refreshActiveEffectsList();
-    timelinePanel->update();
-    onTimelineScrubbed(currentPlayhead);
-}
-
 void MainWindow::createActions() {
     QShortcut* cutShortcut = new QShortcut(QKeySequence("C"), this);
     connect(cutShortcut, &QShortcut::activated, this, &MainWindow::cutClipAtPlayhead);
 
     QShortcut* undoShortcut = new QShortcut(QKeySequence("Ctrl+Z"), this);
-    connect(undoShortcut, &QShortcut::activated, this, &MainWindow::undo);
+    connect(undoShortcut, &QShortcut::activated, this, [this]() {
+        if (AppState::instance().undo()) {
+            refreshTrackList();
+            refreshActiveEffectsList();
+            if (timelinePanel) timelinePanel->update();
+            onTimelineScrubbed(currentPlayhead);
+        }
+    });
 
     QShortcut* redoShortcut = new QShortcut(QKeySequence("Ctrl+Shift+Z"), this);
-    connect(redoShortcut, &QShortcut::activated, this, &MainWindow::redo);
+    connect(redoShortcut, &QShortcut::activated, this, [this]() {
+        if (AppState::instance().redo()) {
+            refreshTrackList();
+            refreshActiveEffectsList();
+            if (timelinePanel) timelinePanel->update();
+            onTimelineScrubbed(currentPlayhead);
+        }
+    });
     QShortcut* redoShortcut2 = new QShortcut(QKeySequence("Ctrl+Y"), this);
-    connect(redoShortcut2, &QShortcut::activated, this, &MainWindow::redo);
+    connect(redoShortcut2, &QShortcut::activated, this, [this]() {
+        if (AppState::instance().redo()) {
+            refreshTrackList();
+            refreshActiveEffectsList();
+            if (timelinePanel) timelinePanel->update();
+            onTimelineScrubbed(currentPlayhead);
+        }
+    });
     QShortcut* deleteShortcut = new QShortcut(QKeySequence("Delete"), this);
     connect(deleteShortcut, &QShortcut::activated, this, &MainWindow::deleteSelectedClip);
     QShortcut* backspaceShortcut = new QShortcut(QKeySequence("Backspace"), this);
@@ -377,47 +298,30 @@ void MainWindow::createDocks() {
     sidebarLayout->setContentsMargins(4, 4, 4, 4);
     sidebarLayout->setSpacing(6);
 
-    QWidget* mediaContainer = new QWidget(sidebarWidget);
-    mediaContainer->setObjectName("mediaContainer");
-    QVBoxLayout* mediaLayout = new QVBoxLayout(mediaContainer);
-    mediaLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* mediaTitle = new QLabel("M E D I A", mediaContainer);
-    mediaTitle->setStyleSheet("font-weight: bold; color: white;");
-    mediaLayout->addWidget(mediaTitle);
-    mediaList = new QListWidget(mediaContainer);
-    connect(mediaList, &QListWidget::currentTextChanged, this, &MainWindow::onClipSelected);
-    mediaLayout->addWidget(mediaList, 1);
-    sidebarLayout->addWidget(mediaContainer, 1);
+    mediaPool = new MediaPool(sidebarWidget);
+    connect(mediaPool, &MediaPool::mediaSelected, this, &MainWindow::onClipSelected);
+    sidebarLayout->addWidget(mediaPool, 1);
 
-    QWidget* tracksContainer = new QWidget(sidebarWidget);
-    tracksContainer->setObjectName("tracksContainer");
-    QVBoxLayout* tracksLayout = new QVBoxLayout(tracksContainer);
-    tracksLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* tracksTitle = new QLabel("T R A C K S", tracksContainer);
-    tracksTitle->setStyleSheet("font-weight: bold; color: white;");
-    tracksLayout->addWidget(tracksTitle);
-    trackList = new QListWidget(tracksContainer);
-    trackList->setToolTip("Select a track to edit its clips and effects");
-    connect(trackList, &QListWidget::currentRowChanged, this, [this](int row) {
-        selectTrackIndex(row);
+    trackControl = new TrackControl(sidebarWidget);
+    connect(trackControl, &TrackControl::trackSelected, this, [this](int row) { selectTrackIndex(row); });
+    connect(trackControl, &TrackControl::newTrackRequested, this, [this]() {
+        TimelineTrack track;
+        track.id = static_cast<int>(Project::instance().getTracks().size()) + 1;
+        track.name = "Track " + std::to_string(track.id);
+        Project::instance().getTracks().push_back(track);
+        refreshTrackList();
+        selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
     });
-    tracksLayout->addWidget(trackList, 1);
+    connect(trackControl, &TrackControl::moveUpRequested, this, [this]() { moveSelectedTrack(-1); });
+    connect(trackControl, &TrackControl::moveDownRequested, this, [this]() { moveSelectedTrack(1); });
+    connect(trackControl, &TrackControl::deleteTrackRequested, this, [this]() { deleteSelectedTrack(); });
+    connect(trackControl, &TrackControl::cutClipRequested, this, [this]() { cutClipAtPlayhead(); });
+    connect(trackControl, &TrackControl::deleteClipRequested, this, [this]() { deleteSelectedClip(); });
+    sidebarLayout->addWidget(trackControl, 1);
 
-    sidebarLayout->addWidget(tracksContainer, 1);
-
-    QWidget* effectsContainer = new QWidget(sidebarWidget);
-    effectsContainer->setObjectName("effectsContainer");
-    QVBoxLayout* effectsLayout = new QVBoxLayout(effectsContainer);
-    effectsLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* effectsTitle = new QLabel("F U C K   I T   U P", effectsContainer);
-    effectsTitle->setStyleSheet("font-weight: bold; color: white;");
-    effectsLayout->addWidget(effectsTitle);
-    effectsTree = new QTreeWidget(effectsContainer);
-    effectsTree->setHeaderHidden(true);
-    effectsTree->setDragEnabled(true);
-    connect(effectsTree, &QTreeWidget::itemDoubleClicked, this, &MainWindow::onEffectSelected);
-    effectsLayout->addWidget(effectsTree, 2);
-    sidebarLayout->addWidget(effectsContainer, 2);
+    effectsBrowser = new EffectsBrowser(sidebarWidget);
+    connect(effectsBrowser, &EffectsBrowser::effectDoubleClicked, this, &MainWindow::onEffectSelected);
+    sidebarLayout->addWidget(effectsBrowser, 2);
 
     QWidget* activeContainer = new QWidget(sidebarWidget);
     activeContainer->setObjectName("activeContainer");
@@ -523,37 +427,7 @@ void MainWindow::createDocks() {
     bottomLayout->setContentsMargins(4, 4, 4, 4);
     bottomLayout->setSpacing(4);
 
-    QWidget* trackToolbar = new QWidget(bottomContainer);
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(trackToolbar);
-    toolbarLayout->setContentsMargins(0, 0, 0, 0);
-    toolbarLayout->setSpacing(8);
-    QPushButton* newTrackButton = new QPushButton("New Track", trackToolbar);
-    connect(newTrackButton, &QPushButton::clicked, this, [this]() {
-        TimelineTrack track;
-        track.id = static_cast<int>(Project::instance().getTracks().size()) + 1;
-        track.name = "Track " + std::to_string(track.id);
-        Project::instance().getTracks().push_back(track);
-        refreshTrackList();
-        selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
-    });
-    toolbarLayout->addWidget(newTrackButton);
-    QPushButton* upTrackButton = new QPushButton("Move Up", trackToolbar);
-    connect(upTrackButton, &QPushButton::clicked, this, [this]() { moveSelectedTrack(-1); });
-    toolbarLayout->addWidget(upTrackButton);
-    QPushButton* downTrackButton = new QPushButton("Move Down", trackToolbar);
-    connect(downTrackButton, &QPushButton::clicked, this, [this]() { moveSelectedTrack(1); });
-    toolbarLayout->addWidget(downTrackButton);
-    QPushButton* deleteTrackButton = new QPushButton("Delete Track", trackToolbar);
-    connect(deleteTrackButton, &QPushButton::clicked, this, [this]() { deleteSelectedTrack(); });
-    toolbarLayout->addWidget(deleteTrackButton);
-    QPushButton* cutClipButton = new QPushButton("Cut Clip", trackToolbar);
-    connect(cutClipButton, &QPushButton::clicked, this, [this]() { cutClipAtPlayhead(); });
-    toolbarLayout->addWidget(cutClipButton);
-    QPushButton* deleteClipButton = new QPushButton("Delete Clip", trackToolbar);
-    connect(deleteClipButton, &QPushButton::clicked, this, [this]() { deleteSelectedClip(); });
-    toolbarLayout->addWidget(deleteClipButton);
-    toolbarLayout->addStretch();
-    bottomLayout->addWidget(trackToolbar);
+
     bottomTabs = new QTabWidget(bottomContainer);
     bottomTabs->setTabPosition(QTabWidget::South);
 
@@ -566,16 +440,19 @@ void MainWindow::createDocks() {
     connect(timelinePanel, &Timeline::effectDropped, this, [this](int trackIndex, double dropTime, const QString& effectName) {
         QString pluginId;
         bool isTransition = false;
-        for (int i = 0; i < effectsTree->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* parent = effectsTree->topLevelItem(i);
-            for (int j = 0; j < parent->childCount(); ++j) {
-                if (parent->child(j)->text(0) == effectName) {
-                    pluginId = parent->child(j)->data(0, Qt::UserRole).toString();
-                    if (parent->text(0) == "Transitions") isTransition = true;
-                    break;
+        if (effectsBrowser) {
+            auto* tree = effectsBrowser->getTreeWidget();
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+                QTreeWidgetItem* parent = tree->topLevelItem(i);
+                for (int j = 0; j < parent->childCount(); ++j) {
+                    if (parent->child(j)->text(0) == effectName) {
+                        pluginId = parent->child(j)->data(0, Qt::UserRole).toString();
+                        if (parent->text(0) == "Transitions") isTransition = true;
+                        break;
+                    }
                 }
+                if (!pluginId.isEmpty()) break;
             }
-            if (!pluginId.isEmpty()) break;
         }
         if (pluginId.isEmpty()) return;
 
@@ -608,7 +485,7 @@ void MainWindow::createDocks() {
             }
 
             if (leftClip && rightClip) {
-                pushUndoState();
+                AppState::instance().pushUndoState();
                 ProjectTransition trans;
                 trans.id = "trans_" + std::to_string(rand());
                 trans.pluginId = pluginId.toStdString();
@@ -636,7 +513,7 @@ void MainWindow::createDocks() {
                 }
             }
             if (targetClip) {
-                pushUndoState();
+                AppState::instance().pushUndoState();
                 if (!targetClip->useClipEffects) {
                     targetClip->effects = track.effects;
                     targetClip->useClipEffects = true;
@@ -644,7 +521,7 @@ void MainWindow::createDocks() {
                 targetClip->effects.push_back(createEffectTemplate(pluginId));
                 timelinePanel->update();
             } else {
-                pushUndoState();
+                AppState::instance().pushUndoState();
                 track.effects.push_back(createEffectTemplate(pluginId));
                 timelinePanel->update();
             }
@@ -653,7 +530,7 @@ void MainWindow::createDocks() {
         }
     });
     connect(timelinePanel, &Timeline::clipMoveStarted, this, [this]() {
-        pushUndoState();
+        AppState::instance().pushUndoState();
     });
     connect(timelinePanel, &Timeline::clipMoveRequested, this, [this](int trackIndex, int clipIndex, double newTimelineStart) {
         auto& tracks = Project::instance().getTracks();
@@ -737,32 +614,10 @@ void MainWindow::createDocks() {
 }
 
 void MainWindow::refreshTrackList() {
-    if (!trackList) return;
-
-    const int previous = trackList->currentRow();
-    trackList->blockSignals(true);
-    trackList->clear();
-
-    const auto& tracks = Project::instance().getTracks();
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        const auto& track = tracks[i];
-        QString label = QString::fromStdString(track.name);
-        label += QString(" (%1 clips, %2 effects)").arg(track.clips.size()).arg(track.effects.size());
-        auto* item = new QListWidgetItem(label, trackList);
-        item->setData(Qt::UserRole, static_cast<int>(i));
+    if (trackControl) {
+        trackControl->populateTracks(Project::instance().getTracks().size());
+        if (mediaPool) mediaPool->clearMedia();
     }
-
-    if (tracks.empty()) {
-        trackList->setCurrentRow(-1);
-    } else {
-        int row = previous;
-        if (row < 0 || row >= static_cast<int>(tracks.size())) {
-            row = 0;
-        }
-        trackList->setCurrentRow(row);
-    }
-
-    trackList->blockSignals(false);
 }
 
 void MainWindow::sortTrackClips(TimelineTrack& track) {
@@ -786,18 +641,9 @@ void MainWindow::selectTrackIndex(int index) {
 
     if (index < 0 || index >= static_cast<int>(tracks.size())) {
         index = 0;
-        if (trackList && trackList->currentRow() != 0) {
-            trackList->blockSignals(true);
-            trackList->setCurrentRow(0);
-            trackList->blockSignals(false);
-        }
     }
 
-    if (trackList && trackList->currentRow() != index) {
-        trackList->blockSignals(true);
-        trackList->setCurrentRow(index);
-        trackList->blockSignals(false);
-    }
+    if (trackControl) trackControl->selectTrack(index);
 
     refreshActiveEffectsList();
     syncEffectStackToRenderer();
@@ -825,9 +671,7 @@ void MainWindow::selectClip(int trackIndex, int clipIndex) {
     } else {
         AudioEngine::instance().clearClipSamples();
     }
-    mediaList->clearSelection();
-    mediaList->addItem(activeClipId);
-    mediaList->setCurrentRow(mediaList->count() - 1);
+    if (mediaPool) mediaPool->addMedia(activeClipId);
     refreshActiveEffectsList();
     syncEffectStackToRenderer();
     onTimelineScrubbed(currentPlayhead);
@@ -863,9 +707,9 @@ ProjectClip* MainWindow::clipAtTime(TimelineTrack& track, double time) const {
 
 void MainWindow::moveSelectedTrack(int direction) {
     auto& tracks = Project::instance().getTracks();
-    if (!trackList || tracks.size() < 2) return;
+    if (!trackControl || tracks.size() < 2) return;
 
-    int index = trackList->currentRow();
+    int index = trackControl->getSelectedTrack();
     int target = index + direction;
     if (index < 0 || target < 0 || target >= static_cast<int>(tracks.size())) return;
 
@@ -875,18 +719,18 @@ void MainWindow::moveSelectedTrack(int direction) {
 }
 
 void MainWindow::deleteSelectedTrack() {
-    pushUndoState();
+    AppState::instance().pushUndoState();
     auto& tracks = Project::instance().getTracks();
-    if (!trackList || tracks.empty()) return;
+    if (!trackControl || tracks.empty()) return;
 
-    int index = trackList->currentRow();
+    int index = trackControl->getSelectedTrack();
     if (index < 0 || index >= static_cast<int>(tracks.size())) return;
 
     tracks.erase(tracks.begin() + index);
     if (tracks.empty()) {
         activeClipId.clear();
         activeFilePath.clear();
-        mediaList->clear();
+        if (mediaPool) mediaPool->clearMedia();
         inspectorPanel->clearInspector();
         glWidget->setActiveEffects({});
         timelinePanel->update();
@@ -898,7 +742,7 @@ void MainWindow::deleteSelectedTrack() {
 
 void MainWindow::deleteSelectedClip() {
     if (activeClipId.isEmpty()) return;
-    pushUndoState();
+    AppState::instance().pushUndoState();
     auto& tracks = Project::instance().getTracks();
     for (auto& track : tracks) {
         auto it = std::remove_if(track.clips.begin(), track.clips.end(),
@@ -911,7 +755,7 @@ void MainWindow::deleteSelectedClip() {
     activeClipId.clear();
     activeFilePath.clear();
     AudioEngine::instance().clearClipSamples();
-    mediaList->clearSelection();
+    if (mediaPool) mediaPool->clearSelection();
     inspectorPanel->clearInspector();
     refreshTrackList();
     timelinePanel->update();
@@ -919,11 +763,11 @@ void MainWindow::deleteSelectedClip() {
 }
 
 void MainWindow::cutClipAtPlayhead() {
-    pushUndoState();
+    AppState::instance().pushUndoState();
     auto& tracks = Project::instance().getTracks();
     if (tracks.empty()) return;
 
-    int index = trackList ? trackList->currentRow() : 0;
+    int index = trackControl ? trackControl->getSelectedTrack() : 0;
     if (index < 0 || index >= static_cast<int>(tracks.size())) index = 0;
 
     auto& track = tracks[index];
@@ -965,34 +809,9 @@ void MainWindow::cutClipAtPlayhead() {
 }
 
 void MainWindow::updateEffectsState() {
-    effectsTree->clear();
-    QTreeWidgetItem* transitionsFolder = new QTreeWidgetItem(effectsTree);
-    transitionsFolder->setText(0, "Transitions");
-    QTreeWidgetItem* effectsFolder = new QTreeWidgetItem(effectsTree);
-    effectsFolder->setText(0, "Effects");
-
-    auto addItem = [](QTreeWidgetItem* parent, const QString& label, const QString& id) {
-        auto* item = new QTreeWidgetItem(parent);
-        item->setText(0, label);
-        item->setData(0, Qt::UserRole, id);
-    };
-
-    addItem(transitionsFolder, "Cross Dissolve", "cross_dissolve");
-    addItem(transitionsFolder, "Datamosh Transition", "datamosh_transition");
-    addItem(effectsFolder, "Datamoshing", "datamosh");
-    addItem(effectsFolder, "Optical Smear", "optical_smear");
-    addItem(effectsFolder, "Legacy CPU XOR", "cpu_xor");
-    addItem(effectsFolder, "Legacy CPU OR", "cpu_or");
-    addItem(effectsFolder, "Legacy CPU AND", "cpu_and");
-    addItem(effectsFolder, "Legacy CPU XNOR", "cpu_xnor");
-    addItem(effectsFolder, "Legacy CPU NAND", "cpu_nand");
-
-    const auto& plugins = PluginManager::instance().getPlugins();
-    for (const auto& plugin : plugins) {
-        addItem(effectsFolder, QString::fromStdString(plugin.name), QString::fromStdString(plugin.id));
+    if (effectsBrowser) {
+        effectsBrowser->populateEffects();
     }
-
-    effectsTree->expandAll();
     refreshActiveEffectsList();
 }
 
@@ -1005,7 +824,7 @@ void MainWindow::importVideo() {
     );
     if (filePath.isEmpty()) return;
 
-    QString standardizedPath = transcodeToStandardMp4(filePath);
+    QString standardizedPath = MediaImporter::transcodeToStandardMp4(filePath);
     if (standardizedPath.isEmpty()) {
         qWarning() << "Import: Falling back to original file because MP4 conversion failed.";
         standardizedPath = filePath;
@@ -1013,8 +832,8 @@ void MainWindow::importVideo() {
 
     QString clipId = QFileInfo(filePath).baseName();
     if (VideoEngine::instance().loadVideo(clipId.toStdString(), standardizedPath.toStdString())) {
-        pushUndoState();
-        mediaList->addItem(clipId);
+        AppState::instance().pushUndoState();
+        if (mediaPool) mediaPool->addMedia(clipId);
 
         double maxDuration = 10.0;
         for (const auto& t : Project::instance().getTracks()) {
@@ -1063,7 +882,7 @@ void MainWindow::openProject() {
     QString path = QFileDialog::getOpenFileName(this, "Open Project", "", "Project Files (*.json)");
     if (!path.isEmpty()) {
         if (Project::instance().load(path.toStdString())) {
-            mediaList->clear();
+            if (mediaPool) mediaPool->clearMedia();
             for (const auto& track : Project::instance().getTracks()) {
                 for (const auto& clip : track.clips) {
                     VideoEngine::instance().loadVideo(clip.id, clip.filePath);
@@ -1075,8 +894,7 @@ void MainWindow::openProject() {
                 const auto& clip = tracks.front().clips.front();
                 activeClipId = QString::fromStdString(clip.id);
                 activeFilePath = QString::fromStdString(clip.filePath);
-                mediaList->addItem(activeClipId);
-
+                if (mediaPool) mediaPool->addMedia(activeClipId);
                 timelinePanel->setDuration(Project::instance().getDuration());
                 refreshActiveEffectsList();
                 syncEffectStackToRenderer();
@@ -1316,13 +1134,9 @@ void MainWindow::onClipSelected(const QString& clipId) {
     Q_UNUSED(clipId);
 }
 
-void MainWindow::onEffectSelected(QTreeWidgetItem* item, int column) {
+void MainWindow::onEffectSelected(const QString& targetId) {
     auto* track = currentTrack();
     if (!track) return;
-
-    if (!item || item->childCount() > 0) return; 
-
-    QString targetId = item->data(0, Qt::UserRole).toString();
 
     auto* effects = activeEffects();
     if (!effects) return;
@@ -1330,7 +1144,7 @@ void MainWindow::onEffectSelected(QTreeWidgetItem* item, int column) {
     if (std::none_of(effects->begin(), effects->end(), [&](const AppliedEffect& eff) {
             return QString::fromStdString(eff.pluginId) == targetId;
         })) {
-        pushUndoState();
+        AppState::instance().pushUndoState();
         effects->push_back(createEffectTemplate(targetId));
     }
 
@@ -1368,7 +1182,7 @@ void MainWindow::removeSelectedEffect() {
     QString effectId = activeEffectsList->currentItem()->data(Qt::UserRole).toString();
     auto* effects = activeEffects();
     if (!effects) return;
-    pushUndoState();
+    AppState::instance().pushUndoState();
     auto it = std::remove_if(effects->begin(), effects->end(), [&](const AppliedEffect& eff) {
         return QString::fromStdString(eff.pluginId) == effectId;
     });
@@ -1384,7 +1198,7 @@ void MainWindow::removeSelectedEffect() {
 TimelineTrack* MainWindow::currentTrack() {
     auto& tracks = Project::instance().getTracks();
     if (tracks.empty()) return nullptr;
-    int index = trackList ? trackList->currentRow() : 0;
+    int index = trackControl ? trackControl->getSelectedTrack() : 0;
     if (index < 0 || index >= static_cast<int>(tracks.size())) index = 0;
     return &tracks[index];
 }
@@ -1392,7 +1206,7 @@ TimelineTrack* MainWindow::currentTrack() {
 const TimelineTrack* MainWindow::currentTrack() const {
     const auto& tracks = Project::instance().getTracks();
     if (tracks.empty()) return nullptr;
-    int index = trackList ? trackList->currentRow() : 0;
+    int index = trackControl ? trackControl->getSelectedTrack() : 0;
     if (index < 0 || index >= static_cast<int>(tracks.size())) index = 0;
     return &tracks[index];
 }
@@ -1612,163 +1426,13 @@ void MainWindow::onParameterChanged(const QString& effectId, const QString& para
 }
 
 void MainWindow::exportVideo() {
-    if (activeClipId.isEmpty()) {
-        qWarning() << "Export: No active clip loaded to export.";
-        return;
-    }
-
-    double fps = 30.0;
-    if (!activeClipId.isEmpty()) {
-        fps = VideoEngine::instance().getFps(activeClipId.toStdString());
-    }
-    if (fps <= 0.0) fps = 30.0;
-    double duration = 0.0;
-    for (const auto& t : Project::instance().getTracks()) {
-        for (const auto& c : t.clips) {
-            duration = std::max(duration, c.timelineStart + c.sourceDuration);
-        }
-    }
-    if (duration <= 0.0) duration = 30.0;
-
-    QString outputPath = QFileDialog::getSaveFileName(
-        this, "Export Glitched Video", "", 
-        "MP4 Video (*.mp4);;All Files (*)"
+    MediaExporter::exportVideo(
+        this,
+        activeClipId,
+        activeFilePath,
+        glWidget,
+        [this](double time) { this->onTimelineScrubbed(time); },
+        [this]() { this->togglePlayback(); },
+        isPlaying
     );
-
-    if (outputPath.isEmpty()) return;
-
-    const bool logsWereEnabled = AppLogging::enabled();
-    AppLogging::setEnabled(false);
-
-    const bool asyncWasEnabled = VideoEngine::instance().isAsyncDecodeEnabled();
-    VideoEngine::instance().setAsyncDecodeEnabled(false);
-
-    bool wasPlaying = isPlaying;
-    if (isPlaying) {
-        togglePlayback();
-    }
-
-    int totalFrames = static_cast<int>(duration * fps);
-    QProgressDialog progress("Exporting Video Frames...", "Cancel", 0, totalFrames, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.show();
-
-    int exportW = glWidget->width();
-    int exportH = glWidget->height();
-    if (exportW % 2 != 0) exportW--;
-    if (exportH % 2 != 0) exportH--;
-
-    QString ffmpegPath = "ffmpeg.exe";
-    QStringList arguments;
-    arguments << "-y"
-              << "-f" << "rawvideo"
-              << "-pix_fmt" << "rgb24"
-              << "-s" << QString("%1x%2").arg(exportW).arg(exportH)
-              << "-r" << QString::number(fps)
-              << "-i" << "pipe:0"
-              << "-i" << activeFilePath
-              << "-map" << "0:v:0"
-              << "-map" << "1:a:0?"
-              << "-c:v" << "libx264"
-              << "-pix_fmt" << "yuv420p"
-              << "-c:a" << "aac"
-              << "-shortest"
-              << outputPath;
-
-    QProcess proc;
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("PATH", "C:\\msys64\\mingw64\\bin;C:\\msys64\\usr\\bin;" + env.value("PATH"));
-    proc.setProcessEnvironment(env);
-    proc.setProcessChannelMode(QProcess::MergedChannels);
-
-    proc.start(ffmpegPath, arguments);
-    if (!proc.waitForStarted()) {
-        qWarning() << "Failed to start FFmpeg process.";
-        VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-        AppLogging::setEnabled(logsWereEnabled);
-        if (wasPlaying) {
-            togglePlayback();
-        }
-        return;
-    }
-
-    const int rowBytes = exportW * 3;
-    int lastUiUpdate = 0;
-
-    for (int i = 0; i < totalFrames; ++i) {
-        if (progress.wasCanceled()) {
-            proc.kill();
-            proc.waitForFinished();
-            VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-            AppLogging::setEnabled(logsWereEnabled);
-            if (wasPlaying) {
-                togglePlayback();
-            }
-            return;
-        }
-
-        const double time = static_cast<double>(i) / fps;
-
-        onTimelineScrubbed(time);
-
-        QImage img = glWidget->grabFramebuffer().convertToFormat(QImage::Format_RGB888);
-        if (img.isNull()) {
-            qWarning() << "Export: Failed to capture frame" << i;
-            proc.kill();
-            proc.waitForFinished();
-            VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-            AppLogging::setEnabled(logsWereEnabled);
-            if (wasPlaying) {
-                togglePlayback();
-            }
-            return;
-        }
-
-        if (img.width() != exportW || img.height() != exportH) {
-            img = img.copy(0, 0, exportW, exportH);
-        }
-
-        for (int y = 0; y < exportH; ++y) {
-            const char* row = reinterpret_cast<const char*>(img.constScanLine(y));
-            if (proc.write(row, rowBytes) < 0) {
-                qWarning() << "Export: Failed to write video frame data to FFmpeg.";
-                proc.kill();
-                proc.waitForFinished();
-                VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-                AppLogging::setEnabled(logsWereEnabled);
-                if (wasPlaying) {
-                    togglePlayback();
-                }
-                return;
-            }
-        }
-
-        if ((i - lastUiUpdate) >= 4 || i + 1 == totalFrames) {
-            progress.setValue(i + 1);
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-            lastUiUpdate = i;
-        }
-    }
-
-    proc.closeWriteChannel();
-    progress.setLabelText("Compiling final video with audio...");
-    progress.setValue(totalFrames);
-
-    if (!proc.waitForFinished(-1)) {
-        qWarning() << "Failed to finish FFmpeg export. Error:" << proc.errorString();
-        qWarning() << "FFmpeg output:" << proc.readAllStandardOutput();
-    } else if (proc.exitCode() != 0) {
-        qWarning() << "FFmpeg export failed with exit code" << proc.exitCode() << ":" << proc.readAllStandardOutput();
-    } else {
-        qDebug() << "FFmpeg export completed successfully!";
-    }
-
-    VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-    AppLogging::setEnabled(logsWereEnabled);
-
-    onTimelineScrubbed(0.0);
-    if (wasPlaying) {
-        togglePlayback();
-    }
 }
