@@ -45,7 +45,7 @@ jobs:
             qt6-base-dev qt6-declarative-dev libgl1-mesa-dev \
             libavformat-dev libavcodec-dev libavutil-dev \
             libswscale-dev libswresample-dev portaudio19-dev \
-            libsqlite3-dev pkg-config zip
+            libsqlite3-dev pkg-config zip tar
 
       # --- macOS Setup ---
       - name: Install macOS Dependencies
@@ -69,6 +69,7 @@ jobs:
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-portaudio
             mingw-w64-x86_64-sqlite3
+            zip
 
       # --- Build Process (Linux & macOS) ---
       - name: Build Executable (Linux / macOS)
@@ -88,13 +89,13 @@ jobs:
       # --- Packaging Binaries ---
       - name: Package Windows Binary
         if: matrix.platform == 'windows'
-        shell: msys2 {0}
+        shell: powershell
         run: |
-          mkdir -p release_pkg
-          cp build/bin/z.exe release_pkg/
-          cp -r plugins release_pkg/
-          cp -r docs release_pkg/
-          cd release_pkg && zip -r ../Z-VideoEditor-Windows-x64.zip .
+          New-Item -ItemType Directory -Path release_pkg -Force
+          Copy-Item -Path build/bin/z.exe -Destination release_pkg/ -Force
+          Copy-Item -Path plugins -Destination release_pkg/ -Recurse -Force
+          Copy-Item -Path docs -Destination release_pkg/ -Recurse -Force
+          Compress-Archive -Path release_pkg/* -DestinationPath Z-VideoEditor-Windows-x64.zip -Force
 
       - name: Package Linux Binary
         if: matrix.platform == 'linux'
