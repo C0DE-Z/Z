@@ -1,0 +1,168 @@
+name: Auto-Build & Publish Release (Windows, Linux, macOS)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+      - 'Beta*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Binary for ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            artifact_name: Z-VideoEditor-Windows-x64.zip
+          - os: ubuntu-latest
+            platform: linux
+            artifact_name: Z-VideoEditor-Linux-x64.tar.gz
+          - os: macos-latest
+            platform: macos
+            artifact_name: Z-VideoEditor-macOS.zip
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # --- Linux Setup ---
+      - name: Install Linux Dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            qt6-base-dev qt6-declarative-dev libgl1-mesa-dev \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev portaudio19-dev \
+            libsqlite3-dev pkg-config zip
+
+      # --- macOS Setup ---
+      - name: Install macOS Dependencies
+        if: matrix.platform == 'macos'
+        run: |
+          brew update
+          brew install qt6 ffmpeg portaudio sqlite3 pkg-config ninja cmake
+
+      # --- Windows Setup ---
+      - name: Setup MSYS2 MinGW-64 on Windows
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-sqlite3
+
+      # --- Build Process (Linux & macOS) ---
+      - name: Build Executable (Linux / macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      # --- Build Process (Windows) ---
+      - name: Build Executable (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      # --- Packaging Binaries ---
+      - name: Package Windows Binary
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p release_pkg
+          cp build/bin/z.exe release_pkg/
+          cp -r plugins release_pkg/
+          cp -r docs release_pkg/
+          cd release_pkg && zip -r ../Z-VideoEditor-Windows-x64.zip .
+
+      - name: Package Linux Binary
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p release_pkg
+          cp build/bin/z release_pkg/ 2>/dev/null || cp build/z release_pkg/
+          cp -r plugins release_pkg/
+          cp -r docs release_pkg/
+          tar -czvf Z-VideoEditor-Linux-x64.tar.gz -C release_pkg .
+
+      - name: Package macOS Binary
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p release_pkg
+          cp -r build/bin/*.app release_pkg/ 2>/dev/null || cp -r build/*.app release_pkg/ 2>/dev/null || cp build/bin/z release_pkg/
+          cp -r plugins release_pkg/
+          cp -r docs release_pkg/
+          cd release_pkg && zip -r ../Z-VideoEditor-macOS.zip .
+
+      # --- Upload Package Artifact ---
+      - name: Upload Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-package
+          path: ${{ matrix.artifact_name }}
+
+  release:
+    name: Create & Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Determine Release Tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${github.ref_name}"
+          else
+            TAG_NAME="v1.0.$(date +'%Y%m%d%H%M')"
+          fi
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Z Video Editor ${{ env.TAG_NAME }}
+          body: |
+            ## Z Video Editor Release ${{ env.TAG_NAME }}
+            Realtime GPU GLSL Shader & Datamosh Video Editor.
+            
+            ### Included Assets:
+            - **Windows (x64)**: `Z-VideoEditor-Windows-x64.zip`
+            - **Linux (x64)**: `Z-VideoEditor-Linux-x64.tar.gz`
+            - **macOS**: `Z-VideoEditor-macOS.zip`
+          draft: false
+          prerelease: false
+          files: |
+            release_assets/Z-VideoEditor-Windows-x64.zip
+            release_assets/Z-VideoEditor-Linux-x64.tar.gz
+            release_assets/Z-VideoEditor-macOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
