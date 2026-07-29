@@ -27,12 +27,17 @@ EffectsBrowser::EffectsBrowser(QWidget* parent) : QWidget(parent) {
     populateEffects();
 }
 
+#include <functional>
+#include <QDir>
+
 void EffectsBrowser::populateEffects() {
     effectsTree->clear();
     QTreeWidgetItem* transitionsFolder = new QTreeWidgetItem(effectsTree);
     transitionsFolder->setText(0, "Transitions");
     QTreeWidgetItem* effectsFolder = new QTreeWidgetItem(effectsTree);
-    effectsFolder->setText(0, "Effects");
+    effectsFolder->setText(0, "Plugins");
+    QTreeWidgetItem* builtinFolder = new QTreeWidgetItem(effectsTree);
+    builtinFolder->setText(0, "Builtin");
 
     auto addItem = [](QTreeWidgetItem* parent, const QString& label, const QString& id) {
         auto* item = new QTreeWidgetItem(parent);
@@ -40,20 +45,44 @@ void EffectsBrowser::populateEffects() {
         item->setData(0, Qt::UserRole, id);
     };
 
+    auto getOrCreateFolder = [](QTreeWidgetItem* root, const QString& categoryPath) -> QTreeWidgetItem* {
+        if (categoryPath.isEmpty()) return root;
+        QString normalized = QString(categoryPath).replace('\\', '/');
+        QStringList parts = normalized.split('/', Qt::SkipEmptyParts);
+        QTreeWidgetItem* current = root;
+        for (const QString& part : parts) {
+            QTreeWidgetItem* found = nullptr;
+            for (int i = 0; i < current->childCount(); ++i) {
+                if (current->child(i)->text(0) == part) {
+                    found = current->child(i);
+                    break;
+                }
+            }
+            if (!found) {
+                found = new QTreeWidgetItem(current);
+                found->setText(0, part);
+            }
+            current = found;
+        }
+        return current;
+    };
+
     addItem(transitionsFolder, "Cross Dissolve", "cross_dissolve");
     addItem(transitionsFolder, "Datamosh Transition", "datamosh_transition");
     
-    addItem(effectsFolder, "Datamoshing", "datamosh");
-    addItem(effectsFolder, "Optical Smear", "optical_smear");
-    addItem(effectsFolder, "Legacy CPU XOR", "cpu_xor");
-    addItem(effectsFolder, "Legacy CPU OR", "cpu_or");
-    addItem(effectsFolder, "Legacy CPU AND", "cpu_and");
-    addItem(effectsFolder, "Legacy CPU XNOR", "cpu_xnor");
-    addItem(effectsFolder, "Legacy CPU NAND", "cpu_nand");
+    addItem(builtinFolder, "Datamoshing", "datamosh");
+    addItem(builtinFolder, "Optical Smear", "optical_smear");
+    addItem(builtinFolder, "Legacy CPU XOR", "cpu_xor");
+    addItem(builtinFolder, "Legacy CPU OR", "cpu_or");
+    addItem(builtinFolder, "Legacy CPU AND", "cpu_and");
+    addItem(builtinFolder, "Legacy CPU XNOR", "cpu_xnor");
+    addItem(builtinFolder, "Legacy CPU NAND", "cpu_nand");
 
     const auto& plugins = PluginManager::instance().getPlugins();
     for (const auto& plugin : plugins) {
-        addItem(effectsFolder, QString::fromStdString(plugin.name), QString::fromStdString(plugin.id));
+        QString cat = QString::fromStdString(plugin.category);
+        QTreeWidgetItem* parentFolder = getOrCreateFolder(effectsFolder, cat);
+        addItem(parentFolder, QString::fromStdString(plugin.name), QString::fromStdString(plugin.id));
     }
 
     effectsTree->expandAll();
@@ -62,23 +91,25 @@ void EffectsBrowser::populateEffects() {
 void EffectsBrowser::onSearchTextChanged(const QString& text) {
     QString query = text.toLower();
 
-    for (int i = 0; i < effectsTree->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* folder = effectsTree->topLevelItem(i);
-        bool folderHasVisibleChildren = false;
-
-        for (int j = 0; j < folder->childCount(); ++j) {
-            QTreeWidgetItem* child = folder->child(j);
-            QString itemName = child->text(0).toLower();
-
-            if (itemName.contains(query) || query.isEmpty()) {
-                child->setHidden(false);
-                folderHasVisibleChildren = true;
-            } else {
-                child->setHidden(true);
+    std::function<bool(QTreeWidgetItem*)> filterItem = [&](QTreeWidgetItem* item) -> bool {
+        if (item->childCount() == 0) {
+            bool matches = item->text(0).toLower().contains(query) || query.isEmpty();
+            item->setHidden(!matches);
+            return matches;
+        } else {
+            bool anyChildVisible = false;
+            for (int i = 0; i < item->childCount(); ++i) {
+                if (filterItem(item->child(i))) {
+                    anyChildVisible = true;
+                }
             }
+            item->setHidden(!anyChildVisible && !query.isEmpty());
+            return anyChildVisible;
         }
+    };
 
-        folder->setHidden(!folderHasVisibleChildren && !query.isEmpty());
+    for (int i = 0; i < effectsTree->topLevelItemCount(); ++i) {
+        filterItem(effectsTree->topLevelItem(i));
     }
 }
 

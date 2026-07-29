@@ -33,6 +33,9 @@ public:
     void removeKeyframeAt(double time, double tolerance = 0.01);
     void clear();
 
+    void setDefaultValue(double val) { defaultValue = val; }
+    double getDefaultValue() const { return defaultValue; }
+
     double evaluate(double time) const;
     const std::vector<Keyframe>& getKeyframes() const { return keyframes; }
     std::vector<Keyframe>& getKeyframes() { return keyframes; }

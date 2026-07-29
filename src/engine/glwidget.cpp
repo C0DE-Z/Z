@@ -1,5 +1,7 @@
 #include "glwidget.h"
 #include <QOpenGLFramebufferObjectFormat>
+#include <QApplication>
+#include <QCursor>
 #include <cmath>
 #include <QDebug>
 #include <QFile>
@@ -17,7 +19,7 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     overlayLabel = new QLabel(this);
     overlayLabel->setStyleSheet(
         "QLabel {"
-        "  color: #00ff00;"
+        "  color: rgb(250, 255, 250);"
         "  background-color: rgba(0, 0, 0, 160);"
         "  font-family: Consolas, monospace;"
         "  font-size: 13px;"
@@ -229,6 +231,53 @@ void GLWidget::paintGL() {
         hasNewFrame = false;
     }
 
+    auto bindRichUniforms = [&](GLuint prog) {
+        GLint timeLoc = glGetUniformLocation(prog, "time");
+        if (timeLoc != -1) glUniform1f(timeLoc, (float)m_time);
+
+        GLint resLoc = glGetUniformLocation(prog, "resolution");
+        if (resLoc != -1) glUniform2f(resLoc, (float)w, (float)h);
+
+        GLint aspectLoc = glGetUniformLocation(prog, "aspect");
+        if (aspectLoc != -1) glUniform1f(aspectLoc, (float)w / std::max(1.0f, (float)h));
+
+        GLint frameLoc = glGetUniformLocation(prog, "frameIndex");
+        if (frameLoc != -1) glUniform1i(frameLoc, (int)(m_time * 30.0));
+
+        GLint fpsLoc = glGetUniformLocation(prog, "fps");
+        if (fpsLoc != -1) glUniform1f(fpsLoc, 30.0f);
+
+        QPoint pt = mapFromGlobal(QCursor::pos());
+        float normMouseX = (float)pt.x() / std::max(1.0f, (float)w);
+        float normMouseY = (float)(h - pt.y()) / std::max(1.0f, (float)h);
+        bool isMouseDown = (QApplication::mouseButtons() & Qt::LeftButton);
+
+        GLint mouseLoc = glGetUniformLocation(prog, "mouse");
+        if (mouseLoc != -1) glUniform2f(mouseLoc, normMouseX, normMouseY);
+
+        GLint mouseXLoc = glGetUniformLocation(prog, "mouseX");
+        if (mouseXLoc != -1) glUniform1f(mouseXLoc, normMouseX);
+
+        GLint mouseYLoc = glGetUniformLocation(prog, "mouseY");
+        if (mouseYLoc != -1) glUniform1f(mouseYLoc, normMouseY);
+
+        GLint mousePressLoc = glGetUniformLocation(prog, "mousePressed");
+        if (mousePressLoc != -1) glUniform1i(mousePressLoc, isMouseDown ? 1 : 0);
+
+        float b = AudioEngine::instance().getBass();
+        float m = AudioEngine::instance().getMid();
+        float t = AudioEngine::instance().getHigh();
+
+        GLint bassLoc = glGetUniformLocation(prog, "audioBass");
+        if (bassLoc != -1) glUniform1f(bassLoc, b);
+        GLint midLoc = glGetUniformLocation(prog, "audioMid");
+        if (midLoc != -1) glUniform1f(midLoc, m);
+        GLint trebleLoc = glGetUniformLocation(prog, "audioTreble");
+        if (trebleLoc != -1) glUniform1f(trebleLoc, t);
+        GLint volLoc = glGetUniformLocation(prog, "audioVolume");
+        if (volLoc != -1) glUniform1f(volLoc, (b + m + t) / 3.0f);
+    };
+
     GLuint currentTex = videoTexture;
     if (isTransitioning) {
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(currentTransitionPlugin);
@@ -252,8 +301,8 @@ void GLWidget::paintGL() {
 
                 GLint progressLoc = glGetUniformLocation(plugin->shaderProgram, "progress");
                 if (progressLoc != -1) glUniform1f(progressLoc, (float)transitionProgress);
-                GLint resLoc = glGetUniformLocation(plugin->shaderProgram, "resolution");
-                if (resLoc != -1) glUniform2f(resLoc, (float)w, (float)h);
+
+                bindRichUniforms(plugin->shaderProgram);
 
                 renderQuad();
 
@@ -266,29 +315,6 @@ void GLWidget::paintGL() {
         }
     }
 
-    auto pingPongPass = [&](QOpenGLShaderProgram* shader, auto setupUniforms) {
-        fboPong->bind();
-        glViewport(0, 0, w, h);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        shader->bind();
-            glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, currentTex);
-        shader->setUniformValue("videoTexture", 0);
-        shader->setUniformValue("time", (float)m_time);
-        shader->setUniformValue("resolution", QVector2D(w, h));
-
-        setupUniforms(shader);
-
-        renderQuad();
-
-        shader->release();
-        fboPong->release();
-
-        currentTex = fboPong->texture();
-        std::swap(fboPing, fboPong);
-    };
-
     for (const AppliedEffect& eff : activeEffects) {
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(eff.pluginId);
         if (plugin) {
@@ -300,45 +326,21 @@ void GLWidget::paintGL() {
 
                 glUseProgram(plugin->shaderProgram);
 
-                GLint videoTexLoc = glGetUniformLocation(plugin->shaderProgram, "videoTexture");
-                glUniform1i(videoTexLoc, 0);
-
-                GLint timeLoc = glGetUniformLocation(plugin->shaderProgram, "time");
-                glUniform1f(timeLoc, (float)m_time);
-
-                GLint resLoc = glGetUniformLocation(plugin->shaderProgram, "resolution");
-                glUniform2f(resLoc, (float)w, (float)h);
-                GLint mouseLoc = glGetUniformLocation(plugin->shaderProgram, "mouse");
-                if (mouseLoc != -1) {
-                    QPoint pt = mapFromGlobal(QCursor::pos());
-                    glUniform2f(mouseLoc, (float)pt.x() / w, (float)(h - pt.y()) / h);
-                }
-                GLint bassLoc = glGetUniformLocation(plugin->shaderProgram, "audioBass");
-                if (bassLoc != -1) glUniform1f(bassLoc, AudioEngine::instance().getBass());
-                GLint midLoc = glGetUniformLocation(plugin->shaderProgram, "audioMid");
-                if (midLoc != -1) glUniform1f(midLoc, AudioEngine::instance().getMid());
-                GLint trebleLoc = glGetUniformLocation(plugin->shaderProgram, "audioTreble");
-                if (trebleLoc != -1) glUniform1f(trebleLoc, AudioEngine::instance().getHigh());
+                bindRichUniforms(plugin->shaderProgram);
 
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, currentTex);
-
+                GLint videoTexLoc = glGetUniformLocation(plugin->shaderProgram, "videoTexture");
+                if (videoTexLoc != -1) glUniform1i(videoTexLoc, 0);
                 GLint currentTexLoc = glGetUniformLocation(plugin->shaderProgram, "currentTexture");
-                if (currentTexLoc != -1) {
-                    glUniform1i(currentTexLoc, 0);
-                }
+                if (currentTexLoc != -1) glUniform1i(currentTexLoc, 0);
 
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, fboFeedback->texture());
                 GLint feedbackTexLoc = glGetUniformLocation(plugin->shaderProgram, "feedbackTexture");
-                if (feedbackTexLoc != -1) {
-                    glUniform1i(feedbackTexLoc, 1);
-                }
-
+                if (feedbackTexLoc != -1) glUniform1i(feedbackTexLoc, 1);
                 GLint blendTexLoc = glGetUniformLocation(plugin->shaderProgram, "blendTexture");
-                if (blendTexLoc != -1) {
-                    glUniform1i(blendTexLoc, 1);
-                }
+                if (blendTexLoc != -1) glUniform1i(blendTexLoc, 1);
 
                 for (const auto& param : eff.parameters) {
                     GLint paramLoc = glGetUniformLocation(plugin->shaderProgram, param.name.c_str());

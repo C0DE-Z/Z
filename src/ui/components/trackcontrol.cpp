@@ -20,11 +20,11 @@ TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     toolbarLayout->setSpacing(8);
 
     QPushButton* newTrackButton = new QPushButton("New Track", toolbar);
-    QPushButton* upTrackButton = new QPushButton("Move Up", toolbar);
-    QPushButton* downTrackButton = new QPushButton("Move Down", toolbar);
+    QPushButton* upTrackButton = new QPushButton("Up", toolbar);
+    QPushButton* downTrackButton = new QPushButton("Down", toolbar);
     QPushButton* deleteTrackButton = new QPushButton("Delete Track", toolbar);
-    QPushButton* cutClipButton = new QPushButton("Cut Clip", toolbar);
-    QPushButton* deleteClipButton = new QPushButton("Delete Clip", toolbar);
+    QPushButton* cutClipButton = new QPushButton("Cut", toolbar);
+    QPushButton* deleteClipButton = new QPushButton("Delete", toolbar);
 
     toolbarLayout->addWidget(newTrackButton);
     toolbarLayout->addWidget(upTrackButton);

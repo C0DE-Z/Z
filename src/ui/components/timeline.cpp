@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <QTime>
 #include <QDebug>
+#include <QMenu>
+#include <QAction>
 
 Timeline::Timeline(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(120);
@@ -171,15 +173,22 @@ void Timeline::paintEvent(QPaintEvent* event) {
 
     for (size_t tIdx = 0; tIdx < tracks.size() && tIdx < (size_t)numTracks; ++tIdx) {
         int y = 25 + tIdx * trackHeight;
-        for (const auto& clip : tracks[tIdx].clips) {
+        for (int cIdx = 0; cIdx < (int)tracks[tIdx].clips.size(); ++cIdx) {
+            const auto& clip = tracks[tIdx].clips[cIdx];
             int startX = timeToX(clip.timelineStart);
             int endX = timeToX(clip.timelineStart + clip.sourceDuration);
             QRect clipRect(startX, y + 3, endX - startX, trackHeight - 6);
             painter.fillRect(clipRect, QColor(59, 20, 66, 180));
-            painter.setPen(QPen(QColor(232, 85, 244), 1.5));
+            
+            if (tIdx == selectedTrackIndex && cIdx == selectedClipIndex) {
+                painter.setPen(QPen(Qt::white, 2.0));
+            } else {
+                painter.setPen(QPen(QColor(232, 85, 244), 1.0));
+            }
             painter.drawRect(clipRect);
+            
             painter.setPen(Qt::white);
-            QString clipName = QString::fromStdString(clip.id);
+            QString clipName = QString::fromStdString(clip.name);
             painter.drawText(clipRect.adjusted(5, 0, -30, 0), Qt::AlignLeft | Qt::AlignVCenter, clipName);
 
             if (!clip.effects.empty() || clip.useClipEffects) {
@@ -187,24 +196,48 @@ void Timeline::paintEvent(QPaintEvent* event) {
                 painter.drawText(clipRect.adjusted(0, 0, -5, 0), Qt::AlignRight | Qt::AlignVCenter, "[FX]");
             }
         }
-        for (const auto& trans : tracks[tIdx].transitions) {
-            double cutPoint = 0.0;
-            for (const auto& clip : tracks[tIdx].clips) {
-                if (clip.id == trans.rightClipId) {
-                    cutPoint = clip.timelineStart;
-                    break;
-                }
-            }
-            if (cutPoint > 0.0) {
-                int startX = timeToX(cutPoint - trans.duration / 2.0);
-                int endX = timeToX(cutPoint + trans.duration / 2.0);
-                QRect transRect(startX, y + 15, endX - startX, trackHeight - 30);
-                painter.fillRect(transRect, QColor(200, 80, 80, 180));
-                painter.setPen(QPen(QColor(255, 120, 120), 1.0));
-                painter.drawRect(transRect);
-                painter.setPen(Qt::black);
-                painter.drawText(transRect, Qt::AlignCenter, "TR");
-            }
+        // --- Draw transitions ---
+        const int kHandleW = 8;
+        for (int tIdx2 = 0; tIdx2 < (int)tracks[tIdx].transitions.size(); ++tIdx2) {
+            const auto& trans = tracks[tIdx].transitions[tIdx2];
+            double halfDur = trans.duration / 2.0;
+            int startX = timeToX(trans.cutTime - halfDur);
+            int endX   = timeToX(trans.cutTime + halfDur);
+            int w = std::max(endX - startX, 4);
+            QRect transRect(startX, y + 3, w, trackHeight - 6);
+
+            bool isSel = (tIdx == (size_t)selectedTransTrackIndex && tIdx2 == selectedTransIndex);
+
+            // Body — semi-transparent orange fill with diagonal stripe feel
+            painter.fillRect(transRect, QColor(230, 120, 0, 170));
+
+            // Selected border
+            painter.setPen(QPen(isSel ? Qt::white : QColor(255, 200, 80), isSel ? 2.0 : 1.0));
+            painter.drawRect(transRect);
+
+            // Plugin name label
+            QString plugName = QString::fromStdString(trans.pluginId).section('/', -1);
+            painter.setPen(Qt::white);
+            painter.setFont(QFont("JetBrains Mono", 8));
+            painter.drawText(transRect.adjusted(kHandleW + 2, 0, -kHandleW - 2, 0),
+                             Qt::AlignCenter | Qt::TextSingleLine, plugName);
+
+            // Left resize handle
+            QRect lHandle(startX, y + 3, kHandleW, trackHeight - 6);
+            painter.fillRect(lHandle, QColor(255, 180, 60, 210));
+            painter.setPen(QColor(255, 230, 100));
+            painter.drawRect(lHandle);
+
+            // Right resize handle
+            QRect rHandle(endX - kHandleW, y + 3, kHandleW, trackHeight - 6);
+            painter.fillRect(rHandle, QColor(255, 180, 60, 210));
+            painter.setPen(QColor(255, 230, 100));
+            painter.drawRect(rHandle);
+
+            // Cut-point centre line
+            int cutX = timeToX(trans.cutTime);
+            painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt::DashLine));
+            painter.drawLine(cutX, y + 3, cutX, y + trackHeight - 3);
         }
     }
 
@@ -278,13 +311,91 @@ void Timeline::paintEvent(QPaintEvent* event) {
     }
 }
 
+bool Timeline::hitTestTransition(const QPoint& pos, int& trackIndex, int& transIndex, bool& isLeftEdge) const {
+    const auto& tracks = Project::instance().getTracks();
+    const int trackHeight = 35;
+    const int yOffset = 25;
+    const int kHandleW = 10; // slightly wider hit zone than drawn handle
+
+    if (pos.x() < 80 || pos.y() < yOffset) return false;
+
+    int tIdx = (pos.y() - yOffset) / trackHeight;
+    if (tIdx < 0 || tIdx >= (int)tracks.size()) return false;
+
+    for (int i = 0; i < (int)tracks[tIdx].transitions.size(); ++i) {
+        const auto& trans = tracks[tIdx].transitions[i];
+        double halfDur = trans.duration / 2.0;
+        int startX = timeToX(trans.cutTime - halfDur);
+        int endX   = timeToX(trans.cutTime + halfDur);
+        int bodyY  = yOffset + tIdx * trackHeight + 3;
+        int bodyH  = trackHeight - 6;
+
+        QRect bodyRect(startX, bodyY, endX - startX, bodyH);
+        if (!bodyRect.contains(pos)) continue;
+
+        trackIndex = tIdx;
+        transIndex = i;
+        // Determine if we're in the left handle zone or right handle zone
+        if (pos.x() <= startX + kHandleW) {
+            isLeftEdge = true;
+        } else if (pos.x() >= endX - kHandleW) {
+            isLeftEdge = false;
+        } else {
+            isLeftEdge = false; // body hit — used for selection, caller checks
+        }
+        return true;
+    }
+    return false;
+}
+
 void Timeline::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        // --- Transition hit test (priority over clips) ---
+        int transTrack = -1, transIdx = -1;
+        bool isLeftEdge = false;
+        if (hitTestTransition(event->pos(), transTrack, transIdx, isLeftEdge)) {
+            // Clear clip selection
+            selectedTrackIndex = -1;
+            selectedClipIndex = -1;
+            selectedTransTrackIndex = transTrack;
+            selectedTransIndex = transIdx;
+            emit transitionSelected(transTrack, transIdx);
+
+            // Check if we're actually in an edge handle zone
+            auto& tracks = Project::instance().getTracks();
+            if (transTrack < (int)tracks.size() && transIdx < (int)tracks[transTrack].transitions.size()) {
+                const auto& trans = tracks[transTrack].transitions[transIdx];
+                double halfDur = trans.duration / 2.0;
+                int startX = timeToX(trans.cutTime - halfDur);
+                int endX   = timeToX(trans.cutTime + halfDur);
+                const int kHandleW = 10;
+                bool inLeftHandle  = event->pos().x() <= startX + kHandleW;
+                bool inRightHandle = event->pos().x() >= endX - kHandleW;
+
+                if (inLeftHandle || inRightHandle) {
+                    draggingTransitionEdge = true;
+                    dragTransTrackIndex = transTrack;
+                    dragTransIndex = transIdx;
+                    dragTransLeftEdge = inLeftHandle;
+                    dragTransOriginalDuration = trans.duration;
+                    dragTransOriginalCutTime = trans.cutTime;
+                    dragTransAnchorX = event->pos().x();
+                }
+            }
+            update();
+            return;
+        }
+
+        // --- Clip hit test ---
         int trackIndex = -1;
         int clipIndex = -1;
         double clipStart = 0.0;
         double clipDuration = 0.0;
         if (hitTestClip(event->pos(), trackIndex, clipIndex, clipStart, clipDuration)) {
+            selectedTrackIndex = trackIndex;
+            selectedClipIndex = clipIndex;
+            selectedTransTrackIndex = -1;
+            selectedTransIndex = -1;
             draggingClip = true;
             dragTrackIndex = trackIndex;
             dragClipIndex = clipIndex;
@@ -295,12 +406,90 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             return;
         }
 
+        selectedTrackIndex = -1;
+        selectedClipIndex = -1;
+        selectedTransTrackIndex = -1;
+        selectedTransIndex = -1;
+        update();
+
         double clickedTime = xToTime(event->pos().x());
         emit scrubbed(clickedTime);
+
+    } else if (event->button() == Qt::RightButton) {
+        // --- Transition right-click ---
+        int transTrack = -1, transIdx = -1;
+        bool isLeftEdge = false;
+        if (hitTestTransition(event->pos(), transTrack, transIdx, isLeftEdge)) {
+            selectedTransTrackIndex = transTrack;
+            selectedTransIndex = transIdx;
+            update();
+            QMenu contextMenu(this);
+            QAction* deleteAction = contextMenu.addAction("Delete Transition");
+            QAction* chosen = contextMenu.exec(event->globalPosition().toPoint());
+            if (chosen == deleteAction) {
+                emit deleteTransitionRequested(transTrack, transIdx);
+            }
+            return;
+        }
+
+        // --- Clip right-click ---
+        int trackIndex = -1;
+        int clipIndex = -1;
+        double clipStart = 0.0;
+        double clipDuration = 0.0;
+        if (hitTestClip(event->pos(), trackIndex, clipIndex, clipStart, clipDuration)) {
+            selectedTrackIndex = trackIndex;
+            selectedClipIndex = clipIndex;
+            emit clipSelected(trackIndex, clipIndex);
+            update();
+
+            QMenu contextMenu(this);
+            QAction* renameAction = contextMenu.addAction("Rename Clip");
+            QAction* deleteAction = contextMenu.addAction("Delete Clip");
+            
+            QAction* chosenAction = contextMenu.exec(event->globalPosition().toPoint());
+            if (chosenAction == renameAction) {
+                emit renameClipRequested(trackIndex, clipIndex);
+            } else if (chosenAction == deleteAction) {
+                emit deleteClipRequested(trackIndex, clipIndex);
+            }
+        }
     }
 }
 
 void Timeline::mouseMoveEvent(QMouseEvent* event) {
+    // --- Transition edge resize ---
+    if (draggingTransitionEdge && (event->buttons() & Qt::LeftButton)) {
+        auto& tracks = Project::instance().getTracks();
+        if (dragTransTrackIndex >= 0 && dragTransTrackIndex < (int)tracks.size()) {
+            auto& trans = tracks[dragTransTrackIndex].transitions[dragTransIndex];
+            double deltaX = event->pos().x() - dragTransAnchorX;
+            double deltaT = deltaX / pixelsPerSecond;
+            const double kMinDur = 0.1;
+
+            if (dragTransLeftEdge) {
+                // Left edge drag: right edge (cutTime + dur/2) stays fixed
+                // New left edge = originalCutTime - originalDur/2 + deltaT
+                double origLeftTime = dragTransOriginalCutTime - dragTransOriginalDuration / 2.0;
+                double newLeftTime = origLeftTime + deltaT;
+                double fixedRight = dragTransOriginalCutTime + dragTransOriginalDuration / 2.0;
+                double newDur = std::max(kMinDur, fixedRight - newLeftTime);
+                trans.duration = newDur;
+                trans.cutTime = fixedRight - newDur / 2.0;
+            } else {
+                // Right edge drag: left edge (cutTime - dur/2) stays fixed
+                double origRightTime = dragTransOriginalCutTime + dragTransOriginalDuration / 2.0;
+                double newRightTime = origRightTime + deltaT;
+                double fixedLeft = dragTransOriginalCutTime - dragTransOriginalDuration / 2.0;
+                double newDur = std::max(kMinDur, newRightTime - fixedLeft);
+                trans.duration = newDur;
+                trans.cutTime = fixedLeft + newDur / 2.0;
+            }
+        }
+        update();
+        return;
+    }
+
     if (draggingClip && (event->buttons() & Qt::LeftButton)) {
         double targetStart = xToTime(event->pos().x()) - dragClipOffsetTime;
         if (!(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
@@ -353,7 +542,7 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
         if (event->pos().y() >= 25) {
             int idx = (event->pos().y() - 25) / 35;
             const auto& tracks = Project::instance().getTracks();
-            if (idx >= 0 && idx < static_cast<int>(tracks.size())) {
+            if (idx >= 0 && idx <= static_cast<int>(tracks.size())) {
                 targetTrackIndex = idx;
             }
         }
@@ -375,10 +564,16 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
 
 void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     Q_UNUSED(event);
+    if (draggingClip) {
+        emit clipMoveFinished();
+    }
     draggingClip = false;
     dragTrackIndex = -1;
     dragClipIndex = -1;
     dragClipOffsetTime = 0.0;
+    draggingTransitionEdge = false;
+    dragTransTrackIndex = -1;
+    dragTransIndex = -1;
 }
 
 void Timeline::updateDragIndices(int newTrack, int newClip) {

@@ -268,9 +268,9 @@ void Inspector::loadEffect(const QString& effectId, std::vector<ShaderParameter>
             valLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             valLabel->setStyleSheet("color: #888888; font-family: monospace;");
             rowLayout->addWidget(valLabel);
-            connect(checkBox, &QCheckBox::checkStateChanged, this, [this, effectId, paramName, valLabel](Qt::CheckState state) {
-                valLabel->setText(state == Qt::Checked ? "ON" : "OFF");
-                emit parameterChanged(effectId, paramName, state == Qt::Checked ? 1.0 : 0.0);
+            connect(checkBox, &QCheckBox::toggled, this, [this, effectId, paramName, valLabel](bool checked) {
+                valLabel->setText(checked ? "ON" : "OFF");
+                emit parameterChanged(effectId, paramName, checked ? 1.0 : 0.0);
             });
         } else {
             ScrubLabel* scrub = new ScrubLabel(param.minVal, param.maxVal, currentVal, this);

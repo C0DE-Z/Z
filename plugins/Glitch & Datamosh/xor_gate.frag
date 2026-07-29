@@ -21,34 +21,9 @@ uniform float chromaShift;
 
 void main() {
     vec2 uv = TexCoord;
-    
-    vec4 color;
-    if (chromaShift > 0.0) {
-        color.r = texture(videoTexture, uv - vec2(chromaShift, 0.0)).r;
-        color.g = texture(videoTexture, uv).g;
-        color.b = texture(videoTexture, uv + vec2(chromaShift, 0.0)).b;
-        color.a = texture(videoTexture, uv).a;
-    } else {
-        color = texture(videoTexture, uv);
-    }
-    
+    vec4 color = texture(videoTexture, uv);
     uvec3 iColor = uvec3(color.rgb * 255.0);
-    
-    if (spatial > 0.0) {
-        vec4 offsetColor = texture(videoTexture, uv + vec2(spatial, 0.0));
-        uvec3 iOffset = uvec3(offsetColor.rgb * 255.0);
-        iColor = iColor ^ iOffset;
-    }
-    
-    if (temporal > 0.0) {
-        vec4 prevColor = texture(feedbackTexture, uv);
-        uvec3 iPrev = uvec3(prevColor.rgb * 255.0);
-        uvec3 xorTemp = iColor ^ iPrev;
-        iColor = uvec3(mix(vec3(iColor), vec3(xorTemp), temporal));
-    }
-    
     uvec3 mask = uvec3(uint(xorR), uint(xorG), uint(xorB));
     iColor = iColor ^ mask;
-    
     FragColor = vec4(vec3(iColor) / 255.0, color.a);
 }

@@ -37,6 +37,7 @@ void Project::fromJson(const QJsonObject& root) {
             QJsonObject clipObj = clipsArray[j].toObject();
             ProjectClip clip;
             clip.id = clipObj.value("id").toString().toStdString();
+            clip.name = clipObj.value("name").toString(clipObj.value("id").toString()).toStdString();
             clip.filePath = clipObj.value("filePath").toString().toStdString();
             clip.sourceStart = clipObj.value("sourceStart").toDouble();
             clip.sourceDuration = clipObj.value("sourceDuration").toDouble();
@@ -59,6 +60,7 @@ void Project::fromJson(const QJsonObject& root) {
                     param.maxVal = paramObj.value("max").toDouble();
                     param.defaultVal = paramObj.value("default").toDouble();
                     param.currentVal = paramObj.value("value").toDouble();
+                    param.isBool = paramObj.value("isBool").toBool(false);
                     param.curve = AnimationCurve(param.defaultVal);
 
                     QJsonArray curvesArray = paramObj.value("keyframes").toArray();
@@ -84,7 +86,11 @@ void Project::fromJson(const QJsonObject& root) {
                         for (const auto& p : plugin->parameters) {
                             bool found = false;
                             for (auto& ep : effect.parameters) {
-                                if (ep.name == p.name) { found = true; break; }
+                                if (ep.name == p.name) {
+                                    ep.isBool = p.isBool;
+                                    found = true;
+                                    break;
+                                }
                             }
                             if (!found) effect.parameters.push_back(p);
                         }
@@ -151,7 +157,9 @@ void Project::fromJson(const QJsonObject& root) {
             transition.pluginId = transObj.value("pluginId").toString().toStdString();
             transition.leftClipId = transObj.value("leftClipId").toString().toStdString();
             transition.rightClipId = transObj.value("rightClipId").toString().toStdString();
-            transition.duration = transObj.value("duration").toDouble();
+            transition.duration = transObj.value("duration").toDouble(1.0);
+            transition.cutTime = transObj.value("cutTime").toDouble(0.0);
+            transition.alignment = transObj.value("alignment").toString("center").toStdString();
 
             QJsonArray paramsArray = transObj.value("parameters").toArray();
             for (int k = 0; k < paramsArray.size(); ++k) {
@@ -252,6 +260,7 @@ QJsonObject Project::toJson() const {
         for (const auto& clip : track.clips) {
             QJsonObject clipObj;
             clipObj["id"] = QString::fromStdString(clip.id);
+            clipObj["name"] = QString::fromStdString(clip.name);
             clipObj["filePath"] = QString::fromStdString(clip.filePath);
             clipObj["sourceStart"] = clip.sourceStart;
             clipObj["sourceDuration"] = clip.sourceDuration;
@@ -306,6 +315,7 @@ QJsonObject Project::toJson() const {
                 paramObj["max"] = param.maxVal;
                 paramObj["default"] = param.defaultVal;
                 paramObj["value"] = param.currentVal;
+                paramObj["isBool"] = param.isBool;
 
                 QJsonArray keyframesArray;
                 for (const auto& kf : param.curve.getKeyframes()) {
@@ -331,6 +341,8 @@ QJsonObject Project::toJson() const {
             transObj["leftClipId"] = QString::fromStdString(transition.leftClipId);
             transObj["rightClipId"] = QString::fromStdString(transition.rightClipId);
             transObj["duration"] = transition.duration;
+            transObj["cutTime"] = transition.cutTime;
+            transObj["alignment"] = QString::fromStdString(transition.alignment);
 
             QJsonArray paramsArray;
             for (const auto& param : transition.parameters) {
@@ -341,6 +353,7 @@ QJsonObject Project::toJson() const {
                 paramObj["max"] = param.maxVal;
                 paramObj["default"] = param.defaultVal;
                 paramObj["value"] = param.currentVal;
+                paramObj["isBool"] = param.isBool;
 
                 QJsonArray keyframesArray;
                 for (const auto& kf : param.curve.getKeyframes()) {
@@ -406,7 +419,7 @@ void Project::clear() {
 }
 
 double Project::getDuration() const {
-    double maxDur = 10.0; 
+    double maxDur = 0.0; 
     for (const auto& track : tracks) {
         for (const auto& clip : track.clips) {
             maxDur = std::max(maxDur, clip.timelineStart + clip.sourceDuration);

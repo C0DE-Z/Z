@@ -36,18 +36,18 @@ int main(int argc, char *argv[]) {
         "QDockWidget { titlebar-close-icon: none; titlebar-normal-icon: none; border: 1px solid #1a1a1a; }"
         "QDockWidget::title { background: #252525; padding-left: 5px; padding-top: 2px; height: 18px; color: #aaaaaa; border-bottom: 1px solid #151515; }"
         "QMenuBar { background: #1c1c1c; border-bottom: 1px solid #121212; }"
-        "QMenuBar::item:selected { background: #ff5500; color: white; }"
+        "QMenuBar::item:selected { background: #df42f5; color: white; }"
         "QMenu { background: #1c1c1c; border: 1px solid #121212; }"
-        "QMenu::item:selected { background: #ff5500; color: white; }"
+        "QMenu::item:selected { background: #df42f5; color: white; }"
         "QScrollBar:vertical { background: #181818; width: 8px; margin: 0px; }"
         "QScrollBar::handle:vertical { background: #3e3e3e; min-height: 20px; border-radius: 4px; }"
-        "QScrollBar::handle:vertical:hover { background: #ff5500; }"
+        "QScrollBar::handle:vertical:hover { background: #df42f5; }"
         "QScrollBar:horizontal { background: #181818; height: 8px; margin: 0px; }"
         "QScrollBar::handle:horizontal { background: #3e3e3e; min-width: 20px; border-radius: 4px; }"
-        "QScrollBar::handle:horizontal:hover { background: #ff5500; }"
+        "QScrollBar::handle:horizontal:hover { background: #df42f5; }"
         "QSlider::groove:horizontal { border: 1px solid #151515; height: 4px; background: #121212; }"
         "QSlider::handle:horizontal { background: #3e3e3e; border: 1px solid #121212; width: 10px; height: 16px; margin: -6px 0; border-radius: 2px; }"
-        "QSlider::handle:horizontal:hover { background: #ff5500; }"
+        "QSlider::handle:horizontal:hover { background: #df42f5; }"
     );
 
     MainWindow mainWin;

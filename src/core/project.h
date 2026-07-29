@@ -16,6 +16,7 @@ struct AppliedEffect {
 
 struct ProjectClip {
     std::string id;
+    std::string name;
     std::string filePath;
     double sourceStart; 
     double sourceDuration;
@@ -29,7 +30,9 @@ struct ProjectTransition {
     std::string pluginId;
     std::string leftClipId;
     std::string rightClipId;
-    double duration;
+    double duration = 1.0;
+    double cutTime = 0.0;    // exact timeline position of the cut point
+    std::string alignment = "center"; // "center", "start", "end"
     std::vector<ShaderParameter> parameters;
 };
 

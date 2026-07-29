@@ -26,10 +26,15 @@ signals:
     void scrubbed(double time);
     void keyframeAdded(double time, double value);
     void clipMoveStarted();
+    void clipMoveFinished();
     void clipMoveRequested(int trackIndex, int clipIndex, double newTimelineStart);
     void clipTrackChangeRequested(int fromTrack, int fromClip, int toTrack, double newTimelineStart);
     void clipSelected(int trackIndex, int clipIndex);
+    void deleteClipRequested(int trackIndex, int clipIndex);
+    void renameClipRequested(int trackIndex, int clipIndex);
     void effectDropped(int trackIndex, double time, const QString& effectName);
+    void transitionSelected(int trackIndex, int transIndex);
+    void deleteTransitionRequested(int trackIndex, int transIndex);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -49,14 +54,31 @@ private:
     QString activeEffectId;
     QString activeParamName;
 
+    // Clip drag state
     bool draggingClip = false;
     int dragTrackIndex = -1;
     int dragClipIndex = -1;
     double dragClipOffsetTime = 0.0;
 
+    // Selection state
+    int selectedTrackIndex = -1;
+    int selectedClipIndex = -1;
+    int selectedTransTrackIndex = -1;
+    int selectedTransIndex = -1;
+
+    // Transition edge drag state
+    bool draggingTransitionEdge = false;
+    int dragTransTrackIndex = -1;
+    int dragTransIndex = -1;
+    bool dragTransLeftEdge = false;
+    double dragTransOriginalDuration = 0.0;
+    double dragTransOriginalCutTime = 0.0;
+    double dragTransAnchorX = 0.0;
+
     int timeToX(double time) const;
     double xToTime(int x) const;
     bool hitTestClip(const QPoint& pos, int& trackIndex, int& clipIndex, double& clipStart, double& clipDuration) const;
+    bool hitTestTransition(const QPoint& pos, int& trackIndex, int& transIndex, bool& isLeftEdge) const;
 };
 
 #endif 

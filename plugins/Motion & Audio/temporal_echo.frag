@@ -12,6 +12,5 @@ uniform float feedback;
 void main() {
     vec4 current = texture(videoTexture, TexCoord);
     vec4 prev = texture(feedbackTexture, TexCoord);
-    
     FragColor = mix(current, prev, feedback);
 }

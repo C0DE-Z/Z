@@ -20,6 +20,7 @@ struct ShaderParameter {
 struct ShaderPlugin {
     std::string id; 
     std::string name;
+    std::string category;
     std::string description;
     std::string fragmentShaderPath;
     std::vector<ShaderParameter> parameters;

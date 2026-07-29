@@ -35,9 +35,6 @@ void main() {
     if (noise > 0.0 || wear > 0.0) {
         float n = hash(uv + time);
         color.rgb += vec3(n * 0.15 * noise);
-        if (hash(vec2(uv.y * 200.0, time)) > 0.99 - (wear * 0.03)) {
-            color.rgb = vec3(0.8);
-        }
     }
     FragColor = color;
 }
