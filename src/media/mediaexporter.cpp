@@ -66,7 +66,12 @@ void MediaExporter::exportVideo(
     if (exportW % 2 != 0) exportW--;
     if (exportH % 2 != 0) exportH--;
 
+#ifdef _WIN32
     QString ffmpegPath = "ffmpeg.exe";
+#else
+    QString ffmpegPath = "ffmpeg";
+#endif
+
     QStringList arguments;
     arguments << "-y"
               << "-f" << "rawvideo"
@@ -85,7 +90,11 @@ void MediaExporter::exportVideo(
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+#ifdef _WIN32
     env.insert("PATH", "C:\\msys64\\mingw64\\bin;C:\\msys64\\usr\\bin;" + env.value("PATH"));
+#else
+    env.insert("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:" + env.value("PATH"));
+#endif
     proc.setProcessEnvironment(env);
     proc.setProcessChannelMode(QProcess::MergedChannels);
 

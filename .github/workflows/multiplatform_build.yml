@@ -1,0 +1,99 @@
+name: Multi-Platform Build CI (Windows, Linux, macOS)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # --- Linux Dependencies Setup ---
+      - name: Install Linux Dependencies (Ubuntu)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            libgl1-mesa-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            portaudio19-dev \
+            libsqlite3-dev \
+            pkg-config
+
+      # --- macOS Dependencies Setup ---
+      - name: Install macOS Dependencies (Homebrew)
+        if: matrix.platform == 'macos'
+        run: |
+          brew update
+          brew install qt6 ffmpeg portaudio sqlite3 pkg-config ninja cmake
+
+      # --- Windows Dependencies Setup ---
+      - name: Setup MSYS2 MinGW-64 on Windows
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-sqlite3
+
+      # --- Build Process (Linux & macOS) ---
+      - name: Configure CMake (Linux / macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Executable (Linux / macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          cmake --build build --config Release
+
+      # --- Build Process (Windows MSYS2) ---
+      - name: Build Executable (Windows MSYS2)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      # --- Upload Binaries ---
+      - name: Upload Build Output Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-editor-${{ matrix.platform }}
+          path: |
+            build/bin/*
+            build/*.app

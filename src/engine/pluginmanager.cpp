@@ -1110,78 +1110,153 @@ void main() {
 )");
 
     // --- Legacy CPU ---
-    writeFrag("Legacy CPU/cpu_xor", R"(#version 330 core
-// @name Legacy CPU XOR
-// @desc CPU-level bitwise XOR manipulation
-// @param xorValue XOR Bitmask 0.0 1.0 0.5
-// @param intensity XOR Blend 0.0 1.0 1.0
+    writeFrag("Legacy CPU/cpu_and", R"(#version 330 core
+// @name Modern Hardware Bitwise AND
+// @desc Bitwise AND color channel masking on full RGB video (no graying)
+// @param maskR Red Mask (0-255) 0.0 255.0 240.0
+// @param maskG Green Mask (0-255) 0.0 255.0 255.0
+// @param maskB Blue Mask (0-255) 0.0 255.0 128.0
+// @param mixRatio Effect Blend 0.0 1.0 1.0
+// @param active Enable AND Gate 0.0 1.0 1.0 bool
 in vec2 TexCoord;
 out vec4 FragColor;
 
 uniform sampler2D videoTexture;
+uniform float maskR;
+uniform float maskG;
+uniform float maskB;
+uniform float mixRatio;
+uniform float active;
 
 void main() {
-    FragColor = texture(videoTexture, TexCoord);
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) { FragColor = baseColor; return; }
+    uvec3 intColor = uvec3(clamp(baseColor.rgb * 255.0, 0.0, 255.0));
+    uvec3 andMask = uvec3(uint(maskR), uint(maskG), uint(maskB));
+    uvec3 resultInt = intColor & andMask;
+    vec3 resultRGB = vec3(resultInt) / 255.0;
+    vec3 finalRGB = mix(baseColor.rgb, resultRGB, mixRatio);
+    FragColor = vec4(finalRGB, baseColor.a);
 }
 )");
 
     writeFrag("Legacy CPU/cpu_or", R"(#version 330 core
-// @name Legacy CPU OR
-// @desc CPU-level bitwise OR manipulation
-// @param orValue OR Bitmask 0.0 1.0 0.5
-// @param intensity OR Blend 0.0 1.0 1.0
+// @name Modern Hardware Bitwise OR
+// @desc Bitwise OR color channel saturation on full RGB video (no graying)
+// @param maskR Red Mask (0-255) 0.0 255.0 64.0
+// @param maskG Green Mask (0-255) 0.0 255.0 0.0
+// @param maskB Blue Mask (0-255) 0.0 255.0 128.0
+// @param mixRatio Effect Blend 0.0 1.0 1.0
+// @param active Enable OR Gate 0.0 1.0 1.0 bool
 in vec2 TexCoord;
 out vec4 FragColor;
 
 uniform sampler2D videoTexture;
+uniform float maskR;
+uniform float maskG;
+uniform float maskB;
+uniform float mixRatio;
+uniform float active;
 
 void main() {
-    FragColor = texture(videoTexture, TexCoord);
-}
-)");
-
-    writeFrag("Legacy CPU/cpu_and", R"(#version 330 core
-// @name Legacy CPU AND
-// @desc CPU-level bitwise AND manipulation
-// @param andValue AND Bitmask 0.0 1.0 1.0
-// @param intensity AND Blend 0.0 1.0 1.0
-in vec2 TexCoord;
-out vec4 FragColor;
-
-uniform sampler2D videoTexture;
-
-void main() {
-    FragColor = texture(videoTexture, TexCoord);
-}
-)");
-
-    writeFrag("Legacy CPU/cpu_xnor", R"(#version 330 core
-// @name Legacy CPU XNOR
-// @desc CPU-level bitwise XNOR manipulation
-// @param xnorValue XNOR Bitmask 0.0 1.0 0.5
-// @param intensity XNOR Blend 0.0 1.0 1.0
-in vec2 TexCoord;
-out vec4 FragColor;
-
-uniform sampler2D videoTexture;
-
-void main() {
-    FragColor = texture(videoTexture, TexCoord);
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) { FragColor = baseColor; return; }
+    uvec3 intColor = uvec3(clamp(baseColor.rgb * 255.0, 0.0, 255.0));
+    uvec3 orMask = uvec3(uint(maskR), uint(maskG), uint(maskB));
+    uvec3 resultInt = intColor | orMask;
+    vec3 resultRGB = vec3(resultInt) / 255.0;
+    vec3 finalRGB = mix(baseColor.rgb, resultRGB, mixRatio);
+    FragColor = vec4(finalRGB, baseColor.a);
 }
 )");
 
     writeFrag("Legacy CPU/cpu_nand", R"(#version 330 core
-// @name Legacy CPU NAND
-// @desc CPU-level bitwise NAND manipulation
-// @param nandValue NAND Bitmask 0.0 1.0 0.5
-// @param intensity NAND Blend 0.0 1.0 1.0
+// @name Modern Hardware Bitwise NAND
+// @desc Bitwise NOT-AND inverted channel corruption on full RGB video (no graying)
+// @param maskR Red Mask (0-255) 0.0 255.0 192.0
+// @param maskG Green Mask (0-255) 0.0 255.0 128.0
+// @param maskB Blue Mask (0-255) 0.0 255.0 255.0
+// @param mixRatio Effect Blend 0.0 1.0 0.8
+// @param active Enable NAND Gate 0.0 1.0 1.0 bool
 in vec2 TexCoord;
 out vec4 FragColor;
 
 uniform sampler2D videoTexture;
+uniform float maskR;
+uniform float maskG;
+uniform float maskB;
+uniform float mixRatio;
+uniform float active;
 
 void main() {
-    FragColor = texture(videoTexture, TexCoord);
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) { FragColor = baseColor; return; }
+    uvec3 intColor = uvec3(clamp(baseColor.rgb * 255.0, 0.0, 255.0));
+    uvec3 andMask = uvec3(uint(maskR), uint(maskG), uint(maskB));
+    uvec3 nandInt = (~(intColor & andMask)) & 255u;
+    vec3 resultRGB = vec3(nandInt) / 255.0;
+    vec3 finalRGB = mix(baseColor.rgb, resultRGB, mixRatio);
+    FragColor = vec4(finalRGB, baseColor.a);
+}
+)");
+
+    writeFrag("Legacy CPU/cpu_xnor", R"(#version 330 core
+// @name Modern Hardware Bitwise XNOR
+// @desc Bitwise NOT-XOR channel equivalence glitch on full RGB video (no graying)
+// @param maskR Red Mask (0-255) 0.0 255.0 128.0
+// @param maskG Green Mask (0-255) 0.0 255.0 64.0
+// @param maskB Blue Mask (0-255) 0.0 255.0 32.0
+// @param mixRatio Effect Blend 0.0 1.0 0.8
+// @param active Enable XNOR Gate 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform float maskR;
+uniform float maskG;
+uniform float maskB;
+uniform float mixRatio;
+uniform float active;
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) { FragColor = baseColor; return; }
+    uvec3 intColor = uvec3(clamp(baseColor.rgb * 255.0, 0.0, 255.0));
+    uvec3 xorMask = uvec3(uint(maskR), uint(maskG), uint(maskB));
+    uvec3 xnorInt = (~(intColor ^ xorMask)) & 255u;
+    vec3 resultRGB = vec3(xnorInt) / 255.0;
+    vec3 finalRGB = mix(baseColor.rgb, resultRGB, mixRatio);
+    FragColor = vec4(finalRGB, baseColor.a);
+}
+)");
+
+    writeFrag("Legacy CPU/cpu_xor", R"(#version 330 core
+// @name Modern Hardware Bitwise XOR
+// @desc Bitwise XOR channel inversion glitch on full RGB video (no graying)
+// @param maskR Red Mask (0-255) 0.0 255.0 128.0
+// @param maskG Green Mask (0-255) 0.0 255.0 64.0
+// @param maskB Blue Mask (0-255) 0.0 255.0 255.0
+// @param mixRatio Effect Blend 0.0 1.0 1.0
+// @param active Enable XOR Gate 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform float maskR;
+uniform float maskG;
+uniform float maskB;
+uniform float mixRatio;
+uniform float active;
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) { FragColor = baseColor; return; }
+    uvec3 intColor = uvec3(clamp(baseColor.rgb * 255.0, 0.0, 255.0));
+    uvec3 xorMask = uvec3(uint(maskR), uint(maskG), uint(maskB));
+    uvec3 xorInt = intColor ^ xorMask;
+    vec3 resultRGB = vec3(xorInt) / 255.0;
+    vec3 finalRGB = mix(baseColor.rgb, resultRGB, mixRatio);
+    FragColor = vec4(finalRGB, baseColor.a);
 }
 )");
 }

@@ -21,19 +21,19 @@ to be added ltr
 
 ## PLUGINS
 
-Please read the docs on how to write shader plugins over [here](https://z.codezey.dev/docs)
+Please read the docs on how to write shader plugins over [here](https://z.codezey.dev/docs/shader_plugin_guide.html)
 
 
 ## Roadmap
 
-- More datamoshing techniques
-- Audio-reactive effects
+Priority: 
+- Fix Transitions (currently unusable and unstable asf)
 - Timeline improvements
-- Plugin API documentation
+
+Later: 
+- Better Audio reactive effects
 - GPU & CPU performance optimizations
 - BETTER UI (🙏🙏🙏)
-- Fix minor bugs and crashes 
-- Masking
-- Transitions 
-- Fix effects like XAND turning things gray
-- and more
+- Fix minor bugs and crashes.
+- linux and mac comptabilty?
+- and more..?

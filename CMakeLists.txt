@@ -8,9 +8,27 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+# Platform-specific prefix paths & system includes
+if(WIN32)
+    if(EXISTS "C:/msys64/mingw64")
+        list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+        include_directories("C:/msys64/mingw64/include")
+    endif()
+elseif(APPLE)
+    if(EXISTS "/opt/homebrew")
+        list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
+        include_directories("/opt/homebrew/include")
+        link_directories("/opt/homebrew/lib")
+    elseif(EXISTS "/usr/local")
+        list(APPEND CMAKE_PREFIX_PATH "/usr/local")
+        include_directories("/usr/local/include")
+        link_directories("/usr/local/lib")
+    endif()
+endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui OpenGL OpenGLWidgets)
+
+find_package(OpenGL REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
@@ -67,10 +85,13 @@ set(HEADERS
     src/ui/components/trackcontrol.h
 )
 
-add_executable(z ${SOURCES} ${HEADERS})
+if(APPLE)
+    add_executable(z MACOSX_BUNDLE ${SOURCES} ${HEADERS})
+else()
+    add_executable(z ${SOURCES} ${HEADERS})
+endif()
 
 target_include_directories(z PRIVATE src)
-target_include_directories(z PRIVATE C:/msys64/mingw64/include)
 
 target_link_libraries(z PRIVATE
     Qt6::Core
@@ -78,6 +99,7 @@ target_link_libraries(z PRIVATE
     Qt6::Gui
     Qt6::OpenGL
     Qt6::OpenGLWidgets
+    OpenGL::GL
     PkgConfig::AVFORMAT
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
@@ -86,6 +108,12 @@ target_link_libraries(z PRIVATE
     PkgConfig::PORTAUDIO
     SQLite::SQLite3
 )
+
+if(APPLE)
+    target_link_libraries(z PRIVATE "-framework OpenGL" "-framework Cocoa")
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(z PRIVATE GL)
+endif()
 
 set_target_properties(z PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
