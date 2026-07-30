@@ -66,9 +66,7 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
-            mingw-w64-x86_64-qt6-base-debug
-            mingw-w64-x86_64-qt6-opengl
-            mingw-w64-x86_64-qt6-multimedia
+            mingw-w64-x86_64-qt6-tools
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-portaudio
             mingw-w64-x86_64-sqlite3
