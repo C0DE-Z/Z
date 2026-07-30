@@ -193,10 +193,35 @@ jobs:
         id: tag
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG_NAME="${github.ref_name}"
+            # If triggered by a git tag push, use that tag directly
+            TAG_NAME="${{ github.ref_name }}"
           else
-            TAG_NAME="v1.0.$(date +'%Y%m%d%H%M')"
+            # Fetch the latest release tag and auto-increment the patch version
+            LATEST=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              | jq -r '.tag_name // empty')
+
+            if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+              # No releases yet, start at v1.0.0
+              TAG_NAME="v1.0.0"
+            else
+              # Strip leading 'v', split on '.', increment patch
+              VERSION="${LATEST#v}"
+              MAJOR=$(echo "$VERSION" | cut -d. -f1)
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+              # Only increment if all parts are numeric
+              if [[ "$MAJOR" =~ ^[0-9]+$ && "$MINOR" =~ ^[0-9]+$ && "$PATCH" =~ ^[0-9]+$ ]]; then
+                PATCH=$((PATCH + 1))
+                TAG_NAME="v${MAJOR}.${MINOR}.${PATCH}"
+              else
+                # Non-numeric tag (e.g. Beta) — start a clean v1.0.0 series
+                TAG_NAME="v1.0.0"
+              fi
+            fi
           fi
+          echo "Using tag: $TAG_NAME"
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
 
       - name: Publish GitHub Release
