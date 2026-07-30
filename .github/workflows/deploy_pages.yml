@@ -1,4 +1,4 @@
-name: Deploy Website & Documentation to GitHub Pages
+name: Deploy Website to GitHub Pages
 
 on:
   push:
@@ -7,13 +7,11 @@ on:
       - master
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment
 concurrency:
   group: "pages"
   cancel-in-progress: true
@@ -28,14 +26,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Build site folder (web files only)
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp CNAME _site/
+          cp .nojekyll _site/
+          cp -r css _site/css
+          cp -r js _site/js
+          cp -r docs _site/docs
+          cp -r media _site/media
+
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v4
 
-      - name: Upload website artifact
+      - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository root (includes index.html, docs/, and plugins/)
-          path: '.'
+          path: '_site'
 
       - name: Deploy to GitHub Pages
         id: deployment
