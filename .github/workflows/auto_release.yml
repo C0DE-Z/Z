@@ -66,6 +66,9 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-base-debug
+            mingw-w64-x86_64-qt6-opengl
+            mingw-w64-x86_64-qt6-multimedia
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-portaudio
             mingw-w64-x86_64-sqlite3
@@ -98,34 +101,53 @@ jobs:
           cp build/bin/z.exe release_pkg/
 
           # Copy plugins and docs
-          cp -r plugins release_pkg/
-          cp -r docs release_pkg/
+          cp -r plugins release_pkg/ || true
+          cp -r docs release_pkg/ || true
 
           # --- Qt DLLs via windeployqt6 ---
-          "$MINGW_BIN/windeployqt6.exe" \
+          echo "=== Running windeployqt6 ==="
+          WINDEPLOYQT=$(which windeployqt6.exe 2>/dev/null || echo "$MINGW_BIN/windeployqt6.exe")
+          "$WINDEPLOYQT" \
             --no-translations \
             --no-system-d3d-compiler \
             --no-opengl-sw \
             --dir release_pkg \
-            release_pkg/z.exe || true
+            release_pkg/z.exe && echo "windeployqt6 succeeded" || echo "windeployqt6 failed, copying Qt DLLs manually"
+
+          # --- Qt DLLs manual fallback ---
+          for dll in Qt6Core Qt6Gui Qt6Widgets Qt6OpenGL Qt6OpenGLWidgets Qt6Network Qt6Multimedia; do
+            cp "$MINGW_BIN/${dll}.dll" release_pkg/ 2>/dev/null && echo "Copied ${dll}.dll" || true
+          done
 
           # --- FFmpeg DLLs ---
-          for dll in avcodec avformat avutil swscale swresample avdevice; do
-            cp "$MINGW_BIN/${dll}"*.dll release_pkg/ 2>/dev/null || true
+          echo "=== Copying FFmpeg DLLs ==="
+          for dll in avcodec avformat avutil swscale swresample avdevice avfilter; do
+            cp "$MINGW_BIN/${dll}"-*.dll release_pkg/ 2>/dev/null && echo "Copied ${dll}" || \
+            cp "$MINGW_BIN/${dll}"*.dll release_pkg/ 2>/dev/null && echo "Copied ${dll} (wildcard)" || \
+            echo "WARNING: ${dll}*.dll not found"
           done
 
           # --- PortAudio ---
-          cp "$MINGW_BIN"/libportaudio*.dll release_pkg/ 2>/dev/null || true
+          cp "$MINGW_BIN"/libportaudio*.dll release_pkg/ 2>/dev/null && echo "Copied PortAudio" || echo "WARNING: PortAudio DLL not found"
 
           # --- SQLite ---
-          cp "$MINGW_BIN"/libsqlite3*.dll release_pkg/ 2>/dev/null || true
+          cp "$MINGW_BIN"/libsqlite3*.dll release_pkg/ 2>/dev/null && echo "Copied SQLite" || echo "WARNING: SQLite DLL not found"
 
-          # --- MinGW runtime DLLs ---
+          # --- MinGW runtimes ---
+          echo "=== Copying MinGW runtimes ==="
           for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            cp "$MINGW_BIN/$dll" release_pkg/ 2>/dev/null && echo "Copied $dll" || echo "WARNING: $dll not found"
+          done
+
+          # --- Extra common deps ---
+          for dll in libzstd.dll libzlib1.dll zlib1.dll libbz2-1.dll liblzma-5.dll libharfbuzz-0.dll libfreetype-6.dll; do
             cp "$MINGW_BIN/$dll" release_pkg/ 2>/dev/null || true
           done
 
-          # --- Zip the whole folder ---
+          echo "=== Contents of release_pkg ==="
+          ls -la release_pkg/
+
+          # --- Zip ---
           cd release_pkg && zip -r ../Z-VideoEditor-Windows-x64.zip .
 
       - name: Package Linux Binary

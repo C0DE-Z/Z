@@ -9,33 +9,49 @@ const FALLBACK_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases`;
 function detectOS() {
     const ua = navigator.userAgent.toLowerCase();
     const platform = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
-
-    if (ua.includes('win') || platform.includes('win')) return 'windows';
-    if (ua.includes('mac') || platform.includes('mac')) return 'macos';
-    if (ua.includes('linux') || platform.includes('linux')) return 'linux';
-    return 'windows'; // default fallback
+    if (platform.includes('win') || ua.includes('windows')) return 'windows';
+    if (platform.includes('mac') || ua.includes('mac os')) return 'macos';
+    if (platform.includes('linux') || ua.includes('linux')) return 'linux';
+    return 'windows';
 }
 
-// Pick the best asset for the user's OS from the release assets list
+// Pick asset by matching platform keywords IN THE FILENAME, then extension
 function pickAssetForOS(assets, os) {
     if (!assets || assets.length === 0) return null;
 
-    const preferences = {
-        windows: ['.zip', '.exe', '.msi'],
-        macos:   ['.dmg', '-macos', '-mac'],
-        linux:   ['.tar.gz', '.AppImage', '.deb', '.rpm'],
+    // Keywords that MUST appear in the filename for each platform
+    const platformKeywords = {
+        windows: ['windows', 'win64', 'win-x64', 'win_x64'],
+        macos:   ['macos', 'mac-', 'osx', 'darwin'],
+        linux:   ['linux', 'ubuntu', 'appimage'],
     };
 
-    const prefs = preferences[os] || preferences.windows;
+    // Extension fallbacks if no keyword match
+    const extensionPrefs = {
+        windows: ['.exe', '-windows.zip', '-win.zip'],
+        macos:   ['.dmg'],
+        linux:   ['.tar.gz', '.appimage', '.deb'],
+    };
 
-    // Try each preferred extension in order
-    for (const ext of prefs) {
-        const match = assets.find(a => a.name.toLowerCase().includes(ext));
+    const keywords = platformKeywords[os] || platformKeywords.windows;
+    const exts = extensionPrefs[os] || extensionPrefs.windows;
+
+    const name = (a) => a.name.toLowerCase();
+
+    // 1. Try keyword match first (most reliable)
+    for (const kw of keywords) {
+        const match = assets.find(a => name(a).includes(kw));
         if (match) return match.browser_download_url;
     }
 
-    // Last resort: first asset
-    return assets[0].browser_download_url;
+    // 2. Try extension match
+    for (const ext of exts) {
+        const match = assets.find(a => name(a).endsWith(ext));
+        if (match) return match.browser_download_url;
+    }
+
+    // 3. Last resort: releases page
+    return null;
 }
 
 async function fetchLatestRelease() {
@@ -44,25 +60,20 @@ async function fetchLatestRelease() {
     const os = detectOS();
 
     try {
-        // 1. Try latest official release
         let res = await fetch(LATEST_RELEASE_URL);
 
         if (res.ok) {
             const data = await res.json();
             tagName = data.tag_name || 'Beta';
-            const picked = pickAssetForOS(data.assets, os);
-            downloadUrl = picked || data.html_url || FALLBACK_DOWNLOAD_URL;
+            downloadUrl = pickAssetForOS(data.assets, os) || data.html_url || FALLBACK_DOWNLOAD_URL;
         } else {
-            // 2. Fall back to all releases
             res = await fetch(RELEASES_URL);
             if (res.ok) {
                 const releases = await res.json();
                 if (releases && releases.length > 0) {
                     tagName = releases[0].tag_name || 'Beta';
-                    const picked = pickAssetForOS(releases[0].assets, os);
-                    downloadUrl = picked || releases[0].html_url || FALLBACK_DOWNLOAD_URL;
+                    downloadUrl = pickAssetForOS(releases[0].assets, os) || releases[0].html_url || FALLBACK_DOWNLOAD_URL;
                 } else {
-                    // 3. Fall back to git tags
                     const tagRes = await fetch(TAGS_URL);
                     if (tagRes.ok) {
                         const tags = await tagRes.json();
@@ -75,42 +86,38 @@ async function fetchLatestRelease() {
             }
         }
     } catch (err) {
-        console.warn('GitHub API fetch failed, using fallback:', err);
+        console.warn('GitHub API fetch failed:', err);
     }
 
-    // Format tag: only prepend 'v' if it starts with a digit (e.g. 1.0.0 -> v1.0.0, Beta -> Beta)
     const formattedTag = /^\d/.test(tagName) ? `v${tagName}` : tagName;
+    const osLabels = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+    const osLabel = osLabels[os] || 'Windows';
 
-    // Update brand version badge
     document.querySelectorAll('.brand-tag').forEach(el => {
         el.textContent = formattedTag;
     });
 
-    // Update download version heading
     document.querySelectorAll('.download-version').forEach(el => {
         el.textContent = `Z VIDEO EDITOR - RELEASE ${formattedTag.toUpperCase()}`;
     });
 
-    // Update nav download button
-    const osLabels = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
-    const osLabel = osLabels[os] || 'Windows';
-
     document.querySelectorAll('.btn-download-nav').forEach(el => {
         el.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
             Download ${formattedTag} for ${osLabel}
         `;
         el.href = downloadUrl;
     });
 
-    // Update all primary download buttons
     document.querySelectorAll('.btn-primary').forEach(el => {
         el.href = downloadUrl;
     });
 
-    console.log(`Z Video Editor: detected OS=${os}, tag=${formattedTag}, download=${downloadUrl}`);
+    console.log(`Z Video Editor: OS=${os}, tag=${formattedTag}, url=${downloadUrl}`);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    fetchLatestRelease();
-});
+document.addEventListener('DOMContentLoaded', fetchLatestRelease);
