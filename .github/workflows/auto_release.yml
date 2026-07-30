@@ -87,15 +87,46 @@ jobs:
           cmake --build build --config Release
 
       # --- Packaging Binaries ---
-      - name: Package Windows Binary
+      - name: Package Windows Binary (bundle all DLLs)
         if: matrix.platform == 'windows'
-        shell: powershell
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Path release_pkg -Force
-          Copy-Item -Path build/bin/z.exe -Destination release_pkg/ -Force
-          Copy-Item -Path plugins -Destination release_pkg/ -Recurse -Force
-          Copy-Item -Path docs -Destination release_pkg/ -Recurse -Force
-          Compress-Archive -Path release_pkg/* -DestinationPath Z-VideoEditor-Windows-x64.zip -Force
+          MINGW_BIN="/mingw64/bin"
+          mkdir -p release_pkg
+
+          # Copy the built executable
+          cp build/bin/z.exe release_pkg/
+
+          # Copy plugins and docs
+          cp -r plugins release_pkg/
+          cp -r docs release_pkg/
+
+          # --- Qt DLLs via windeployqt6 ---
+          "$MINGW_BIN/windeployqt6.exe" \
+            --no-translations \
+            --no-system-d3d-compiler \
+            --no-opengl-sw \
+            --dir release_pkg \
+            release_pkg/z.exe || true
+
+          # --- FFmpeg DLLs ---
+          for dll in avcodec avformat avutil swscale swresample avdevice; do
+            cp "$MINGW_BIN/${dll}"*.dll release_pkg/ 2>/dev/null || true
+          done
+
+          # --- PortAudio ---
+          cp "$MINGW_BIN"/libportaudio*.dll release_pkg/ 2>/dev/null || true
+
+          # --- SQLite ---
+          cp "$MINGW_BIN"/libsqlite3*.dll release_pkg/ 2>/dev/null || true
+
+          # --- MinGW runtime DLLs ---
+          for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            cp "$MINGW_BIN/$dll" release_pkg/ 2>/dev/null || true
+          done
+
+          # --- Zip the whole folder ---
+          cd release_pkg && zip -r ../Z-VideoEditor-Windows-x64.zip .
 
       - name: Package Linux Binary
         if: matrix.platform == 'linux'
