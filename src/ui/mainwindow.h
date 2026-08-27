@@ -7,6 +7,9 @@
 #include <QTabWidget>
 #include <QListWidgetItem>
 #include <QTreeWidget>
+#include <QLabel>
+#include <QPushButton>
+#include <QToolButton>
 #include "core/project.h"
 #include "engine/glwidget.h"
 #include "ui/components/timeline.h"
@@ -37,12 +40,18 @@ private slots:
     void onParameterChanged(const QString& effectId, const QString& paramName, double value);
     void onPlaybackQualityChanged(int index);
     void onToggleFpsOverlay(bool checked);
+    void openPreferences();
+    void importMediaFile(const QString& filePath, int targetTrack = -1, double targetTime = -1.0);
 
 private:
     QTimer* playbackTimer = nullptr;
     double currentPlayhead = 0.0;
     bool isPlaying = false;
+    bool loopPlayback = true;
+    double markIn = -1.0;
+    double markOut = -1.0;
 
+    QString selectedClipId;
     QString activeClipId;
     QString activeFilePath;
 
@@ -53,14 +62,44 @@ private:
     MediaPool* mediaPool = nullptr;
     TrackControl* trackControl = nullptr;
     QListWidget* activeEffectsList = nullptr;
-
     QTabWidget* bottomTabs = nullptr;
+
+    // Transport Bar UI Elements
+    QLabel* timecodeLabel = nullptr;
+    QPushButton* playPauseBtn = nullptr;
+    QPushButton* loopBtn = nullptr;
+    QLabel* projectInfoStatusLabel = nullptr;
+
+    // Actions for Dynamic Shortcut Binding
+    QAction* importAct = nullptr;
+    QAction* openAct = nullptr;
+    QAction* saveAct = nullptr;
+    QAction* exportAct = nullptr;
+    QAction* cutAct = nullptr;
+    QAction* deleteAct = nullptr;
+    QAction* undoAct = nullptr;
+    QAction* redoAct = nullptr;
+    QAction* prefAct = nullptr;
+    QAction* playPauseAct = nullptr;
+    QAction* jumpStartAct = nullptr;
+    QAction* jumpEndAct = nullptr;
+    QAction* stepFwdAct = nullptr;
+    QAction* stepBackAct = nullptr;
+    QAction* markInAct = nullptr;
+    QAction* markOutAct = nullptr;
+    QAction* clearInOutAct = nullptr;
+    QAction* zoomInAct = nullptr;
+    QAction* zoomOutAct = nullptr;
+    QAction* zoomFitAct = nullptr;
 
     void createActions();
     void createMenus();
-private slots:
-private:
     void createDocks();
+    void createTransportToolbar();
+    void applyShortcuts();
+    void updateTimecodeDisplay(double time);
+    void updateStatusBar();
+
     void refreshTrackList();
     void updateEffectsState();
     void refreshActiveEffectsList();
@@ -87,6 +126,7 @@ private:
     void cutClipAtPlayhead();
     void deleteSelectedClip();
     void playPause();
+    bool addTransitionAtCut(int trackIndex, double dropTime, const QString& pluginId);
 };
 
 #endif 

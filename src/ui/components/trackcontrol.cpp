@@ -1,13 +1,15 @@
 #include "trackcontrol.h"
+#include <QGridLayout>
 
 TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     this->setObjectName("tracksContainer");
     this->setAttribute(Qt::WA_StyledBackground, true);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
 
-    QLabel* title = new QLabel("T R A C K S", this);
-    title->setStyleSheet("font-weight: bold; color: white;");
+    QLabel* title = new QLabel("TRACKS", this);
+    title->setStyleSheet("font-weight: bold; color: #c4b5fd; letter-spacing: 0.8px; font-size: 10px;");
     layout->addWidget(title);
 
     trackList = new QListWidget(this);
@@ -15,24 +17,30 @@ TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     layout->addWidget(trackList, 1);
 
     QWidget* toolbar = new QWidget(this);
-    QHBoxLayout* toolbarLayout = new QHBoxLayout(toolbar);
+    QGridLayout* toolbarLayout = new QGridLayout(toolbar);
     toolbarLayout->setContentsMargins(0, 0, 0, 0);
-    toolbarLayout->setSpacing(8);
+    toolbarLayout->setSpacing(4);
 
-    QPushButton* newTrackButton = new QPushButton("New Track", toolbar);
-    QPushButton* upTrackButton = new QPushButton("Up", toolbar);
-    QPushButton* downTrackButton = new QPushButton("Down", toolbar);
-    QPushButton* deleteTrackButton = new QPushButton("Delete Track", toolbar);
-    QPushButton* cutClipButton = new QPushButton("Cut", toolbar);
-    QPushButton* deleteClipButton = new QPushButton("Delete", toolbar);
+    QPushButton* newTrackButton = new QPushButton("+ Track", toolbar);
+    QPushButton* upTrackButton = new QPushButton("Move Up", toolbar);
+    QPushButton* downTrackButton = new QPushButton("Move Down", toolbar);
+    QPushButton* deleteTrackButton = new QPushButton("Del Track", toolbar);
+    QPushButton* cutClipButton = new QPushButton("Cut Clip", toolbar);
+    QPushButton* deleteClipButton = new QPushButton("Del Clip", toolbar);
 
-    toolbarLayout->addWidget(newTrackButton);
-    toolbarLayout->addWidget(upTrackButton);
-    toolbarLayout->addWidget(downTrackButton);
-    toolbarLayout->addWidget(deleteTrackButton);
-    toolbarLayout->addWidget(cutClipButton);
-    toolbarLayout->addWidget(deleteClipButton);
-    toolbarLayout->addStretch();
+    newTrackButton->setToolTip("Add new track");
+    upTrackButton->setToolTip("Move selected track up");
+    downTrackButton->setToolTip("Move selected track down");
+    deleteTrackButton->setToolTip("Delete selected track");
+    cutClipButton->setToolTip("Cut clip at playhead (C)");
+    deleteClipButton->setToolTip("Delete selected clip (Del)");
+
+    toolbarLayout->addWidget(newTrackButton, 0, 0);
+    toolbarLayout->addWidget(upTrackButton, 0, 1);
+    toolbarLayout->addWidget(downTrackButton, 0, 2);
+    toolbarLayout->addWidget(deleteTrackButton, 0, 3);
+    toolbarLayout->addWidget(cutClipButton, 1, 0, 1, 2);
+    toolbarLayout->addWidget(deleteClipButton, 1, 2, 1, 2);
 
     layout->addWidget(toolbar);
 

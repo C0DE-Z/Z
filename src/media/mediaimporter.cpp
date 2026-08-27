@@ -36,7 +36,13 @@ QString MediaImporter::transcodeToStandardMp4(const QString& sourcePath) {
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+#ifdef _WIN32
     env.insert("PATH", "C:\\msys64\\mingw64\\bin;C:\\msys64\\usr\\bin;" + env.value("PATH"));
+    QString ffmpegPath = "ffmpeg.exe";
+#else
+    env.insert("PATH", "/usr/local/bin:/opt/homebrew/bin:/usr/bin:" + env.value("PATH"));
+    QString ffmpegPath = "ffmpeg";
+#endif
     proc.setProcessEnvironment(env);
 
     QStringList args;
@@ -52,7 +58,7 @@ QString MediaImporter::transcodeToStandardMp4(const QString& sourcePath) {
          << "-movflags" << "+faststart"
          << outputPath;
 
-    proc.start("ffmpeg.exe", args);
+    proc.start(ffmpegPath, args);
     if (!proc.waitForStarted()) {
         qWarning() << "Import: Failed to start FFmpeg for media conversion.";
         return QString();

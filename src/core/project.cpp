@@ -118,6 +118,7 @@ void Project::fromJson(const QJsonObject& root) {
                 param.maxVal = paramObj.value("max").toDouble();
                 param.defaultVal = paramObj.value("default").toDouble();
                 param.currentVal = paramObj.value("value").toDouble();
+                param.isBool = paramObj.value("isBool").toBool(false);
                 param.curve = AnimationCurve(param.defaultVal);
                 QJsonArray curvesArray = paramObj.value("keyframes").toArray();
                 for (int m = 0; m < curvesArray.size(); ++m) {
@@ -140,7 +141,11 @@ void Project::fromJson(const QJsonObject& root) {
                         for (const auto& p : plugin->parameters) {
                             bool found = false;
                             for (auto& ep : effect.parameters) {
-                                if (ep.name == p.name) { found = true; break; }
+                                if (ep.name == p.name) {
+                                    ep.isBool = p.isBool;
+                                    found = true;
+                                    break;
+                                }
                             }
                             if (!found) effect.parameters.push_back(p);
                         }
@@ -190,7 +195,11 @@ void Project::fromJson(const QJsonObject& root) {
                     for (const auto& p : plugin->parameters) {
                         bool found = false;
                         for (auto& ep : transition.parameters) {
-                            if (ep.name == p.name) { found = true; break; }
+                            if (ep.name == p.name) {
+                                ep.isBool = p.isBool;
+                                found = true;
+                                break;
+                            }
                         }
                         if (!found) transition.parameters.push_back(p);
                     }
@@ -281,6 +290,7 @@ QJsonObject Project::toJson() const {
                     paramObj["max"] = param.maxVal;
                     paramObj["default"] = param.defaultVal;
                     paramObj["value"] = param.currentVal;
+                    paramObj["isBool"] = param.isBool;
 
                     QJsonArray keyframesArray;
                     for (const auto& kf : param.curve.getKeyframes()) {

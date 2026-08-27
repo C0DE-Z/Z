@@ -3,13 +3,127 @@
 #include "core/project.h"
 #include "utils/logging.h"
 #include "engine/glwidget.h"
+#include "ui/preferencesdialog.h"
 #include <QFileDialog>
 #include <QProgressDialog>
 #include <QProcess>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QImage>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QComboBox>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QLabel>
+#include <QPushButton>
+#include <QMessageBox>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QElapsedTimer>
 #include <QDebug>
+
+namespace {
+class ExportConfigDialog : public QDialog {
+public:
+    ExportConfigDialog(QWidget* parent, int srcW, int srcH, double srcFps, double totalDur, double markIn, double markOut)
+        : QDialog(parent), srcW(srcW), srcH(srcH), srcFps(srcFps), totalDur(totalDur), markIn(markIn), markOut(markOut) {
+        setWindowTitle("Export Video");
+        resize(460, 360);
+        setModal(true);
+
+        QVBoxLayout* mainLayout = new QVBoxLayout(this);
+        mainLayout->setContentsMargins(14, 14, 14, 14);
+        mainLayout->setSpacing(10);
+
+        QLabel* titleLabel = new QLabel("E X P O R T   S E T T I N G S", this);
+        titleLabel->setStyleSheet("font-weight: bold; color: #e855f4; font-size: 12px;");
+        mainLayout->addWidget(titleLabel);
+
+        QFormLayout* form = new QFormLayout();
+        form->setSpacing(8);
+
+        resCombo = new QComboBox(this);
+        resCombo->addItem(QString("Source Resolution (%1x%2)").arg(srcW).arg(srcH), QSize(srcW, srcH));
+        resCombo->addItem("1080p Full HD (1920x1080)", QSize(1920, 1080));
+        resCombo->addItem("4K Ultra HD (3840x2160)", QSize(3840, 2160));
+        resCombo->addItem("720p HD (1280x720)", QSize(1280, 720));
+        form->addRow("Resolution Preset:", resCombo);
+
+        fpsCombo = new QComboBox(this);
+        fpsCombo->addItem(QString("Source Framerate (%1 fps)").arg(srcFps, 0, 'f', 2), srcFps);
+        fpsCombo->addItem("60 fps (Smooth)", 60.0);
+        fpsCombo->addItem("30 fps (Standard)", 30.0);
+        fpsCombo->addItem("24 fps (Cinematic)", 24.0);
+        form->addRow("Framerate:", fpsCombo);
+
+        qualityCombo = new QComboBox(this);
+        qualityCombo->addItem("Archival / Master (CRF 16 - Lossless Visual)", 16);
+        qualityCombo->addItem("High Quality (CRF 19 - Recommended)", 19);
+        qualityCombo->addItem("Balanced (CRF 23 - Standard)", 23);
+        qualityCombo->addItem("Web / Social (CRF 26 - Small File)", 26);
+        qualityCombo->setCurrentIndex(1);
+        form->addRow("Quality & Compression:", qualityCombo);
+
+        rangeCombo = new QComboBox(this);
+        rangeCombo->addItem(QString("Entire Timeline (0:00 - %1s)").arg(totalDur, 0, 'f', 1), 0);
+        if (markIn >= 0.0 && markOut > markIn) {
+            rangeCombo->addItem(QString("In/Out Marked Range (%1s - %2s)").arg(markIn, 0, 'f', 1).arg(markOut, 0, 'f', 1), 1);
+            rangeCombo->setCurrentIndex(1);
+        }
+        form->addRow("Export Range:", rangeCombo);
+
+        includeAudioCheck = new QCheckBox("Include Master Audio (Stereo AAC)", this);
+        includeAudioCheck->setChecked(true);
+        form->addRow("", includeAudioCheck);
+
+        mainLayout->addLayout(form);
+        mainLayout->addStretch();
+
+        QHBoxLayout* btnLayout = new QHBoxLayout();
+        btnLayout->addStretch();
+        QPushButton* cancelBtn = new QPushButton("Cancel", this);
+        QPushButton* exportBtn = new QPushButton("Choose Destination & Render...", this);
+        exportBtn->setStyleSheet("QPushButton { background: #5a1a63; border: 1px solid #e855f4; color: white; padding: 6px 14px; font-weight: bold; } QPushButton:hover { background: #7a2286; }");
+        connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+        connect(exportBtn, &QPushButton::clicked, this, &QDialog::accept);
+        btnLayout->addWidget(cancelBtn);
+        btnLayout->addWidget(exportBtn);
+        mainLayout->addLayout(btnLayout);
+    }
+
+    ExportSettings getSettings(const QString& outputPath) const {
+        ExportSettings s;
+        s.outputPath = outputPath;
+        QSize sz = resCombo->currentData().toSize();
+        s.width = sz.width();
+        s.height = sz.height();
+        s.fps = fpsCombo->currentData().toDouble();
+        s.crf = qualityCombo->currentData().toInt();
+        s.includeAudio = includeAudioCheck->isChecked();
+
+        if (rangeCombo->currentData().toInt() == 1 && markIn >= 0.0 && markOut > markIn) {
+            s.startTime = markIn;
+            s.duration = markOut - markIn;
+        } else {
+            s.startTime = 0.0;
+            s.duration = totalDur;
+        }
+        return s;
+    }
+
+private:
+    int srcW, srcH;
+    double srcFps, totalDur, markIn, markOut;
+    QComboBox* resCombo = nullptr;
+    QComboBox* fpsCombo = nullptr;
+    QComboBox* qualityCombo = nullptr;
+    QComboBox* rangeCombo = nullptr;
+    QCheckBox* includeAudioCheck = nullptr;
+};
+}
 
 void MediaExporter::exportVideo(
     QWidget* parentWindow,
@@ -18,32 +132,46 @@ void MediaExporter::exportVideo(
     GLWidget* glWidget,
     std::function<void(double)> scrubCallback,
     std::function<void()> togglePlaybackCallback,
-    bool wasPlaying
+    bool wasPlaying,
+    double markIn,
+    double markOut
 ) {
     if (activeClipId.isEmpty()) {
-        qWarning() << "Export: No active clip loaded to export.";
+        QMessageBox::information(parentWindow, "Export Video", "Please import and select a video clip on the timeline before exporting.");
         return;
     }
 
-    double fps = 30.0;
-    if (!activeClipId.isEmpty()) {
-        fps = VideoEngine::instance().getFps(activeClipId.toStdString());
-    }
+    double fps = VideoEngine::instance().getFps(activeClipId.toStdString());
     if (fps <= 0.0) fps = 30.0;
+    int srcW = glWidget->width();
+    int srcH = glWidget->height();
+    if (srcW <= 0) srcW = 1920;
+    if (srcH <= 0) srcH = 1080;
+
     double duration = 0.0;
     for (const auto& t : Project::instance().getTracks()) {
         for (const auto& c : t.clips) {
             duration = std::max(duration, c.timelineStart + c.sourceDuration);
         }
     }
-    if (duration <= 0.0) duration = 30.0;
+    if (duration <= 0.0) duration = 10.0;
+
+    ExportConfigDialog configDialog(parentWindow, srcW, srcH, fps, duration, markIn, markOut);
+    if (configDialog.exec() != QDialog::Accepted) {
+        return;
+    }
 
     QString outputPath = QFileDialog::getSaveFileName(
-        parentWindow, "Export Glitched Video", "", 
+        parentWindow, "Save Rendered Video", "", 
         "MP4 Video (*.mp4);;All Files (*)"
     );
 
     if (outputPath.isEmpty()) return;
+    if (!outputPath.endsWith(".mp4", Qt::CaseInsensitive)) {
+        outputPath += ".mp4";
+    }
+
+    ExportSettings settings = configDialog.getSettings(outputPath);
 
     const bool logsWereEnabled = AppLogging::enabled();
     AppLogging::setEnabled(false);
@@ -55,14 +183,14 @@ void MediaExporter::exportVideo(
         togglePlaybackCallback();
     }
 
-    int totalFrames = static_cast<int>(duration * fps);
-    QProgressDialog progress("Exporting Video Frames...", "Cancel", 0, totalFrames, parentWindow);
+    int totalFrames = std::max(1, static_cast<int>(settings.duration * settings.fps));
+    QProgressDialog progress("Initializing video render pipeline...", "Cancel Export", 0, totalFrames, parentWindow);
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
     progress.show();
 
-    int exportW = glWidget->width();
-    int exportH = glWidget->height();
+    int exportW = settings.width;
+    int exportH = settings.height;
     if (exportW % 2 != 0) exportW--;
     if (exportH % 2 != 0) exportH--;
 
@@ -76,17 +204,28 @@ void MediaExporter::exportVideo(
     arguments << "-y"
               << "-f" << "rawvideo"
               << "-pix_fmt" << "rgb24"
-              << "-s" << QString("%1x%2").arg(exportW).arg(exportH)
-              << "-r" << QString::number(fps)
-              << "-i" << "pipe:0"
-              << "-i" << activeFilePath
-              << "-map" << "0:v:0"
-              << "-map" << "1:a:0?"
-              << "-c:v" << "libx264"
+              << "-s" << QString("%1x%2").arg(glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW).arg(glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH)
+              << "-r" << QString::number(settings.fps)
+              << "-i" << "pipe:0";
+
+    if (settings.includeAudio && !activeFilePath.isEmpty()) {
+        arguments << "-ss" << QString::number(settings.startTime, 'f', 3)
+                  << "-t" << QString::number(settings.duration, 'f', 3)
+                  << "-i" << activeFilePath
+                  << "-map" << "0:v:0"
+                  << "-map" << "1:a:0?"
+                  << "-c:a" << "aac"
+                  << "-b:a" << "192k";
+    } else {
+        arguments << "-map" << "0:v:0";
+    }
+
+    arguments << "-c:v" << "libx264"
+              << "-preset" << "medium"
+              << "-crf" << QString::number(settings.crf)
               << "-pix_fmt" << "yuv420p"
-              << "-c:a" << "aac"
-              << "-shortest"
-              << outputPath;
+              << "-movflags" << "+faststart"
+              << settings.outputPath;
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -100,90 +239,104 @@ void MediaExporter::exportVideo(
 
     proc.start(ffmpegPath, arguments);
     if (!proc.waitForStarted()) {
-        qWarning() << "Failed to start FFmpeg process.";
+        QMessageBox::critical(parentWindow, "Export Failed", "Could not start FFmpeg encoder process. Please verify FFmpeg is installed and accessible.");
         VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
         AppLogging::setEnabled(logsWereEnabled);
-        if (wasPlaying) {
-            togglePlaybackCallback();
-        }
+        if (wasPlaying) togglePlaybackCallback();
         return;
     }
 
-    const int rowBytes = exportW * 3;
-    int lastUiUpdate = 0;
+    QElapsedTimer timer;
+    timer.start();
+
+    int actualW = glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW;
+    int actualH = glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH;
+    const int rowBytes = actualW * 3;
 
     for (int i = 0; i < totalFrames; ++i) {
         if (progress.wasCanceled()) {
             proc.kill();
             proc.waitForFinished();
+            QFile::remove(settings.outputPath);
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
             AppLogging::setEnabled(logsWereEnabled);
-            if (wasPlaying) {
-                togglePlaybackCallback();
-            }
+            if (wasPlaying) togglePlaybackCallback();
+            QMessageBox::information(parentWindow, "Export Canceled", "Video export was canceled by user.");
             return;
         }
 
-        const double time = static_cast<double>(i) / fps;
-
+        const double time = settings.startTime + (static_cast<double>(i) / settings.fps);
         scrubCallback(time);
 
         QImage img = glWidget->grabFramebuffer().convertToFormat(QImage::Format_RGB888);
         if (img.isNull()) {
-            qWarning() << "Export: Failed to capture frame" << i;
             proc.kill();
             proc.waitForFinished();
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
             AppLogging::setEnabled(logsWereEnabled);
-            if (wasPlaying) {
-                togglePlaybackCallback();
-            }
+            if (wasPlaying) togglePlaybackCallback();
+            QMessageBox::critical(parentWindow, "Export Error", QString("Failed to capture GPU frame %1 of %2.").arg(i + 1).arg(totalFrames));
             return;
         }
 
-        if (img.width() != exportW || img.height() != exportH) {
-            img = img.copy(0, 0, exportW, exportH);
+        if (img.width() != actualW || img.height() != actualH) {
+            img = img.scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         }
 
-        for (int y = 0; y < exportH; ++y) {
+        for (int y = 0; y < actualH; ++y) {
             const char* row = reinterpret_cast<const char*>(img.constScanLine(y));
             if (proc.write(row, rowBytes) < 0) {
-                qWarning() << "Export: Failed to write video frame data to FFmpeg.";
                 proc.kill();
                 proc.waitForFinished();
                 VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
                 AppLogging::setEnabled(logsWereEnabled);
-                if (wasPlaying) {
-                    togglePlaybackCallback();
-                }
+                if (wasPlaying) togglePlaybackCallback();
+                QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
                 return;
             }
         }
 
-        if ((i - lastUiUpdate) >= 4 || i + 1 == totalFrames) {
+        if (i % 3 == 0 || i + 1 == totalFrames) {
+            double elapsedSec = timer.elapsed() / 1000.0;
+            double fpsRender = (i + 1) / std::max(0.001, elapsedSec);
+            double remainingSec = (totalFrames - (i + 1)) / std::max(0.001, fpsRender);
+            progress.setLabelText(QString("Rendering frame %1 of %2 (%3 fps)\nETA: %4s remaining")
+                .arg(i + 1).arg(totalFrames)
+                .arg(fpsRender, 0, 'f', 1)
+                .arg(static_cast<int>(remainingSec)));
             progress.setValue(i + 1);
             QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-            lastUiUpdate = i;
         }
     }
 
     proc.closeWriteChannel();
-    progress.setLabelText("Compiling final video with audio...");
+    progress.setLabelText("Finalizing MP4 container and encoding audio...");
     progress.setValue(totalFrames);
 
-    if (!proc.waitForFinished(-1)) {
-        qWarning() << "Failed to finish FFmpeg export. Error:" << proc.errorString();
-        qWarning() << "FFmpeg output:" << proc.readAllStandardOutput();
-    } else if (proc.exitCode() != 0) {
-        qWarning() << "FFmpeg export failed with exit code" << proc.exitCode() << ":" << proc.readAllStandardOutput();
+    if (!proc.waitForFinished(-1) || proc.exitCode() != 0) {
+        QString errOutput = proc.readAllStandardOutput();
+        QMessageBox::critical(parentWindow, "Export Failed", "FFmpeg failed encoding final video:\n" + errOutput);
     } else {
-        qDebug() << "FFmpeg export completed successfully!";
+        QMessageBox msg(parentWindow);
+        msg.setWindowTitle("Export Complete");
+        msg.setText(QString("Video successfully rendered and saved!\n\nFile: %1").arg(settings.outputPath));
+        QPushButton* openFolderBtn = msg.addButton("Open Containing Folder", QMessageBox::ActionRole);
+        QPushButton* playBtn = msg.addButton("Play Video", QMessageBox::ActionRole);
+        msg.addButton("Close", QMessageBox::RejectRole);
+        msg.exec();
+
+        if (msg.clickedButton() == openFolderBtn) {
+            QFileInfo fileInfo(settings.outputPath);
+            QDesktopServices::openUrl(QUrl::fromLocalFile(fileInfo.absolutePath()));
+        } else if (msg.clickedButton() == playBtn) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(settings.outputPath));
+        }
     }
 
     VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
     AppLogging::setEnabled(logsWereEnabled);
 
-    scrubCallback(0.0);
+    scrubCallback(settings.startTime);
     if (wasPlaying) {
         togglePlaybackCallback();
     }

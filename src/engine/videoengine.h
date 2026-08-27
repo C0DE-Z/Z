@@ -57,7 +57,7 @@ private:
     std::string workerClipId;
     double workerTimestamp = 0.0;
 
-    static const size_t MAX_CACHE_SIZE = 16;
+    static const size_t MAX_CACHE_SIZE = 48;
 
     struct CacheEntry {
         std::string clipId;

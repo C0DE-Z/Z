@@ -19,10 +19,11 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     overlayLabel = new QLabel(this);
     overlayLabel->setStyleSheet(
         "QLabel {"
-        "  color: rgb(250, 255, 250);"
-        "  background-color: rgba(0, 0, 0, 160);"
-        "  font-family: Consolas, monospace;"
-        "  font-size: 13px;"
+        "  color: #f59ef8;"
+        "  background-color: rgba(14, 10, 18, 200);"
+        "  border: 1px solid #4a1d5e;"
+        "  font-family: 'JetBrains Mono', Consolas, monospace;"
+        "  font-size: 11px;"
         "  font-weight: bold;"
         "  padding: 4px 8px;"
         "  border-radius: 4px;"
@@ -37,6 +38,9 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
 GLWidget::~GLWidget() {
     makeCurrent();
     if (videoTexture) glDeleteTextures(1, &videoTexture);
+    if (videoTexture2) glDeleteTextures(1, &videoTexture2);
+    quadVao.destroy();
+    quadVbo.destroy();
     delete passthroughShader;
     delete fboPing;
     delete fboPong;
@@ -46,7 +50,7 @@ GLWidget::~GLWidget() {
 
 void GLWidget::initializeGL() {
     initializeOpenGLFunctions();
-    glClearColor(0.08f, 0.08f, 0.08f, 1.0f);
+    glClearColor(0.04f, 0.04f, 0.06f, 1.0f);
 
     initShaders();
 
@@ -167,20 +171,33 @@ void GLWidget::setShowOverlay(bool show) {
 }
 
 void GLWidget::compileCustomPluginShader(ShaderPlugin& plugin) {
-    if (plugin.isCompiled) return;
+    if (plugin.compileAttempted) return;
+    plugin.compileAttempted = true;
 
-    QOpenGLShaderProgram* program = new QOpenGLShaderProgram(this);
-    program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
+    auto program = std::make_unique<QOpenGLShaderProgram>();
+    if (!program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource)) {
+        qWarning() << "Failed to compile vertex shader for plugin:" << QString::fromStdString(plugin.name)
+                   << program->log();
+        return;
+    }
     QFile file(QString::fromStdString(plugin.fragmentShaderPath));
     if (file.open(QIODevice::ReadOnly)) {
         QString fragSource = file.readAll();
-        program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragSource);
+        if (!program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragSource)) {
+            qWarning() << "Failed to compile fragment shader for plugin:" << QString::fromStdString(plugin.name)
+                       << program->log();
+            return;
+        }
+    } else {
+        qWarning() << "Failed to open developer plugin fragment shader:" << QString::fromStdString(plugin.fragmentShaderPath);
+        return;
     }
     if (program->link()) {
         plugin.shaderProgram = program->programId();
         plugin.isCompiled = true;
+        program.release()->setParent(this);
     } else {
-        qWarning() << "Failed to compile developer plugin shader:" << QString::fromStdString(plugin.name)
+        qWarning() << "Failed to link developer plugin shader:" << QString::fromStdString(plugin.name)
                    << program->log();
     }
 }
@@ -359,6 +376,18 @@ void GLWidget::paintGL() {
                 std::swap(fboPing, fboPong);
             }
         }
+    }
+
+    if (fboFeedback && passthroughShader && passthroughShader->isLinked()) {
+        fboFeedback->bind();
+        glViewport(0, 0, w, h);
+        passthroughShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, currentTex);
+        passthroughShader->setUniformValue("videoTexture", 0);
+        renderQuad();
+        passthroughShader->release();
+        fboFeedback->release();
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());

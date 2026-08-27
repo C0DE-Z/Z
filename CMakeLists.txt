@@ -8,44 +8,21 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Platform-specific prefix paths & system includes
-if(WIN32)
-    if(EXISTS "C:/msys64/mingw64")
-        list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
-        include_directories("C:/msys64/mingw64/include")
-    endif()
-elseif(APPLE)
-    if(EXISTS "/opt/homebrew")
-        list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew")
-        include_directories("/opt/homebrew/include")
-        link_directories("/opt/homebrew/lib")
-    elseif(EXISTS "/usr/local")
-        list(APPEND CMAKE_PREFIX_PATH "/usr/local")
-        include_directories("/usr/local/include")
-        link_directories("/usr/local/lib")
-    endif()
-endif()
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui OpenGL OpenGLWidgets)
+# 1. Platform configuration
+include(Platform)
 
-find_package(OpenGL REQUIRED)
+# 2. Third-party dependencies
+include(Dependencies)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
-pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
-pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
-pkg_check_modules(SWSCALE REQUIRED IMPORTED_TARGET libswscale)
-pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
-
-pkg_check_modules(PORTAUDIO REQUIRED IMPORTED_TARGET portaudio-2.0)
-
-find_package(SQLite3 REQUIRED)
-
-set(SOURCES
+# 3. Source File Definitions
+set(Z_SOURCES
     src/main.cpp
     src/core/keyframe.cpp
     src/core/project.cpp
     src/core/appstate.cpp
+    src/core/shortcutmanager.cpp
     src/media/mediaimporter.cpp
     src/media/mediaexporter.cpp
     src/engine/pluginmanager.cpp
@@ -56,17 +33,22 @@ set(SOURCES
     src/engine/glwidget.cpp
     src/engine/shaders.cpp
     src/ui/mainwindow.cpp
+    src/ui/mainwindow_docks.cpp
+    src/ui/vector_icons.cpp
     src/ui/components/timeline.cpp
     src/ui/components/inspector.cpp
     src/ui/components/effectsbrowser.cpp
     src/ui/components/mediapool.cpp
     src/ui/components/trackcontrol.cpp
+    src/ui/preferencesdialog.cpp
 )
 
-set(HEADERS
+set(Z_HEADERS
+    src/core/logging.h
     src/core/keyframe.h
     src/core/project.h
     src/core/appstate.h
+    src/core/shortcutmanager.h
     src/media/mediaimporter.h
     src/media/mediaexporter.h
     src/engine/pluginmanager.h
@@ -78,6 +60,8 @@ set(HEADERS
     src/engine/glwidget.h
     src/engine/shaders.h
     src/ui/mainwindow.h
+    src/ui/vector_icons.h
+    src/ui/preferencesdialog.h
     src/ui/components/timeline.h
     src/ui/components/inspector.h
     src/ui/components/effectsbrowser.h
@@ -86,12 +70,15 @@ set(HEADERS
 )
 
 if(APPLE)
-    add_executable(z MACOSX_BUNDLE ${SOURCES} ${HEADERS})
+    add_executable(z MACOSX_BUNDLE ${Z_SOURCES} ${Z_HEADERS})
 else()
-    add_executable(z ${SOURCES} ${HEADERS})
+    add_executable(z ${Z_SOURCES} ${Z_HEADERS})
 endif()
 
 target_include_directories(z PRIVATE src)
+
+# 4. Compiler warnings & options
+include(CompilerOptions)
 
 target_link_libraries(z PRIVATE
     Qt6::Core
@@ -118,3 +105,9 @@ endif()
 set_target_properties(z PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# 5. Automated Tests
+enable_testing()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+    add_subdirectory(tests)
+endif()

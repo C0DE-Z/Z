@@ -42,7 +42,7 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
 bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
-        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.02) {
+        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.005) {
             outFrame = *entry.frame;
             return true;
         }
@@ -229,7 +229,7 @@ void VideoEngine::addToCache(const std::string& clipId, double timestamp, std::s
 bool VideoEngine::getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
-        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.01) {
+        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.005) {
             outFrame = *entry.frame;
             return true;
         }
@@ -277,7 +277,7 @@ void VideoEngine::workerLoop() {
         double fps = std::max(1.0, decoder->getFps());
         double frameDuration = 1.0 / fps;
 
-        for (int i = 0; i < 60; ++i) {
+        for (int i = 0; i < 30; ++i) {
             {
                 std::lock_guard<std::mutex> lock(workerMutex);
                 if (workerStop || workerHasRequest) {

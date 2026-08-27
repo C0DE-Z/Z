@@ -1,11 +1,8 @@
-// Z Video Editor - Auto Fetch Latest Release from GitHub API
-const GITHUB_REPO = 'C0DE-Z/Z';
-const LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-const RELEASES_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
-const TAGS_URL = `https://api.github.com/repos/${GITHUB_REPO}/tags`;
-const FALLBACK_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases`;
+const LATEST_RELEASE_URL = `https://api.github.com/repos/C0DE-Z/Z/releases/latest`;
+const RELEASES_URL = `https://api.github.com/repos/C0DE-Z/Z/releases`;
+const TAGS_URL = `https://api.github.com/repos/C0DE-Z/Z/tags`;
+const FALLBACK_DOWNLOAD_URL = `https://github.com/C0DE-Z/Z/releases`;
 
-// Detect the user's operating system
 function detectOS() {
     const ua = navigator.userAgent.toLowerCase();
     const platform = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
@@ -15,18 +12,15 @@ function detectOS() {
     return 'windows';
 }
 
-// Pick asset by matching platform keywords IN THE FILENAME, then extension
 function pickAssetForOS(assets, os) {
     if (!assets || assets.length === 0) return null;
 
-    // Keywords that MUST appear in the filename for each platform
     const platformKeywords = {
         windows: ['windows', 'win64', 'win-x64', 'win_x64'],
         macos:   ['macos', 'mac-', 'osx', 'darwin'],
         linux:   ['linux', 'ubuntu', 'appimage'],
     };
 
-    // Extension fallbacks if no keyword match
     const extensionPrefs = {
         windows: ['.exe', '-windows.zip', '-win.zip'],
         macos:   ['.dmg'],
@@ -38,19 +32,16 @@ function pickAssetForOS(assets, os) {
 
     const name = (a) => a.name.toLowerCase();
 
-    // 1. Try keyword match first (most reliable)
     for (const kw of keywords) {
         const match = assets.find(a => name(a).includes(kw));
         if (match) return match.browser_download_url;
     }
 
-    // 2. Try extension match
     for (const ext of exts) {
         const match = assets.find(a => name(a).endsWith(ext));
         if (match) return match.browser_download_url;
     }
 
-    // 3. Last resort: releases page
     return null;
 }
 
@@ -89,7 +80,8 @@ async function fetchLatestRelease() {
         console.warn('GitHub API fetch failed:', err);
     }
 
-    const formattedTag = /^\d/.test(tagName) ? `v${tagName}` : tagName;
+    let formattedTag = /^\d/.test(tagName) ? `v${tagName}` : tagName;
+    formattedTag = formattedTag.slice(0,6) // slice for display 
     const osLabels = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
     const osLabel = osLabels[os] || 'Windows';
 

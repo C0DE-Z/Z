@@ -29,46 +29,74 @@
 #include <QProcess>
 #include <QDir>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QStatusBar>
+#include "ui/preferencesdialog.h"
 #include <algorithm>
+#include <limits>
+#include <cmath>
+#include <future>
+#include <chrono>
 #include "utils/logging.h"
 #include "engine/videoengine.h"
 #include "media/mediaexporter.h"
 #include "core/appstate.h"
-
+#include "core/shortcutmanager.h"
+#include "ui/vector_icons.h"
 #include "media/mediaimporter.h" 
 
+namespace {
+template <typename Fn>
+auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
+    using ReturnT = std::invoke_result_t<Fn>;
+    auto future = std::async(std::launch::async, std::forward<Fn>(fn));
+
+    QProgressDialog dialog(label, QString(), 0, 0, parent);
+    dialog.setWindowModality(Qt::ApplicationModal);
+    dialog.setCancelButton(nullptr);
+    dialog.setMinimumDuration(0);
+    dialog.setAutoClose(false);
+    dialog.setAutoReset(false);
+    dialog.show();
+
+    while (future.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 32);
+    }
+
+    dialog.close();
+    if constexpr (std::is_void_v<ReturnT>) {
+        future.get();
+    } else {
+        return future.get();
+    }
+}
+}
+
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("Z");
+    setWindowTitle("Z - Creative Video Engine");
     setStyleSheet(R"(
         * {
-            font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+            font-family: 'Segoe UI', 'JetBrains Mono', 'Consolas', monospace;
             font-size: 11px;
-            color: #b0b0b0;
+            color: #b0b0c0;
         }
         QMainWindow {
-            background-color: #0b0b0b;
+            background-color: #0b0b0e;
         }
         QDockWidget {
-            background: #0b0b0b;
+            background: #0b0b0e;
             border: none;
         }
         QWidget#mediaContainer, QWidget#effectsContainer, QWidget#activeContainer, QWidget#tracksContainer {
-            background-color: #141414;
-            border-left: 3px solid #df42f5;
-            border-top: 1px solid #222;
-            border-right: 1px solid #222;
-            border-bottom: 1px solid #222;
+            background-color: #141418;
+            border: 1px solid #23232b;
             border-radius: 4px;
-            margin-bottom: 6px;
         }
         QWidget#controlContainer {
-            background-color: #141414;
-            border-right: 3px solid #df42f5;
-            border-top: 1px solid #222;
-            border-left: 1px solid #222;
-            border-bottom: 1px solid #222;
+            background-color: #141418;
+            border: 1px solid #23232b;
             border-radius: 4px;
-            padding: 8px;
+            padding: 4px;
         }
         QListWidget {
             background: transparent;
@@ -76,8 +104,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
         QListWidget::item {
             padding: 5px;
-            border-bottom: 1px solid #1a1a1a;
-            color: #b0b0b0;
+            border-bottom: 1px solid #1a1a20;
+            color: #b0b0c0;
         }
         QListWidget::item:selected {
             background: #2b1230;
@@ -85,9 +113,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             font-weight: bold;
         }
         QPushButton {
-            background: #1c1c1c;
-            border: 1px solid #333;
-            color: #fff;
+            background: #1c1c24;
+            border: 1px solid #2e2e3a;
+            color: #e2e2ea;
             padding: 4px 8px;
             border-radius: 3px;
         }
@@ -96,64 +124,39 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             border-color: #df42f5;
             color: #e855f4;
         }
-        QScrollBar:vertical {
-            border: none;
-            background: #0d0d0d;
-            width: 8px;
-            margin: 0px;
-        }
-        QScrollBar::handle:vertical {
-            background: #333;
-            min-height: 20px;
-            border-radius: 4px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background: #df42f5;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
-        }
-        QTabWidget::pane {
-            border: 1px solid #222;
-            background: #121212;
-        }
-        QTabBar::tab {
-            background: #161616;
-            color: #aaa;
-            padding: 6px 12px;
-            border-top-left-radius: 4px;
-            border-top-right-radius: 4px;
-            margin-right: 2px;
-        }
-        QTabBar::tab:selected {
-            background: #2b1230;
-            color: #e855f4;
-            border: 1px solid #df42f5;
-            border-bottom-color: #2b1230;
-            font-weight: bold;
-        }
-        QLabel {
-            color: #e0e0e0;
-            font-weight: bold;
-            letter-spacing: 1px;
-        }
     )");
 
     AudioEngine::instance().init();
-    QString pluginsPath = QDir::currentPath() + "/plugins";
+    QString pluginsPath = QCoreApplication::applicationDirPath() + "/plugins";
+    if (!QDir(pluginsPath).exists() && QDir(QDir::currentPath() + "/plugins").exists()) {
+        pluginsPath = QDir::currentPath() + "/plugins";
+    }
     PluginManager::instance().createDefaultPlugins(pluginsPath.toStdString());
     PluginManager::instance().scanPluginsDir(pluginsPath.toStdString());
 
-    glWidget = new GLWidget(this);
-    setCentralWidget(glWidget);
+    QWidget* centerWidget = new QWidget(this);
+    QVBoxLayout* centerLayout = new QVBoxLayout(centerWidget);
+    centerLayout->setContentsMargins(0, 0, 0, 0);
+    centerLayout->setSpacing(0);
+
+    glWidget = new GLWidget(centerWidget);
+    centerLayout->addWidget(glWidget, 1);
+
+    setCentralWidget(centerWidget);
 
     createActions();
     createMenus();
+    createTransportToolbar();
     createDocks();
+    applyShortcuts();
+
+    connect(&ShortcutManager::instance(), &ShortcutManager::shortcutsChanged, this, &MainWindow::applyShortcuts);
 
     playbackTimer = new QTimer(this);
     connect(playbackTimer, &QTimer::timeout, this, &MainWindow::onPlaybackTimer);
 
+    statusBar()->showMessage("Ready", 3000);
+    updateStatusBar();
     updateEffectsState();
 }
 
@@ -161,102 +164,331 @@ MainWindow::~MainWindow() {
     AudioEngine::instance().shutdown();
 }
 
-void MainWindow::createActions() {
-    QShortcut* cutShortcut = new QShortcut(QKeySequence("C"), this);
-    connect(cutShortcut, &QShortcut::activated, this, &MainWindow::cutClipAtPlayhead);
+void MainWindow::createTransportToolbar() {
+    QWidget* transportWidget = new QWidget(this);
+    transportWidget->setObjectName("transportBar");
+    transportWidget->setFixedHeight(38);
+    transportWidget->setStyleSheet("QWidget#transportBar { background: #0f0d14; border-top: 1px solid #231a2c; border-bottom: 1px solid #231a2c; }");
 
-    QShortcut* undoShortcut = new QShortcut(QKeySequence("Ctrl+Z"), this);
-    connect(undoShortcut, &QShortcut::activated, this, [this]() {
+    QHBoxLayout* layout = new QHBoxLayout(transportWidget);
+    layout->setContentsMargins(8, 3, 8, 3);
+    layout->setSpacing(5);
+
+    timecodeLabel = new QLabel("00:00:00.00", transportWidget);
+    timecodeLabel->setStyleSheet("font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: bold; color: #f59ef8; background: #08080c; padding: 3px 8px; border: 1px solid #3b1d4c; border-radius: 3px; min-width: 95px;");
+    timecodeLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(timecodeLabel);
+
+    layout->addSpacing(8);
+
+    auto makeBtn = [transportWidget](VectorIcon::Type iconType, const QString& tooltip, int width = 30) {
+        QPushButton* btn = new QPushButton(transportWidget);
+        btn->setIcon(VectorIcon::create(iconType, QColor(220, 215, 235), QSize(16, 16)));
+        btn->setIconSize(QSize(16, 16));
+        btn->setToolTip(tooltip);
+        btn->setFixedSize(width, 26);
+        btn->setStyleSheet("QPushButton { background: #181520; border: 1px solid #291e34; border-radius: 3px; } QPushButton:hover { background: #2b1c3a; border-color: #c026d3; } QPushButton:pressed { background: #c026d3; }");
+        return btn;
+    };
+
+    QPushButton* jumpStartBtn = makeBtn(VectorIcon::Type::JumpStart, "Jump to Start (Home)");
+    connect(jumpStartBtn, &QPushButton::clicked, this, [this]() {
+        onTimelineScrubbed(0.0);
+    });
+    layout->addWidget(jumpStartBtn);
+
+    QPushButton* stepBackBtn = makeBtn(VectorIcon::Type::StepBackward, "Previous Frame (Left Arrow)");
+    connect(stepBackBtn, &QPushButton::clicked, this, [this]() {
+        double newTime = std::max(0.0, currentPlayhead - (1.0 / 30.0));
+        onTimelineScrubbed(newTime);
+    });
+    layout->addWidget(stepBackBtn);
+
+    playPauseBtn = new QPushButton(transportWidget);
+    playPauseBtn->setIcon(VectorIcon::create(isPlaying ? VectorIcon::Type::Pause : VectorIcon::Type::Play, QColor(245, 158, 248), QSize(18, 18)));
+    playPauseBtn->setIconSize(QSize(18, 18));
+    playPauseBtn->setToolTip("Play / Pause (Space)");
+    playPauseBtn->setFixedSize(44, 26);
+    playPauseBtn->setStyleSheet("QPushButton { background: #3c144c; border: 1px solid #d946ef; border-radius: 3px; } QPushButton:hover { background: #551c6b; }");
+    connect(playPauseBtn, &QPushButton::clicked, this, &MainWindow::togglePlayback);
+    layout->addWidget(playPauseBtn);
+
+    QPushButton* stepFwdBtn = makeBtn(VectorIcon::Type::StepForward, "Next Frame (Right Arrow)");
+    connect(stepFwdBtn, &QPushButton::clicked, this, [this]() {
+        double newTime = std::min(Project::instance().getDuration(), currentPlayhead + (1.0 / 30.0));
+        onTimelineScrubbed(newTime);
+    });
+    layout->addWidget(stepFwdBtn);
+
+    QPushButton* jumpEndBtn = makeBtn(VectorIcon::Type::JumpEnd, "Jump to End (End)");
+    connect(jumpEndBtn, &QPushButton::clicked, this, [this]() {
+        onTimelineScrubbed(Project::instance().getDuration());
+    });
+    layout->addWidget(jumpEndBtn);
+
+    layout->addSpacing(8);
+
+    loopBtn = makeBtn(VectorIcon::Type::Loop, "Toggle Loop Playback", 32);
+    loopBtn->setCheckable(true);
+    loopBtn->setChecked(loopPlayback);
+    connect(loopBtn, &QPushButton::toggled, this, [this](bool checked) {
+        loopPlayback = checked;
+    });
+    layout->addWidget(loopBtn);
+
+    layout->addSpacing(10);
+
+    QPushButton* markInBtn = makeBtn(VectorIcon::Type::MarkIn, "Set Mark In (I)", 32);
+    connect(markInBtn, &QPushButton::clicked, this, [this]() {
+        markIn = std::max(0.0, currentPlayhead);
+        if (markOut >= 0.0 && markOut < markIn) markOut = markIn;
+        if (timelinePanel) timelinePanel->setInOutPoints(markIn, markOut);
+    });
+    layout->addWidget(markInBtn);
+
+    QPushButton* markOutBtn = makeBtn(VectorIcon::Type::MarkOut, "Set Mark Out (O)", 32);
+    connect(markOutBtn, &QPushButton::clicked, this, [this]() {
+        markOut = std::max(0.0, currentPlayhead);
+        if (markIn >= 0.0 && markOut < markIn) markIn = markOut;
+        if (timelinePanel) timelinePanel->setInOutPoints(markIn, markOut);
+    });
+    layout->addWidget(markOutBtn);
+
+    QPushButton* clearInOutBtn = makeBtn(VectorIcon::Type::Clear, "Clear In/Out Range (Ctrl+Shift+X)", 32);
+    connect(clearInOutBtn, &QPushButton::clicked, this, [this]() {
+        markIn = -1.0;
+        markOut = -1.0;
+        if (timelinePanel) timelinePanel->clearInOutPoints();
+    });
+    layout->addWidget(clearInOutBtn);
+
+    layout->addStretch();
+
+    QPushButton* zoomInBtn = makeBtn(VectorIcon::Type::ZoomIn, "Zoom In Timeline (+)", 30);
+    connect(zoomInBtn, &QPushButton::clicked, this, [this]() {
+        if (timelinePanel) timelinePanel->zoomIn();
+    });
+    layout->addWidget(zoomInBtn);
+
+    QPushButton* zoomOutBtn = makeBtn(VectorIcon::Type::ZoomOut, "Zoom Out Timeline (-)", 30);
+    connect(zoomOutBtn, &QPushButton::clicked, this, [this]() {
+        if (timelinePanel) timelinePanel->zoomOut();
+    });
+    layout->addWidget(zoomOutBtn);
+
+    QPushButton* zoomFitBtn = makeBtn(VectorIcon::Type::ZoomFit, "Fit Timeline to Window (Ctrl+0)", 30);
+    connect(zoomFitBtn, &QPushButton::clicked, this, [this]() {
+        if (timelinePanel) timelinePanel->zoomFit(timelinePanel->width());
+    });
+    layout->addWidget(zoomFitBtn);
+
+    centralWidget()->layout()->addWidget(transportWidget);
+}
+
+void MainWindow::updateTimecodeDisplay(double time) {
+    if (!timecodeLabel) return;
+    int totalMs = static_cast<int>(std::max(0.0, time) * 1000.0);
+    int hours = totalMs / 3600000;
+    int mins = (totalMs % 3600000) / 60000;
+    int secs = (totalMs % 60000) / 1000;
+    int frames = static_cast<int>((time - std::floor(time)) * 30.0);
+    timecodeLabel->setText(QString("%1:%2:%3.%4")
+        .arg(hours, 2, 10, QChar('0'))
+        .arg(mins, 2, 10, QChar('0'))
+        .arg(secs, 2, 10, QChar('0'))
+        .arg(frames, 2, 10, QChar('0')));
+}
+
+void MainWindow::updateStatusBar() {
+    if (!statusBar()) return;
+    double dur = Project::instance().getDuration();
+    int mins = static_cast<int>(dur) / 60;
+    int secs = static_cast<int>(dur) % 60;
+    size_t clipCount = 0;
+    for (const auto& t : Project::instance().getTracks()) {
+        clipCount += t.clips.size();
+    }
+    if (!projectInfoStatusLabel) {
+        projectInfoStatusLabel = new QLabel(this);
+        projectInfoStatusLabel->setStyleSheet("color: #888898; font-size: 10px; padding-right: 12px;");
+        statusBar()->addPermanentWidget(projectInfoStatusLabel);
+    }
+    projectInfoStatusLabel->setText(QString("Project: %1 tracks, %2 clips | Duration: %3:%4 | Undo: %5")
+        .arg(Project::instance().getTracks().size())
+        .arg(clipCount)
+        .arg(mins, 2, 10, QChar('0'))
+        .arg(secs, 2, 10, QChar('0'))
+        .arg(AppState::instance().undoStackSize()));
+}
+
+void MainWindow::openPreferences() {
+    PreferencesDialog dlg(this);
+    if (dlg.exec() == QDialog::Accepted) {
+        statusBar()->showMessage("Preferences updated.", 3000);
+    }
+}
+
+void MainWindow::createActions() {
+    importAct = new QAction("&Import Video Clip...", this);
+    importAct->setIcon(VectorIcon::create(VectorIcon::Type::Import, QColor(220, 220, 235), QSize(16, 16)));
+    connect(importAct, &QAction::triggered, this, &MainWindow::importVideo);
+
+    openAct = new QAction("&Open Project...", this);
+    connect(openAct, &QAction::triggered, this, &MainWindow::openProject);
+
+    saveAct = new QAction("&Save Project...", this);
+    connect(saveAct, &QAction::triggered, this, &MainWindow::saveProject);
+
+    exportAct = new QAction("&Export Video...", this);
+    connect(exportAct, &QAction::triggered, this, &MainWindow::exportVideo);
+
+    cutAct = new QAction("Cut Clip at Playhead", this);
+    cutAct->setIcon(VectorIcon::create(VectorIcon::Type::Cut, QColor(220, 220, 235), QSize(16, 16)));
+    connect(cutAct, &QAction::triggered, this, &MainWindow::cutClipAtPlayhead);
+
+    deleteAct = new QAction("Delete Selected", this);
+    deleteAct->setIcon(VectorIcon::create(VectorIcon::Type::Trash, QColor(220, 220, 235), QSize(16, 16)));
+    connect(deleteAct, &QAction::triggered, this, &MainWindow::deleteSelectedClip);
+
+    undoAct = new QAction("Undo", this);
+    connect(undoAct, &QAction::triggered, this, [this]() {
         if (AppState::instance().undo()) {
             refreshTrackList();
             refreshActiveEffectsList();
             if (timelinePanel) timelinePanel->update();
             onTimelineScrubbed(currentPlayhead);
+            statusBar()->showMessage("Undo performed.", 2000);
+            updateStatusBar();
         }
     });
 
-    QShortcut* redoShortcut = new QShortcut(QKeySequence("Ctrl+Shift+Z"), this);
-    connect(redoShortcut, &QShortcut::activated, this, [this]() {
+    redoAct = new QAction("Redo", this);
+    connect(redoAct, &QAction::triggered, this, [this]() {
         if (AppState::instance().redo()) {
             refreshTrackList();
             refreshActiveEffectsList();
             if (timelinePanel) timelinePanel->update();
             onTimelineScrubbed(currentPlayhead);
+            statusBar()->showMessage("Redo performed.", 2000);
+            updateStatusBar();
         }
     });
-    QShortcut* redoShortcut2 = new QShortcut(QKeySequence("Ctrl+Y"), this);
-    connect(redoShortcut2, &QShortcut::activated, this, [this]() {
-        if (AppState::instance().redo()) {
-            refreshTrackList();
-            refreshActiveEffectsList();
-            if (timelinePanel) timelinePanel->update();
-            onTimelineScrubbed(currentPlayhead);
-        }
-    });
-    QShortcut* deleteShortcut = new QShortcut(QKeySequence("Delete"), this);
-    connect(deleteShortcut, &QShortcut::activated, this, &MainWindow::deleteSelectedClip);
-    QShortcut* backspaceShortcut = new QShortcut(QKeySequence("Backspace"), this);
-    connect(backspaceShortcut, &QShortcut::activated, this, &MainWindow::deleteSelectedClip);
 
-    QShortcut* zoomInShortcut = new QShortcut(QKeySequence("="), this);
-    connect(zoomInShortcut, &QShortcut::activated, this, [this]() {
-        if (timelinePanel) timelinePanel->zoomIn();
-    });
+    prefAct = new QAction("Preferences...", this);
+    prefAct->setIcon(VectorIcon::create(VectorIcon::Type::Settings, QColor(220, 220, 235), QSize(16, 16)));
+    connect(prefAct, &QAction::triggered, this, &MainWindow::openPreferences);
 
-    QShortcut* zoomInAltShortcut = new QShortcut(QKeySequence("+"), this);
-    connect(zoomInAltShortcut, &QShortcut::activated, this, [this]() {
-        if (timelinePanel) timelinePanel->zoomIn();
-    });
+    playPauseAct = new QAction("Toggle Play / Pause", this);
+    connect(playPauseAct, &QAction::triggered, this, &MainWindow::togglePlayback);
 
-    QShortcut* zoomOutShortcut = new QShortcut(QKeySequence("-"), this);
-    connect(zoomOutShortcut, &QShortcut::activated, this, [this]() {
-        if (timelinePanel) timelinePanel->zoomOut();
-    });
-    QShortcut* zoomOutAltShortcut = new QShortcut(QKeySequence("_"), this);
-    connect(zoomOutAltShortcut, &QShortcut::activated, this, [this]() {
-        if (timelinePanel) timelinePanel->zoomOut();
-    });
+    jumpStartAct = new QAction("Jump to Start", this);
+    connect(jumpStartAct, &QAction::triggered, this, [this]() { onTimelineScrubbed(0.0); });
 
-    QShortcut* stepForwardShortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
-    connect(stepForwardShortcut, &QShortcut::activated, this, [this]() {
+    jumpEndAct = new QAction("Jump to End", this);
+    connect(jumpEndAct, &QAction::triggered, this, [this]() { onTimelineScrubbed(Project::instance().getDuration()); });
+
+    stepFwdAct = new QAction("Step Forward 1 Frame", this);
+    connect(stepFwdAct, &QAction::triggered, this, [this]() {
         double newTime = std::min(Project::instance().getDuration(), currentPlayhead + (1.0 / 30.0));
-        timelinePanel->setPlayhead(newTime);
         onTimelineScrubbed(newTime);
     });
 
-    QShortcut* stepBackwardShortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
-    connect(stepBackwardShortcut, &QShortcut::activated, this, [this]() {
+    stepBackAct = new QAction("Step Backward 1 Frame", this);
+    connect(stepBackAct, &QAction::triggered, this, [this]() {
         double newTime = std::max(0.0, currentPlayhead - (1.0 / 30.0));
-        timelinePanel->setPlayhead(newTime);
         onTimelineScrubbed(newTime);
     });
+
+    markInAct = new QAction("Set Mark In", this);
+    connect(markInAct, &QAction::triggered, this, [this]() {
+        markIn = std::max(0.0, currentPlayhead);
+        if (markOut >= 0.0 && markOut < markIn) markOut = markIn;
+        if (timelinePanel) timelinePanel->setInOutPoints(markIn, markOut);
+    });
+
+    markOutAct = new QAction("Set Mark Out", this);
+    connect(markOutAct, &QAction::triggered, this, [this]() {
+        markOut = std::max(0.0, currentPlayhead);
+        if (markIn >= 0.0 && markOut < markIn) markIn = markOut;
+        if (timelinePanel) timelinePanel->setInOutPoints(markIn, markOut);
+    });
+
+    clearInOutAct = new QAction("Clear In/Out Range", this);
+    connect(clearInOutAct, &QAction::triggered, this, [this]() {
+        markIn = -1.0;
+        markOut = -1.0;
+        if (timelinePanel) timelinePanel->clearInOutPoints();
+    });
+
+    zoomInAct = new QAction("Zoom In Timeline", this);
+    connect(zoomInAct, &QAction::triggered, this, [this]() { if (timelinePanel) timelinePanel->zoomIn(); });
+
+    zoomOutAct = new QAction("Zoom Out Timeline", this);
+    connect(zoomOutAct, &QAction::triggered, this, [this]() { if (timelinePanel) timelinePanel->zoomOut(); });
+
+    zoomFitAct = new QAction("Fit Timeline to Window", this);
+    connect(zoomFitAct, &QAction::triggered, this, [this]() { if (timelinePanel) timelinePanel->zoomFit(timelinePanel->width()); });
+}
+
+void MainWindow::applyShortcuts() {
+    auto& sm = ShortcutManager::instance();
+    if (importAct) importAct->setShortcut(sm.getShortcut("file.import"));
+    if (openAct) openAct->setShortcut(sm.getShortcut("file.open_project"));
+    if (saveAct) saveAct->setShortcut(sm.getShortcut("file.save_project"));
+    if (exportAct) exportAct->setShortcut(sm.getShortcut("file.export_video"));
+    if (cutAct) cutAct->setShortcut(sm.getShortcut("edit.cut_clip"));
+    if (deleteAct) deleteAct->setShortcut(sm.getShortcut("edit.delete_clip"));
+    if (undoAct) undoAct->setShortcut(sm.getShortcut("edit.undo"));
+    if (redoAct) redoAct->setShortcut(sm.getShortcut("edit.redo"));
+    if (prefAct) prefAct->setShortcut(sm.getShortcut("edit.preferences"));
+    if (playPauseAct) playPauseAct->setShortcut(sm.getShortcut("playback.toggle"));
+    if (jumpStartAct) jumpStartAct->setShortcut(sm.getShortcut("playback.jump_start"));
+    if (jumpEndAct) jumpEndAct->setShortcut(sm.getShortcut("playback.jump_end"));
+    if (stepFwdAct) stepFwdAct->setShortcut(sm.getShortcut("playback.step_fwd"));
+    if (stepBackAct) stepBackAct->setShortcut(sm.getShortcut("playback.step_back"));
+    if (markInAct) markInAct->setShortcut(sm.getShortcut("playback.mark_in"));
+    if (markOutAct) markOutAct->setShortcut(sm.getShortcut("playback.mark_out"));
+    if (clearInOutAct) clearInOutAct->setShortcut(sm.getShortcut("playback.clear_inout"));
+    if (zoomInAct) zoomInAct->setShortcut(sm.getShortcut("view.zoom_in"));
+    if (zoomOutAct) zoomOutAct->setShortcut(sm.getShortcut("view.zoom_out"));
+    if (zoomFitAct) zoomFitAct->setShortcut(sm.getShortcut("view.zoom_fit"));
 }
 
 void MainWindow::createMenus() {
     QMenu* fileMenu = menuBar()->addMenu("&File");
-    QAction* importAct = fileMenu->addAction("&Import Video Clip...", this, &MainWindow::importVideo);
-    importAct->setShortcut(QKeySequence("Ctrl+I"));
-
-    QAction* openAct = fileMenu->addAction("&Open Project...", this, &MainWindow::openProject);
-    openAct->setShortcut(QKeySequence("Ctrl+O"));
-
-    QAction* saveAct = fileMenu->addAction("&Save Project...", this, &MainWindow::saveProject);
-    saveAct->setShortcut(QKeySequence("Ctrl+S"));
-
-    QAction* exportAct = fileMenu->addAction("&Export Video...", this, &MainWindow::exportVideo);
-    exportAct->setShortcut(QKeySequence("Ctrl+E"));
-
+    fileMenu->addAction(importAct);
+    fileMenu->addAction(openAct);
+    fileMenu->addAction(saveAct);
+    fileMenu->addAction(exportAct);
     fileMenu->addSeparator();
     fileMenu->addAction("Exit", this, &QWidget::close);
 
     QMenu* editMenu = menuBar()->addMenu("&Edit");
-    editMenu->addAction("Toggle Playback", this, &MainWindow::togglePlayback)->setShortcut(QKeySequence("Space"));
+    editMenu->addAction(undoAct);
+    editMenu->addAction(redoAct);
+    editMenu->addSeparator();
+    editMenu->addAction(cutAct);
+    editMenu->addAction(deleteAct);
+    editMenu->addSeparator();
+    editMenu->addAction(prefAct);
+
+    QMenu* playbackMenu = menuBar()->addMenu("&Playback");
+    playbackMenu->addAction(playPauseAct);
+    playbackMenu->addAction(stepBackAct);
+    playbackMenu->addAction(stepFwdAct);
+    playbackMenu->addAction(jumpStartAct);
+    playbackMenu->addAction(jumpEndAct);
+    playbackMenu->addSeparator();
+    playbackMenu->addAction(markInAct);
+    playbackMenu->addAction(markOutAct);
+    playbackMenu->addAction(clearInOutAct);
 
     QMenu* effectsMenu = menuBar()->addMenu("&Effects");
     effectsMenu->addAction("Reload Plugins", this, [this]() {
         QString pluginsPath = QApplication::applicationDirPath() + "/plugins";
         PluginManager::instance().scanPluginsDir(pluginsPath.toStdString());
         updateEffectsState();
+        statusBar()->showMessage("Plugins reloaded.", 2000);
     });
 
     QMenu* viewMenu = menuBar()->addMenu("&View");
@@ -274,6 +506,21 @@ void MainWindow::createMenus() {
         VideoEngine::instance().setAsyncDecodeEnabled(enabled);
     });
 
+    viewMenu->addSeparator();
+    viewMenu->addAction(zoomInAct);
+    viewMenu->addAction(zoomOutAct);
+    viewMenu->addAction(zoomFitAct);
+
+    QMenu* helpMenu = menuBar()->addMenu("&Help");
+    helpMenu->addAction("&About Z...", this, [this]() {
+        QMessageBox::about(this, "About Z",
+            "<h2>Z - Creative Video Engine</h2>"
+            "<p><b>Version 1.0.0</b></p>"
+            "<p>High-performance creative desktop editor for datamoshing, GLSL shaders, and experimental video art.</p>"
+            "<p>Website: <a href='https://z.codezey.dev'>https://z.codezey.dev</a></p>"
+        );
+    });
+
     VideoEngine::instance().setAsyncDecodeEnabled(false);
     QToolBar* mainToolBar = addToolBar("Main Toolbar");
     mainToolBar->addWidget(new QLabel(" Playback Quality: ", this));
@@ -288,388 +535,6 @@ void MainWindow::createMenus() {
     fpsOverlayAct->setCheckable(true);
     fpsOverlayAct->setChecked(true);
     connect(fpsOverlayAct, &QAction::toggled, this, &MainWindow::onToggleFpsOverlay);
-}
-
-void MainWindow::createDocks() {
-    QDockWidget* sidebarDock = new QDockWidget("Library", this);
-    sidebarDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    sidebarDock->setTitleBarWidget(new QWidget()); 
-
-    QWidget* sidebarWidget = new QWidget(sidebarDock);
-    QVBoxLayout* sidebarLayout = new QVBoxLayout(sidebarWidget);
-    sidebarLayout->setContentsMargins(4, 4, 4, 4);
-    sidebarLayout->setSpacing(6);
-
-    mediaPool = new MediaPool(sidebarWidget);
-    connect(mediaPool, &MediaPool::mediaSelected, this, &MainWindow::onClipSelected);
-    sidebarLayout->addWidget(mediaPool, 1);
-
-    trackControl = new TrackControl(sidebarWidget);
-    connect(trackControl, &TrackControl::trackSelected, this, [this](int row) { selectTrackIndex(row); });
-    connect(trackControl, &TrackControl::newTrackRequested, this, [this]() {
-        TimelineTrack track;
-        track.id = static_cast<int>(Project::instance().getTracks().size()) + 1;
-        track.name = "Track " + std::to_string(track.id);
-        Project::instance().getTracks().push_back(track);
-        refreshTrackList();
-        selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
-    });
-    connect(trackControl, &TrackControl::moveUpRequested, this, [this]() { moveSelectedTrack(-1); });
-    connect(trackControl, &TrackControl::moveDownRequested, this, [this]() { moveSelectedTrack(1); });
-    connect(trackControl, &TrackControl::deleteTrackRequested, this, [this]() { deleteSelectedTrack(); });
-    connect(trackControl, &TrackControl::cutClipRequested, this, [this]() { cutClipAtPlayhead(); });
-    connect(trackControl, &TrackControl::deleteClipRequested, this, [this]() { deleteSelectedClip(); });
-    sidebarLayout->addWidget(trackControl, 1);
-
-    effectsBrowser = new EffectsBrowser(sidebarWidget);
-    connect(effectsBrowser, &EffectsBrowser::effectDoubleClicked, this, &MainWindow::onEffectSelected);
-    sidebarLayout->addWidget(effectsBrowser, 2);
-
-    QWidget* activeContainer = new QWidget(sidebarWidget);
-    activeContainer->setObjectName("activeContainer");
-    QVBoxLayout* activeLayout = new QVBoxLayout(activeContainer);
-    activeLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* activeTitle = new QLabel("A C T I V E", activeContainer);
-    activeTitle->setStyleSheet("font-weight: bold; color: white;");
-    activeLayout->addWidget(activeTitle);
-    activeEffectsList = new QListWidget(activeContainer);
-    connect(activeEffectsList, &QListWidget::itemDoubleClicked, this, &MainWindow::onActiveEffectSelected);
-    activeLayout->addWidget(activeEffectsList, 2);
-
-    QPushButton* removeEffectButton = new QPushButton("Remove Selected Effect", activeContainer);
-    removeEffectButton->setStyleSheet("QPushButton { background: #321818; color: #ffb0b0; border: 1px solid #6b2b2b; padding: 4px; font-size: 10px; } QPushButton:hover { background: #8b2f2f; color: white; }");
-    connect(removeEffectButton, &QPushButton::clicked, this, &MainWindow::removeSelectedEffect);
-    activeLayout->addWidget(removeEffectButton);
-    sidebarLayout->addWidget(activeContainer, 2);
-
-    sidebarWidget->setLayout(sidebarLayout);
-    sidebarDock->setWidget(sidebarWidget);
-    addDockWidget(Qt::LeftDockWidgetArea, sidebarDock);
-
-    QDockWidget* inspectorDock = new QDockWidget("Inspector", this);
-    inspectorDock->setTitleBarWidget(new QWidget()); 
-
-    QWidget* controlContainer = new QWidget(inspectorDock);
-    controlContainer->setObjectName("controlContainer");
-    QVBoxLayout* controlLayout = new QVBoxLayout(controlContainer);
-    controlLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* controlTitle = new QLabel("C O N T R O L L", controlContainer);
-    controlTitle->setStyleSheet("font-weight: bold; color: white;");
-    controlLayout->addWidget(controlTitle);
-
-    inspectorPanel = new Inspector(controlContainer);
-    inspectorPanel->setStyleSheet("background: transparent; border: none;");
-    controlLayout->addWidget(inspectorPanel, 1);
-    connect(inspectorPanel, &Inspector::parameterChanged, this, &MainWindow::onParameterChanged);
-    connect(inspectorPanel, &Inspector::scrubRequested, this, &MainWindow::onTimelineScrubbed);
-    connect(inspectorPanel, &Inspector::keyframeRemoveRequested, this, [this](const QString& effId, const QString& paramName, double time) {
-        auto* effects = activeEffects();
-        if (!effects) return;
-        for (auto& eff : *effects) {
-            if (QString::fromStdString(eff.pluginId) == effId) {
-                for (auto& param : eff.parameters) {
-                    if (QString::fromStdString(param.name) == paramName) {
-                        param.curve.removeKeyframeAt(time, 0.05);
-                        timelinePanel->update();
-                        refreshActiveEffectsList();
-                        onTimelineScrubbed(currentPlayhead);
-                        refreshInspectorForSelectedEffect();
-                        return;
-                    }
-                }
-            }
-        }
-    });
-    connect(inspectorPanel, &Inspector::keyframeRequested, this, [this](const QString& effId, const QString& paramName, double time, double value) {
-        auto* effects = activeEffects();
-        if (!effects) return;
-        for (auto& eff : *effects) {
-            if (QString::fromStdString(eff.pluginId) == effId) {
-                for (auto& param : eff.parameters) {
-                    if (QString::fromStdString(param.name) == paramName) {
-                        param.curve.insertKeyframe(time, value);
-                        timelinePanel->update();
-                        refreshActiveEffectsList();
-                        inspectorPanel->setCurrentTime(currentPlayhead);
-                        onTimelineScrubbed(currentPlayhead);
-                        refreshInspectorForSelectedEffect();
-                        return;
-                    }
-                }
-            }
-        }
-    });
-
-    connect(inspectorPanel, &Inspector::removeEffectRequested, this, [this](const QString& effectId) {
-        if (Project::instance().getTracks().empty()) return;
-        auto& effects = Project::instance().getTracks().front().effects;
-        auto it = std::remove_if(effects.begin(), effects.end(), [&](const AppliedEffect& eff) {
-            return QString::fromStdString(eff.pluginId) == effectId;
-        });
-        if (it != effects.end()) {
-            effects.erase(it, effects.end());
-            inspectorPanel->clearInspector();
-            refreshActiveEffectsList();
-            syncEffectStackToRenderer();
-            timelinePanel->update();
-        }
-    });
-
-    connect(inspectorPanel, &Inspector::parameterSelected, this, [this](const QString& effId, const QString& paramName) {
-        timelinePanel->selectParameter(effId, paramName);
-    });
-
-    inspectorDock->setWidget(controlContainer);
-    addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
-
-    QDockWidget* bottomDock = new QDockWidget("Workspaces", this);
-    bottomDock->setTitleBarWidget(new QWidget()); 
-    QWidget* bottomContainer = new QWidget(bottomDock);
-    QVBoxLayout* bottomLayout = new QVBoxLayout(bottomContainer);
-    bottomLayout->setContentsMargins(4, 4, 4, 4);
-    bottomLayout->setSpacing(4);
-
-
-    bottomTabs = new QTabWidget(bottomContainer);
-    bottomTabs->setTabPosition(QTabWidget::South);
-
-    timelinePanel = new Timeline(this);
-    connect(timelinePanel, &Timeline::scrubbed, this, &MainWindow::onTimelineScrubbed);
-    connect(timelinePanel, &Timeline::clipSelected, this, [this](int trackIndex, int clipIndex) {
-        selectTrackIndex(trackIndex);
-        selectClip(trackIndex, clipIndex);
-    });
-    connect(timelinePanel, &Timeline::effectDropped, this, [this](int trackIndex, double dropTime, const QString& effectName) {
-        QString pluginId;
-        bool isTransition = false;
-        if (effectsBrowser) {
-            auto* tree = effectsBrowser->getTreeWidget();
-            QTreeWidgetItemIterator it(tree);
-            while (*it) {
-                if ((*it)->text(0) == effectName) {
-                    pluginId = (*it)->data(0, Qt::UserRole).toString();
-                    QTreeWidgetItem* p = (*it)->parent();
-                    while (p) {
-                        if (p->text(0) == "Transitions") {
-                            isTransition = true;
-                            break;
-                        }
-                        p = p->parent();
-                    }
-                    break;
-                }
-                ++it;
-            }
-        }
-        if (pluginId.isEmpty()) return;
-
-        auto& tracks = Project::instance().getTracks();
-        if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return;
-        auto& track = tracks[trackIndex];
-
-        if (isTransition) {
-            double bestDist = 5.0; 
-            double cutPoint = dropTime; 
-            const ProjectClip* leftClip = nullptr;
-            const ProjectClip* rightClip = nullptr;
-
-            for (const auto& c : track.clips) {
-                double distStart = std::abs(c.timelineStart - dropTime);
-                if (distStart < bestDist) {
-                    bestDist = distStart;
-                    cutPoint = c.timelineStart;
-                }
-                double distEnd = std::abs((c.timelineStart + c.sourceDuration) - dropTime);
-                if (distEnd < bestDist) {
-                    bestDist = distEnd;
-                    cutPoint = c.timelineStart + c.sourceDuration;
-                }
-            }
-
-            for (const auto& c : track.clips) {
-                if (std::abs((c.timelineStart + c.sourceDuration) - cutPoint) < 0.2) {
-                    leftClip = &c;
-                }
-                if (std::abs(c.timelineStart - cutPoint) < 0.2) {
-                    rightClip = &c;
-                }
-            }
-
-            AppState::instance().pushUndoState();
-            ProjectTransition trans;
-            trans.id = "trans_" + std::to_string(rand());
-            trans.pluginId = pluginId.toStdString();
-            trans.leftClipId = leftClip ? leftClip->id : "";
-            trans.rightClipId = rightClip ? rightClip->id : "";
-            trans.duration = 1.0;
-            trans.cutTime = cutPoint;
-            trans.alignment = "center"; 
-
-            auto* plugin = PluginManager::instance().findPlugin(trans.pluginId);
-            if (plugin) {
-                trans.parameters = plugin->parameters;
-            }
-
-            track.transitions.erase(std::remove_if(track.transitions.begin(), track.transitions.end(),
-                [&](const ProjectTransition& t) { return std::abs(t.cutTime - cutPoint) < 0.3; }), track.transitions.end());
-
-            track.transitions.push_back(trans);
-            timelinePanel->update();
-        } else {
-            ProjectClip* targetClip = nullptr;
-            for (auto& c : track.clips) {
-                if (dropTime >= c.timelineStart && dropTime < c.timelineStart + c.sourceDuration) {
-                    targetClip = &c;
-                    break;
-                }
-            }
-            if (targetClip) {
-                AppState::instance().pushUndoState();
-                if (!targetClip->useClipEffects) {
-                    targetClip->effects = track.effects;
-                    targetClip->useClipEffects = true;
-                }
-                targetClip->effects.push_back(createEffectTemplate(pluginId));
-                timelinePanel->update();
-            } else {
-                AppState::instance().pushUndoState();
-                track.effects.push_back(createEffectTemplate(pluginId));
-                timelinePanel->update();
-            }
-            refreshActiveEffectsList();
-            syncEffectStackToRenderer();
-        }
-    });
-    connect(timelinePanel, &Timeline::clipMoveStarted, this, [this]() {
-        AppState::instance().pushUndoState();
-    });
-    connect(timelinePanel, &Timeline::clipMoveFinished, this, [this]() {
-        auto& tracks = Project::instance().getTracks();
-        for (auto& track : tracks) {
-            sortTrackClips(track);
-        }
-        refreshTrackList();
-        timelinePanel->update();
-    });
-    connect(timelinePanel, &Timeline::clipMoveRequested, this, [this](int trackIndex, int clipIndex, double newTimelineStart) {
-        auto& tracks = Project::instance().getTracks();
-        if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return;
-        auto& track = tracks[trackIndex];
-        if (clipIndex < 0 || clipIndex >= static_cast<int>(track.clips.size())) return;
-
-        auto& clip = track.clips[clipIndex];
-        clip.timelineStart = std::max(0.0, newTimelineStart);
-        if (clip.id == activeClipId.toStdString()) {
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(clip.id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart);
-            }
-        }
-        timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
-        timelinePanel->update();
-        onTimelineScrubbed(currentPlayhead);
-    });
-    connect(timelinePanel, &Timeline::clipTrackChangeRequested, this, [this](int fromTrack, int fromClip, int toTrack, double newTimelineStart) {
-        AppState::instance().pushUndoState();
-        auto& tracks = Project::instance().getTracks();
-        if (fromTrack < 0 || fromTrack >= static_cast<int>(tracks.size())) return;
-        if (toTrack < 0 || toTrack > static_cast<int>(tracks.size())) return;
-        
-        if (toTrack == static_cast<int>(tracks.size())) {
-            TimelineTrack newT;
-            newT.id = tracks.size() + 1;
-            newT.name = "Track " + std::to_string(newT.id);
-            tracks.push_back(newT);
-        }
-        auto& srcTrack = tracks[fromTrack];
-        if (fromClip < 0 || fromClip >= static_cast<int>(srcTrack.clips.size())) return;
-        auto clipCopy = srcTrack.clips[fromClip];
-        clipCopy.timelineStart = std::max(0.0, newTimelineStart);
-        srcTrack.clips.erase(srcTrack.clips.begin() + fromClip);
-        auto& dstTrack = tracks[toTrack];
-        dstTrack.clips.push_back(clipCopy);
-        if (clipCopy.id == activeClipId.toStdString()) {
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(clipCopy.id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, clipCopy.timelineStart);
-            }
-        }
-        sortTrackClips(srcTrack);
-        sortTrackClips(dstTrack);
-        int newClipIndex = -1;
-        for (int i = 0; i < static_cast<int>(dstTrack.clips.size()); ++i) {
-            if (dstTrack.clips[i].id == activeClipId.toStdString()) {
-                newClipIndex = i;
-                break;
-            }
-        }
-        if (newClipIndex != -1) timelinePanel->updateDragIndices(toTrack, newClipIndex);
-        timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
-        refreshTrackList();
-        timelinePanel->update();
-        onTimelineScrubbed(currentPlayhead);
-    });
-
-    connect(timelinePanel, &Timeline::deleteClipRequested, this, [this](int trackIndex, int clipIndex) {
-        AppState::instance().pushUndoState();
-        auto& tracks = Project::instance().getTracks();
-        if (trackIndex >= 0 && trackIndex < tracks.size()) {
-            if (clipIndex >= 0 && clipIndex < tracks[trackIndex].clips.size()) {
-                tracks[trackIndex].clips.erase(tracks[trackIndex].clips.begin() + clipIndex);
-                refreshTrackList();
-                timelinePanel->update();
-            }
-        }
-    });
-
-    connect(timelinePanel, &Timeline::renameClipRequested, this, [this](int trackIndex, int clipIndex) {
-        auto& tracks = Project::instance().getTracks();
-        if (trackIndex >= 0 && trackIndex < tracks.size()) {
-            if (clipIndex >= 0 && clipIndex < tracks[trackIndex].clips.size()) {
-                QString currentName = QString::fromStdString(tracks[trackIndex].clips[clipIndex].name);
-                bool ok;
-                QString newName = QInputDialog::getText(this, "Rename Clip", "New name:", QLineEdit::Normal, currentName, &ok);
-                if (ok && !newName.isEmpty()) {
-                    AppState::instance().pushUndoState();
-                    tracks[trackIndex].clips[clipIndex].name = newName.toStdString();
-                    timelinePanel->update();
-                }
-            }
-        }
-    });
-
-    connect(timelinePanel, &Timeline::deleteTransitionRequested, this, [this](int trackIndex, int transIndex) {
-        AppState::instance().pushUndoState();
-        auto& tracks = Project::instance().getTracks();
-        if (trackIndex >= 0 && trackIndex < (int)tracks.size()) {
-            auto& transitions = tracks[trackIndex].transitions;
-            if (transIndex >= 0 && transIndex < (int)transitions.size()) {
-                transitions.erase(transitions.begin() + transIndex);
-                timelinePanel->update();
-            }
-        }
-    });
-    QScrollArea* timelineScroll = new QScrollArea(this);
-    timelineScroll->setWidget(timelinePanel);
-    timelineScroll->setWidgetResizable(true);
-    timelineScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    timelineScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    bottomTabs->addTab(timelineScroll, "Timeline Editor");
-
-    bottomLayout->addWidget(bottomTabs);
-    bottomDock->setWidget(bottomContainer);
-    addDockWidget(Qt::BottomDockWidgetArea, bottomDock);
-
-    sidebarDock->setMinimumWidth(220);
-    inspectorDock->setMinimumWidth(260);
-
-    QList<QDockWidget*> hDocks;
-    hDocks << sidebarDock << inspectorDock;
-    QList<int> hSizes;
-    hSizes << 240 << 300;
-    resizeDocks(hDocks, hSizes, Qt::Horizontal);
-
-    bottomDock->setMinimumHeight(240);
 }
 
 void MainWindow::refreshTrackList() {
@@ -722,11 +587,12 @@ void MainWindow::selectClip(int trackIndex, int clipIndex) {
     if (clipIndex < 0 || clipIndex >= static_cast<int>(track.clips.size())) return;
 
     const auto& clip = track.clips[clipIndex];
+    selectedClipId = QString::fromStdString(clip.id);
     activeClipId = QString::fromStdString(clip.id);
     activeFilePath = QString::fromStdString(clip.filePath);
     std::vector<float> audioSamples;
     if (VideoEngine::instance().getAudioSamples(clip.id, audioSamples)) {
-        AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart);
+        AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart, clip.sourceStart, clip.sourceDuration);
     } else {
         AudioEngine::instance().clearClipSamples();
     }
@@ -751,7 +617,7 @@ const ProjectClip* MainWindow::clipAtTime(const TimelineTrack& track, double tim
             return &clip;
         }
     }
-    return track.clips.empty() ? nullptr : &track.clips.front();
+    return nullptr;
 }
 
 ProjectClip* MainWindow::clipAtTime(TimelineTrack& track, double time) const {
@@ -761,7 +627,7 @@ ProjectClip* MainWindow::clipAtTime(TimelineTrack& track, double time) const {
             return &clip;
         }
     }
-    return track.clips.empty() ? nullptr : &track.clips.front();
+    return nullptr;
 }
 
 void MainWindow::moveSelectedTrack(int direction) {
@@ -800,21 +666,43 @@ void MainWindow::deleteSelectedTrack() {
 }
 
 void MainWindow::deleteSelectedClip() {
-    if (activeClipId.isEmpty()) return;
+    if (timelinePanel) {
+        int tTrack = timelinePanel->getSelectedTransTrackIndex();
+        int tIdx = timelinePanel->getSelectedTransIndex();
+        if (tTrack >= 0 && tIdx >= 0) {
+            auto& tracks = Project::instance().getTracks();
+            if (tTrack < static_cast<int>(tracks.size())) {
+                auto& transitions = tracks[tTrack].transitions;
+                if (tIdx < static_cast<int>(transitions.size())) {
+                    AppState::instance().pushUndoState();
+                    transitions.erase(transitions.begin() + tIdx);
+                    timelinePanel->clearSelection();
+                    timelinePanel->update();
+                    return;
+                }
+            }
+        }
+    }
+
+    if (selectedClipId.isEmpty()) return;
     AppState::instance().pushUndoState();
     auto& tracks = Project::instance().getTracks();
     for (auto& track : tracks) {
         auto it = std::remove_if(track.clips.begin(), track.clips.end(),
-                                 [this](const ProjectClip& c) { return c.id == activeClipId.toStdString(); });
+                                 [this](const ProjectClip& c) { return c.id == selectedClipId.toStdString(); });
         if (it != track.clips.end()) {
             track.clips.erase(it, track.clips.end());
             break; 
         }
     }
-    activeClipId.clear();
-    activeFilePath.clear();
+    if (activeClipId == selectedClipId) {
+        activeClipId.clear();
+        activeFilePath.clear();
+    }
+    selectedClipId.clear();
     AudioEngine::instance().clearClipSamples();
     if (mediaPool) mediaPool->clearSelection();
+    if (timelinePanel) timelinePanel->clearSelection();
     inspectorPanel->clearInspector();
     refreshTrackList();
     timelinePanel->update();
@@ -822,21 +710,44 @@ void MainWindow::deleteSelectedClip() {
 }
 
 void MainWindow::cutClipAtPlayhead() {
+    const bool wasPlaying = isPlaying;
+    if (wasPlaying) {
+        togglePlayback();
+    }
+
     AppState::instance().pushUndoState();
     auto& tracks = Project::instance().getTracks();
-    if (tracks.empty()) return;
+    if (tracks.empty()) {
+        if (wasPlaying) togglePlayback();
+        return;
+    }
 
     int index = trackControl ? trackControl->getSelectedTrack() : 0;
     if (index < 0 || index >= static_cast<int>(tracks.size())) index = 0;
 
     auto& track = tracks[index];
     ProjectClip* clip = clipAtTime(track, currentPlayhead);
-    if (!clip) return;
+    if (!clip) {
+        if (wasPlaying) togglePlayback();
+        return;
+    }
 
-    double cutTime = std::clamp(currentPlayhead, clip->timelineStart + 0.01, clip->timelineStart + clip->sourceDuration - 0.01);
-    double leftDuration = cutTime - clip->timelineStart;
-    double rightDuration = clip->sourceDuration - leftDuration;
-    if (leftDuration <= 0.01 || rightDuration <= 0.01) return;
+    const double fps = std::max(1.0, VideoEngine::instance().getFps(clip->id));
+    const double relTime = std::max(0.0, currentPlayhead - clip->timelineStart);
+    const int totalFrames = std::max(2, static_cast<int>(std::round(clip->sourceDuration * fps)));
+    
+    // Exact frame boundary: the frame currently displayed on screen becomes the start of the right clip
+    int cutFrame = static_cast<int>(std::floor((relTime + 1e-5) * fps));
+    cutFrame = std::clamp(cutFrame, 1, totalFrames - 1);
+
+    const double leftDuration = static_cast<double>(cutFrame) / fps;
+    const double cutTime = clip->timelineStart + leftDuration;
+    const double rightDuration = clip->sourceDuration - leftDuration;
+
+    if (leftDuration <= 0.001 || rightDuration <= 0.001) {
+        if (wasPlaying) togglePlayback();
+        return;
+    }
 
     if (!clip->useClipEffects) {
         clip->effects = track.effects;
@@ -853,18 +764,28 @@ void MainWindow::cutClipAtPlayhead() {
 
     clip->sourceDuration = leftDuration;
 
-    if (VideoEngine::instance().loadVideo(rightClip.id, rightClip.filePath)) {
+    bool loadOk = runWithLoader(this, "Splitting clip and loading media...", [rightClip]() {
+        return VideoEngine::instance().loadVideo(rightClip.id, rightClip.filePath);
+    });
+
+    if (loadOk) {
         track.clips.insert(std::upper_bound(track.clips.begin(), track.clips.end(), rightClip.timelineStart,
             [](double time, const ProjectClip& c) { return time < c.timelineStart; }), rightClip);
     } else {
         qWarning() << "MainWindow Trace: Failed to load split clip" << QString::fromStdString(rightClip.id);
     }
 
+    currentPlayhead = cutTime;
+
     sortTrackClips(track);
     refreshTrackList();
     refreshActiveEffectsList();
     timelinePanel->update();
     onTimelineScrubbed(currentPlayhead);
+
+    if (wasPlaying) {
+        togglePlayback();
+    }
 }
 
 void MainWindow::updateEffectsState() {
@@ -879,28 +800,36 @@ void MainWindow::importVideo() {
         this,
         "Import Video Clip",
         activeFilePath.isEmpty() ? QDir::homePath() : QFileInfo(activeFilePath).absolutePath(),
-        "Video Files (*.mp4 *.mov *.mkv *.avi *.webm);;All Files (*)"
+        "Video Files (*.mp4 *.mov *.mkv *.avi *.webm *.flv *.ts);;All Files (*)"
     );
     if (filePath.isEmpty()) return;
+    importMediaFile(filePath);
+}
 
-    QString standardizedPath = MediaImporter::transcodeToStandardMp4(filePath);
+void MainWindow::importMediaFile(const QString& filePath, int targetTrack, double targetTime) {
+    if (filePath.isEmpty() || !QFile::exists(filePath)) return;
+
+    const bool wasPlaying = isPlaying;
+    if (wasPlaying) {
+        togglePlayback();
+    }
+
+    QString standardizedPath = runWithLoader(this, "Transcoding media for editing...", [filePath]() {
+        return MediaImporter::transcodeToStandardMp4(filePath);
+    });
     if (standardizedPath.isEmpty()) {
-        qWarning() << "Import: Falling back to original file because MP4 conversion failed.";
         standardizedPath = filePath;
     }
 
     QString clipId = QFileInfo(filePath).baseName();
-    if (VideoEngine::instance().loadVideo(clipId.toStdString(), standardizedPath.toStdString())) {
+    bool loaded = runWithLoader(this, "Loading imported media...", [clipId, standardizedPath]() {
+        return VideoEngine::instance().loadVideo(clipId.toStdString(), standardizedPath.toStdString());
+    });
+
+    if (loaded) {
         AppState::instance().pushUndoState();
         if (mediaPool) mediaPool->addMedia(clipId);
 
-        double maxDuration = Project::instance().getDuration();
-        std::vector<float> audioSamples;
-        if (VideoEngine::instance().getAudioSamples(clipId.toStdString(), audioSamples)) {
-            AudioEngine::instance().loadClipSamples(audioSamples, maxDuration);
-        } else {
-            AudioEngine::instance().clearClipSamples();
-        }
         ProjectClip clip;
         clip.id = clipId.toStdString();
         clip.name = clip.id;
@@ -909,38 +838,79 @@ void MainWindow::importVideo() {
         DecodedVideoFrame dummy;
         VideoEngine::instance().getFrame(clip.id, 0.0, dummy);
         clip.sourceDuration = VideoEngine::instance().getDuration(clip.id);
-        if (clip.sourceDuration <= 0.0) clip.sourceDuration = 30.0; 
-        clip.timelineStart = maxDuration;
+        if (clip.sourceDuration <= 0.0) clip.sourceDuration = 30.0;
 
-        TimelineTrack track;
-        track.id = Project::instance().getTracks().size() + 1;
-        track.name = "Track " + std::to_string(track.id);
-        track.clips.push_back(clip);
+        auto& tracks = Project::instance().getTracks();
+        int trackIdx = targetTrack;
+        if (trackIdx < 0 || trackIdx >= static_cast<int>(tracks.size())) {
+            TimelineTrack track;
+            track.id = static_cast<int>(tracks.size()) + 1;
+            track.name = "Track " + std::to_string(track.id);
+            tracks.push_back(track);
+            trackIdx = static_cast<int>(tracks.size()) - 1;
+        }
 
-        Project::instance().getTracks().push_back(track);
+        clip.timelineStart = (targetTime >= 0.0) ? targetTime : Project::instance().getDuration();
+        tracks[trackIdx].clips.push_back(clip);
+        sortTrackClips(tracks[trackIdx]);
+
+        std::vector<float> audioSamples;
+        if (VideoEngine::instance().getAudioSamples(clipId.toStdString(), audioSamples)) {
+            AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart, clip.sourceStart, clip.sourceDuration);
+        } else {
+            AudioEngine::instance().clearClipSamples();
+        }
+
         refreshTrackList();
-        selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
+        selectTrackIndex(trackIdx);
 
         activeClipId = clipId;
+        selectedClipId = clipId;
         activeFilePath = standardizedPath;
 
+        if (timelinePanel) {
+            timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
+            timelinePanel->update();
+        }
+        onTimelineScrubbed(clip.timelineStart);
 
-        timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
-        onTimelineScrubbed(0.0);
+        if (statusBar()) {
+            statusBar()->showMessage(QString("Imported: %1 (%2s)").arg(QFileInfo(filePath).fileName()).arg(clip.sourceDuration, 0, 'f', 1), 4000);
+        }
+        updateStatusBar();
         refreshActiveEffectsList();
         syncEffectStackToRenderer();
+    } else {
+        QMessageBox::warning(this, "Import Failed", QString("Could not decode '%1'. Unsupported codec or file error.").arg(QFileInfo(filePath).fileName()));
+    }
 
+    if (wasPlaying) {
+        togglePlayback();
     }
 }
 
 void MainWindow::openProject() {
     QString path = QFileDialog::getOpenFileName(this, "Open Project", "", "Project Files (*.json)");
     if (!path.isEmpty()) {
+        const bool wasPlaying = isPlaying;
+        if (wasPlaying) {
+            togglePlayback();
+        }
+
         if (Project::instance().load(path.toStdString())) {
             if (mediaPool) mediaPool->clearMedia();
+            int clipCount = 0;
+            for (const auto& track : Project::instance().getTracks()) {
+                clipCount += static_cast<int>(track.clips.size());
+            }
+            int idx = 0;
             for (const auto& track : Project::instance().getTracks()) {
                 for (const auto& clip : track.clips) {
-                    VideoEngine::instance().loadVideo(clip.id, clip.filePath);
+                    ++idx;
+                    QString label = QString("Loading project media (%1/%2)...").arg(idx).arg(std::max(1, clipCount));
+                    runWithLoader(this, label, [clip]() {
+                        VideoEngine::instance().loadVideo(clip.id, clip.filePath);
+                    });
                 }
             }
             refreshTrackList();
@@ -948,6 +918,7 @@ void MainWindow::openProject() {
             if (!tracks.empty() && !tracks.front().clips.empty()) {
                 const auto& clip = tracks.front().clips.front();
                 activeClipId = QString::fromStdString(clip.id);
+                selectedClipId = activeClipId;
                 activeFilePath = QString::fromStdString(clip.filePath);
                 if (mediaPool) mediaPool->addMedia(activeClipId);
                 timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
@@ -956,6 +927,15 @@ void MainWindow::openProject() {
                 selectTrackIndex(0);
                 onTimelineScrubbed(0.0);
             }
+            setWindowTitle(QString("Z - %1").arg(QFileInfo(path).fileName()));
+            statusBar()->showMessage(QString("Project '%1' opened.").arg(QFileInfo(path).fileName()), 3000);
+            updateStatusBar();
+        } else {
+            QMessageBox::warning(this, "Open Failed", "Could not read project file format.");
+        }
+
+        if (wasPlaying) {
+            togglePlayback();
         }
     }
 }
@@ -963,15 +943,25 @@ void MainWindow::openProject() {
 void MainWindow::saveProject() {
     QString path = QFileDialog::getSaveFileName(this, "Save Project", "", "Project Files (*.json)");
     if (!path.isEmpty()) {
+        if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".json";
         if (Project::instance().save(path.toStdString())) {
+            setWindowTitle(QString("Z - %1").arg(QFileInfo(path).fileName()));
+            statusBar()->showMessage("Project saved successfully.", 3000);
+            updateStatusBar();
+        } else {
+            QMessageBox::warning(this, "Save Failed", "Could not save project file to disk.");
         }
     }
 }
 
 void MainWindow::togglePlayback() {
     isPlaying = !isPlaying;
+    if (playPauseBtn) {
+        playPauseBtn->setIcon(VectorIcon::create(isPlaying ? VectorIcon::Type::Pause : VectorIcon::Type::Play, QColor(245, 158, 248), QSize(18, 18)));
+    }
     if (isPlaying) {
         playbackTimer->start(16); 
+        AudioEngine::instance().setPlayheadTime(currentPlayhead);
         AudioEngine::instance().start();
     } else {
         playbackTimer->stop();
@@ -981,15 +971,21 @@ void MainWindow::togglePlayback() {
 
 void MainWindow::onPlaybackTimer() {
     currentPlayhead = AudioEngine::instance().getPlayheadTime();
-    double maxDuration = 10.0;
-    for (const auto& t : Project::instance().getTracks()) {
-        for (const auto& c : t.clips) {
-            maxDuration = std::max(maxDuration, c.timelineStart + c.sourceDuration);
+
+    double maxDuration = std::max(10.0, Project::instance().getDuration());
+    double loopStart = (markIn >= 0.0 && markOut > markIn) ? markIn : 0.0;
+    double loopEnd = (markIn >= 0.0 && markOut > markIn) ? markOut : maxDuration;
+
+    if (currentPlayhead >= loopEnd) {
+        if (loopPlayback) {
+            currentPlayhead = loopStart; 
+            AudioEngine::instance().setPlayheadTime(loopStart);
+        } else {
+            togglePlayback();
+            currentPlayhead = loopEnd;
+            onTimelineScrubbed(currentPlayhead);
+            return;
         }
-    }
-    if (currentPlayhead >= maxDuration) {
-        currentPlayhead = 0.0; 
-        AudioEngine::instance().setPlayheadTime(0.0);
     }
 
     onTimelineScrubbed(currentPlayhead);
@@ -1003,6 +999,7 @@ void MainWindow::onPlaybackTimer() {
 
 void MainWindow::onTimelineScrubbed(double time) {
     currentPlayhead = time;
+    updateTimecodeDisplay(time);
     timelinePanel->setPlayhead(time);
     inspectorPanel->setCurrentTime(time);
     glWidget->setPlaybackTime(time);
@@ -1014,15 +1011,43 @@ void MainWindow::onTimelineScrubbed(double time) {
     const ProjectClip* transRightClip = nullptr;
     const auto& tracks = Project::instance().getTracks();
     for (auto it = tracks.rbegin(); it != tracks.rend(); ++it) {
-        for (const auto& trans : it->transitions) {
+            for (const auto& trans : it->transitions) {
             const ProjectClip* left = nullptr;
             const ProjectClip* right = nullptr;
             for (const auto& c : it->clips) {
                 if (c.id == trans.leftClipId) left = &c;
                 if (c.id == trans.rightClipId) right = &c;
             }
+
+            if (!left || !right) {
+                const ProjectClip* nearestLeft = nullptr;
+                const ProjectClip* nearestRight = nullptr;
+                double bestLeftDist = std::numeric_limits<double>::max();
+                double bestRightDist = std::numeric_limits<double>::max();
+                for (const auto& c : it->clips) {
+                    const double clipStart = c.timelineStart;
+                    const double clipEnd = c.timelineStart + c.sourceDuration;
+                    if (clipEnd <= trans.cutTime + 0.25) {
+                        double d = std::abs(trans.cutTime - clipEnd);
+                        if (d < bestLeftDist) {
+                            bestLeftDist = d;
+                            nearestLeft = &c;
+                        }
+                    }
+                    if (clipStart >= trans.cutTime - 0.25) {
+                        double d = std::abs(clipStart - trans.cutTime);
+                        if (d < bestRightDist) {
+                            bestRightDist = d;
+                            nearestRight = &c;
+                        }
+                    }
+                }
+                if (!left) left = nearestLeft;
+                if (!right) right = nearestRight;
+            }
+
             if (left && right) {
-                double cutPoint = right->timelineStart;
+                    double cutPoint = trans.cutTime;
                 double transStart = cutPoint - trans.duration / 2.0;
                 double transEnd = cutPoint + trans.duration / 2.0;
                 if (time >= transStart && time < transEnd) {
@@ -1047,10 +1072,22 @@ void MainWindow::onTimelineScrubbed(double time) {
     }
 
     if (activeTrans) {
-        double cutPoint = transRightClip->timelineStart;
+        double cutPoint = activeTrans->cutTime;
         double transStart = cutPoint - activeTrans->duration / 2.0;
         double progress = (time - transStart) / activeTrans->duration;
         progress = std::clamp(progress, 0.0, 1.0);
+
+        const ProjectClip* audioClip = (progress < 0.5) ? transLeftClip : transRightClip;
+        if (audioClip && activeClipId != QString::fromStdString(audioClip->id)) {
+            activeClipId = QString::fromStdString(audioClip->id);
+            activeFilePath = QString::fromStdString(audioClip->filePath);
+            std::vector<float> audioSamples;
+            if (VideoEngine::instance().getAudioSamples(audioClip->id, audioSamples)) {
+                AudioEngine::instance().loadClipSamples(audioSamples, audioClip->timelineStart, audioClip->sourceStart, audioClip->sourceDuration);
+            } else {
+                AudioEngine::instance().clearClipSamples();
+            }
+        }
 
         double localTime1 = transLeftClip->sourceStart + std::max(0.0, time - transLeftClip->timelineStart);
         double localTime2 = transRightClip->sourceStart + std::max(0.0, time - transRightClip->timelineStart);
@@ -1071,22 +1108,24 @@ void MainWindow::onTimelineScrubbed(double time) {
         }
         applyEffectsToRenderer(time, topTrack, nullptr);
     } else if (topClip) {
+        if (activeClipId != QString::fromStdString(topClip->id)) {
+            activeClipId = QString::fromStdString(topClip->id);
+            activeFilePath = QString::fromStdString(topClip->filePath);
+            std::vector<float> audioSamples;
+            if (VideoEngine::instance().getAudioSamples(topClip->id, audioSamples)) {
+                AudioEngine::instance().loadClipSamples(audioSamples, topClip->timelineStart, topClip->sourceStart, topClip->sourceDuration);
+            } else {
+                AudioEngine::instance().clearClipSamples();
+            }
+        }
+
         double localTime = topClip->sourceStart + std::max(0.0, time - topClip->timelineStart);
         if (localTime < 0.0) localTime = 0.0;
         AudioEngine::instance().setPlayheadTime(time);
 
         DecodedVideoFrame frame;
         const std::string clipKey = topClip->id;
-        bool gotFrame = false;
-        if (isPlaying && VideoEngine::instance().isAsyncDecodeEnabled()) {
-            VideoEngine::instance().requestFrameAsync(clipKey, localTime);
-            gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
-        } else {
-            gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
-            if (!isPlaying && VideoEngine::instance().isAsyncDecodeEnabled()) {
-                VideoEngine::instance().requestFrameAsync(clipKey, localTime);
-            }
-        }
+        bool gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
 
         if (gotFrame && frame.width > 0 && frame.height > 0 && !frame.rgbData.empty()) {
             glWidget->updateFrame(frame);
@@ -1096,7 +1135,10 @@ void MainWindow::onTimelineScrubbed(double time) {
         applyEffectsToRenderer(time, topTrack, topClip);
     } else {
         glWidget->clearFrame();
-        AudioEngine::instance().setPlayheadTime(0.0);
+        AudioEngine::instance().setPlayheadTime(time);
+        AudioEngine::instance().clearClipSamples();
+        activeClipId.clear();
+        activeFilePath.clear();
         glWidget->setActiveEffects({});
     }
 }
@@ -1134,11 +1176,21 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     VideoEngine::instance().setCpuXnor(activeClipId.toStdString(), false, 0.5, 1.0);
     VideoEngine::instance().setCpuNand(activeClipId.toStdString(), false, 0.5, 1.0);
 
-    const auto& effects = (activeClip && !activeClip->effects.empty()) ? activeClip->effects : activeTrack->effects;
-    bool hasDatamoshEffect = false;
+    if (!activeClip) {
+        glWidget->update();
+        return;
+    }
+
+    const auto& effects = activeClip->effects;
     for (const auto& eff : effects) {
+        if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
+            const QString cat = QString::fromStdString(pluginMeta->category);
+            if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
+                continue;
+            }
+        }
+
         if (eff.pluginId == "datamosh") {
-            hasDatamoshEffect = true;
             auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
             double iDrop = readParam(0, 0.0), pDup = readParam(1, 0.0), pDupCount = readParam(2, 4.0), pDrop = readParam(3, 0.0);
             bool datamoshEnabled = (iDrop >= 0.5) || (pDup > 0.0) || (pDrop > 0.0);
@@ -1186,12 +1238,40 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
 }
 
 void MainWindow::onClipSelected(const QString& clipId) {
-    Q_UNUSED(clipId);
+    if (clipId.isEmpty()) return;
+
+    const std::string wanted = clipId.toStdString();
+    auto& tracks = Project::instance().getTracks();
+    for (int t = 0; t < static_cast<int>(tracks.size()); ++t) {
+        for (int c = 0; c < static_cast<int>(tracks[t].clips.size()); ++c) {
+            if (tracks[t].clips[c].id == wanted) {
+                selectTrackIndex(t);
+                selectClip(t, c);
+                return;
+            }
+        }
+    }
 }
 
 void MainWindow::onEffectSelected(const QString& targetId) {
     auto* track = currentTrack();
     if (!track) return;
+
+    if (auto* plugin = PluginManager::instance().findPlugin(targetId.toStdString())) {
+        const QString cat = QString::fromStdString(plugin->category);
+        if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
+            int trackIndex = trackControl ? trackControl->getSelectedTrack() : 0;
+            if (addTransitionAtCut(trackIndex, currentPlayhead, targetId)) {
+                refreshActiveEffectsList();
+                syncEffectStackToRenderer();
+            }
+            return;
+        }
+    }
+
+    auto* clip = currentClip();
+    if (!clip) return;
+    clip->useClipEffects = true;
 
     auto* effects = activeEffects();
     if (!effects) return;
@@ -1205,6 +1285,7 @@ void MainWindow::onEffectSelected(const QString& targetId) {
 
     refreshActiveEffectsList();
     syncEffectStackToRenderer();
+    onTimelineScrubbed(currentPlayhead);
 
     for (int i = 0; i < activeEffectsList->count(); ++i) {
         if (activeEffectsList->item(i)->data(Qt::UserRole).toString() == targetId) {
@@ -1247,6 +1328,7 @@ void MainWindow::removeSelectedEffect() {
         refreshActiveEffectsList();
         syncEffectStackToRenderer();
         timelinePanel->update();
+        onTimelineScrubbed(currentPlayhead);
     }
 }
 
@@ -1267,12 +1349,36 @@ const TimelineTrack* MainWindow::currentTrack() const {
 }
 
 ProjectClip* MainWindow::currentClip() {
+    auto& tracks = Project::instance().getTracks();
+    if (!selectedClipId.isEmpty()) {
+        const std::string wantedId = selectedClipId.toStdString();
+        for (auto& track : tracks) {
+            for (auto& clip : track.clips) {
+                if (clip.id == wantedId) {
+                    return &clip;
+                }
+            }
+        }
+    }
+
     auto* track = currentTrack();
     if (!track) return nullptr;
     return clipAtTime(*track, currentPlayhead);
 }
 
 const ProjectClip* MainWindow::currentClip() const {
+    const auto& tracks = Project::instance().getTracks();
+    if (!selectedClipId.isEmpty()) {
+        const std::string wantedId = selectedClipId.toStdString();
+        for (const auto& track : tracks) {
+            for (const auto& clip : track.clips) {
+                if (clip.id == wantedId) {
+                    return &clip;
+                }
+            }
+        }
+    }
+
     const auto* track = currentTrack();
     if (!track) return nullptr;
     return clipAtTime(*track, currentPlayhead);
@@ -1280,17 +1386,16 @@ const ProjectClip* MainWindow::currentClip() const {
 
 std::vector<AppliedEffect>* MainWindow::activeEffects() {
     if (auto* clip = currentClip()) {
-        if (clip->useClipEffects) return &clip->effects;
+        clip->useClipEffects = true;
+        return &clip->effects;
     }
-    if (auto* track = currentTrack()) return &track->effects;
     return nullptr;
 }
 
 const std::vector<AppliedEffect>* MainWindow::activeEffects() const {
     if (const auto* clip = currentClip()) {
-        if (clip->useClipEffects) return &clip->effects;
+        return &clip->effects;
     }
-    if (const auto* track = currentTrack()) return &track->effects;
     return nullptr;
 }
 
@@ -1422,6 +1527,80 @@ AppliedEffect MainWindow::createEffectTemplate(const QString& effectId) const {
     return effect;
 }
 
+bool MainWindow::addTransitionAtCut(int trackIndex, double dropTime, const QString& pluginId) {
+    auto& tracks = Project::instance().getTracks();
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return false;
+    auto& track = tracks[trackIndex];
+    if (track.clips.size() < 2) return false;
+
+    double bestDist = 0.6;
+    double cutPoint = dropTime;
+
+    for (const auto& c : track.clips) {
+        const double clipStart = c.timelineStart;
+        const double clipEnd = c.timelineStart + c.sourceDuration;
+        double distStart = std::abs(clipStart - dropTime);
+        if (distStart < bestDist) {
+            bestDist = distStart;
+            cutPoint = clipStart;
+        }
+        double distEnd = std::abs(clipEnd - dropTime);
+        if (distEnd < bestDist) {
+            bestDist = distEnd;
+            cutPoint = clipEnd;
+        }
+    }
+
+    const ProjectClip* leftClip = nullptr;
+    const ProjectClip* rightClip = nullptr;
+    double bestPairDist = std::numeric_limits<double>::max();
+
+    for (const auto& l : track.clips) {
+        const double lEnd = l.timelineStart + l.sourceDuration;
+        for (const auto& r : track.clips) {
+            if (l.id == r.id) continue;
+            const double gap = std::abs(lEnd - r.timelineStart);
+            if (gap > 0.35) continue;
+
+            const double pairCut = r.timelineStart;
+            const double pairDist = std::abs(pairCut - cutPoint);
+            if (pairDist < bestPairDist) {
+                bestPairDist = pairDist;
+                leftClip = &l;
+                rightClip = &r;
+                cutPoint = pairCut;
+            }
+        }
+    }
+
+    if (!leftClip || !rightClip) {
+        return false;
+    }
+
+    AppState::instance().pushUndoState();
+    ProjectTransition trans;
+    trans.id = "trans_" + std::to_string(rand());
+    trans.pluginId = pluginId.toStdString();
+    trans.leftClipId = leftClip->id;
+    trans.rightClipId = rightClip->id;
+    trans.duration = 1.0;
+    trans.cutTime = cutPoint;
+    trans.alignment = "center";
+
+    auto* plugin = PluginManager::instance().findPlugin(trans.pluginId);
+    if (plugin) {
+        trans.parameters = plugin->parameters;
+    }
+
+    track.transitions.erase(std::remove_if(track.transitions.begin(), track.transitions.end(),
+        [&](const ProjectTransition& t) { return std::abs(t.cutTime - cutPoint) < 0.3; }), track.transitions.end());
+
+    track.transitions.push_back(trans);
+    timelinePanel->update();
+    onTimelineScrubbed(currentPlayhead);
+    return true;
+}
+
 void MainWindow::refreshActiveEffectsList() {
     if (!activeEffectsList) return;
     activeEffectsList->clear();
@@ -1431,6 +1610,12 @@ void MainWindow::refreshActiveEffectsList() {
 
     for (const auto& eff : *effects) {
         QString id = QString::fromStdString(eff.pluginId);
+        if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
+            const QString cat = QString::fromStdString(pluginMeta->category);
+            if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
+                continue;
+            }
+        }
         auto* item = new QListWidgetItem(effectDisplayNameForId(id), activeEffectsList);
         item->setData(Qt::UserRole, id);
     }
@@ -1438,14 +1623,20 @@ void MainWindow::refreshActiveEffectsList() {
 
 void MainWindow::syncEffectStackToRenderer() {
     std::vector<AppliedEffect> customPlugins;
-    auto* track = currentTrack();
-    if (!track) {
+    const ProjectClip* clip = currentClip();
+    if (!clip) {
         glWidget->setActiveEffects(customPlugins);
         return;
     }
-    const ProjectClip* clip = currentClip();
-    const auto& effects = (clip && !clip->effects.empty()) ? clip->effects : track->effects;
+    const auto& effects = clip->effects;
     for (const auto& eff : effects) {
+        if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
+            const QString cat = QString::fromStdString(pluginMeta->category);
+            if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
+                continue;
+            }
+        }
+
         if (eff.pluginId != "datamosh" && eff.pluginId != "optical_smear" && 
             eff.pluginId != "cpu_xor" && eff.pluginId != "cpu_or" && 
             eff.pluginId != "cpu_and" && eff.pluginId != "cpu_xnor" &&
@@ -1468,12 +1659,13 @@ void MainWindow::onParameterChanged(const QString& effectId, const QString& para
                     param.curve.setDefaultValue(value);
                     if (!param.curve.getKeyframes().empty()) {
                         param.curve.insertKeyframe(currentPlayhead, value);
-                        timelinePanel->update(); 
+                        if (timelinePanel) timelinePanel->update(); 
+                    }
+                    if (inspectorPanel) {
+                        inspectorPanel->updateParameterValue(paramName, value);
                     }
                     syncEffectStackToRenderer();
-                    if (!isPlaying) {
-                        onTimelineScrubbed(currentPlayhead);
-                    }
+                    onTimelineScrubbed(currentPlayhead);
                     return;
                 }
             }
@@ -1489,6 +1681,8 @@ void MainWindow::exportVideo() {
         glWidget,
         [this](double time) { this->onTimelineScrubbed(time); },
         [this]() { this->togglePlayback(); },
-        isPlaying
+        isPlaying,
+        markIn,
+        markOut
     );
 }

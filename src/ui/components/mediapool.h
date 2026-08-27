@@ -6,6 +6,9 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QString>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 
 class MediaPool : public QWidget {
     Q_OBJECT
@@ -18,9 +21,19 @@ public:
 
 signals:
     void mediaSelected(const QString& name);
+    void fileDropped(const QString& filePath);
+    void importRequested();
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private:
-    QListWidget* mediaList;
+    QListWidget* mediaList = nullptr;
+    QLabel* emptyLabel = nullptr;
+
+    void updateEmptyState();
 };
 
 #endif

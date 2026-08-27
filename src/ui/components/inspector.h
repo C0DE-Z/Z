@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QScrollArea>
+#include <vector>
 #include <functional>
 #include "engine/pluginmanager.h"
 
@@ -12,9 +13,10 @@ class Inspector : public QWidget {
 public:
     explicit Inspector(QWidget* parent = nullptr);
 
-    void loadEffect(const QString& effectId, std::vector<ShaderParameter>& parameters, double currentTime);
+    void loadEffect(const QString& effectId, const std::vector<ShaderParameter>& parameters, double currentTime);
     void clearInspector();
     void setCurrentTime(double currentTime);
+    void updateParameterValue(const QString& paramName, double value);
 
 signals:
     void parameterChanged(const QString& effectId, const QString& paramName, double value);
@@ -27,6 +29,7 @@ signals:
 private:
     QString activeEffectId;
     double currentPlayheadTime = 0.0;
+    std::vector<ShaderParameter> currentParameters;
 
     QVBoxLayout* mainLayout = nullptr;
     QScrollArea* scrollArea = nullptr;
@@ -36,4 +39,4 @@ private:
     std::vector<std::function<void(double)>> timeUpdateCallbacks;
 };
 
-#endif 
+#endif
