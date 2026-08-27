@@ -31,6 +31,9 @@ public:
 
     void insertKeyframe(double time, double value, InterpolationMode mode = InterpolationMode::Linear);
     void removeKeyframeAt(double time, double tolerance = 0.01);
+    bool moveKeyframe(double fromTime, double toTime, double tolerance = 0.01);
+    bool setInterpolationAt(double time, InterpolationMode mode, double tolerance = 0.01);
+    bool hasKeyframeAt(double time, double tolerance = 0.01) const;
     void clear();
 
     void setDefaultValue(double val) { defaultValue = val; }

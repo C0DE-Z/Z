@@ -28,6 +28,38 @@ void AnimationCurve::removeKeyframeAt(double time, double tolerance) {
     );
 }
 
+bool AnimationCurve::moveKeyframe(double fromTime, double toTime, double tolerance) {
+    auto it = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - fromTime) <= tolerance;
+    });
+    if (it == keyframes.end()) return false;
+    Keyframe moved = *it;
+    keyframes.erase(it);
+    moved.time = toTime;
+    auto duplicate = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - toTime) <= tolerance;
+    });
+    if (duplicate != keyframes.end()) *duplicate = moved;
+    else keyframes.push_back(moved);
+    std::sort(keyframes.begin(), keyframes.end());
+    return true;
+}
+
+bool AnimationCurve::setInterpolationAt(double time, InterpolationMode mode, double tolerance) {
+    auto it = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - time) <= tolerance;
+    });
+    if (it == keyframes.end()) return false;
+    it->mode = mode;
+    return true;
+}
+
+bool AnimationCurve::hasKeyframeAt(double time, double tolerance) const {
+    return std::any_of(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - time) <= tolerance;
+    });
+}
+
 void AnimationCurve::clear() {
     keyframes.clear();
 }

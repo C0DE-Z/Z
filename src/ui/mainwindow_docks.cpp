@@ -7,6 +7,7 @@
 
 #include <QDockWidget>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QScrollArea>
 #include <QPushButton>
 #include <QInputDialog>
@@ -83,6 +84,101 @@ void MainWindow::createDocks() {
 
     sidebarTabs->addTab(activeContainer, "Active FX");
 
+    // Tab 4: Detect / Mask
+    QWidget* detectTab = new QWidget(sidebarTabs);
+    QVBoxLayout* detectLayout = new QVBoxLayout(detectTab);
+    detectLayout->setContentsMargins(8, 8, 8, 8);
+    detectLayout->setSpacing(8);
+
+    QLabel* detectTitle = new QLabel("DETECT & MASK", detectTab);
+    detectTitle->setStyleSheet("font-weight: bold; color: #c4b5fd; font-size: 11px; letter-spacing: 0.5px;");
+    detectLayout->addWidget(detectTitle);
+
+    QLabel* detectHint = new QLabel("Load a YOLO ONNX model for class-labelled objects. Without one, the editor uses fast motion regions. The mask can limit every effect in the active stack.", detectTab);
+    detectHint->setWordWrap(true);
+    detectHint->setStyleSheet("color: #6e6e80; font-size: 10px;");
+    detectLayout->addWidget(detectHint);
+
+    QHBoxLayout* modelLayout = new QHBoxLayout();
+    yoloModelPathEdit = new QLineEdit(detectTab);
+    yoloModelPathEdit->setPlaceholderText("YOLO .onnx model (optional)");
+    modelLayout->addWidget(yoloModelPathEdit, 1);
+    QPushButton* modelButton = new QPushButton("Load YOLO", detectTab);
+    connect(modelButton, &QPushButton::clicked, this, &MainWindow::chooseYoloModel);
+    modelLayout->addWidget(modelButton);
+    detectLayout->addLayout(modelLayout);
+
+    openClCheck = new QCheckBox("Prefer OpenCL acceleration", detectTab);
+    openClCheck->setChecked(true);
+    connect(openClCheck, &QCheckBox::toggled, this, [](bool on) { Detector::instance().setPreferOpenCL(on); });
+    detectLayout->addWidget(openClCheck);
+
+    detectionStatusLabel = new QLabel("Motion region fallback", detectTab);
+    detectionStatusLabel->setWordWrap(true);
+    detectionStatusLabel->setStyleSheet("color: #8a8a9d; font-size: 10px;");
+    detectLayout->addWidget(detectionStatusLabel);
+
+    QPushButton* runDetectBtn = new QPushButton("Detect Current Frame", detectTab);
+    runDetectBtn->setStyleSheet("QPushButton { background: #251020; color: #f59ef8; border: 1px solid #551d45; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #45153c; }");
+    connect(runDetectBtn, &QPushButton::clicked, this, &MainWindow::runDetectionOnCurrentFrame);
+    detectLayout->addWidget(runDetectBtn);
+
+    liveDetectCheck = new QCheckBox("Live detect while scrubbing", detectTab);
+    liveDetectCheck->setStyleSheet("color: #b0b0c0;");
+    connect(liveDetectCheck, &QCheckBox::toggled, this, [this](bool on) {
+        liveDetectEnabled = on;
+        if (on) runDetectionOnCurrentFrame();
+    });
+    detectLayout->addWidget(liveDetectCheck);
+
+    showBoxesCheck = new QCheckBox("Show boxes & labels", detectTab);
+    showBoxesCheck->setChecked(true);
+    showBoxesCheck->setStyleSheet("color: #b0b0c0;");
+    connect(showBoxesCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (glWidget) glWidget->setShowDetections(on);
+    });
+    detectLayout->addWidget(showBoxesCheck);
+
+    applyMaskCheck = new QCheckBox("Mask all active effects", detectTab);
+    applyMaskCheck->setStyleSheet("color: #b0b0c0;");
+    connect(applyMaskCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (glWidget) glWidget->setMaskEnabled(on);
+        if (on) {
+            // Ensure Object Mask effect is on the clip so the mask is visible in the stack
+            onEffectSelected("object_mask");
+            onDetectionSettingsChanged();
+        }
+    });
+    detectLayout->addWidget(applyMaskCheck);
+
+    QLabel* sensLabel = new QLabel("Sensitivity", detectTab);
+    sensLabel->setStyleSheet("color: #9a9aaf; font-size: 10px;");
+    detectLayout->addWidget(sensLabel);
+    detectSensitivitySlider = new QSlider(Qt::Horizontal, detectTab);
+    detectSensitivitySlider->setRange(5, 95);
+    detectSensitivitySlider->setValue(45);
+    connect(detectSensitivitySlider, &QSlider::valueChanged, this, &MainWindow::onDetectionSettingsChanged);
+    detectLayout->addWidget(detectSensitivitySlider);
+
+    QLabel* areaLabel = new QLabel("Min region size", detectTab);
+    areaLabel->setStyleSheet("color: #9a9aaf; font-size: 10px;");
+    detectLayout->addWidget(areaLabel);
+    detectMinAreaSlider = new QSlider(Qt::Horizontal, detectTab);
+    detectMinAreaSlider->setRange(1, 40);
+    detectMinAreaSlider->setValue(12);
+    connect(detectMinAreaSlider, &QSlider::valueChanged, this, &MainWindow::onDetectionSettingsChanged);
+    detectLayout->addWidget(detectMinAreaSlider);
+
+    detectionList = new QListWidget(detectTab);
+    detectionList->setStyleSheet("QListWidget { background: #121218; border: 1px solid #2a2a36; }");
+    detectLayout->addWidget(detectionList, 1);
+
+    QPushButton* clearDetectBtn = new QPushButton("Clear Detections", detectTab);
+    connect(clearDetectBtn, &QPushButton::clicked, this, &MainWindow::clearDetections);
+    detectLayout->addWidget(clearDetectBtn);
+
+    sidebarTabs->addTab(detectTab, "Detect");
+
     sidebarLayout->addWidget(sidebarTabs);
     sidebarWidget->setLayout(sidebarLayout);
     sidebarDock->setWidget(sidebarWidget);
@@ -112,10 +208,9 @@ void MainWindow::createDocks() {
                 for (auto& param : eff.parameters) {
                     if (QString::fromStdString(param.name) == paramName) {
                         param.curve.removeKeyframeAt(time, 0.05);
-                        timelinePanel->update();
-                        refreshActiveEffectsList();
+                        if (timelinePanel) timelinePanel->update();
+                        if (inspectorPanel) inspectorPanel->syncParameters(eff.parameters);
                         onTimelineScrubbed(currentPlayhead);
-                        refreshInspectorForSelectedEffect();
                         return;
                     }
                 }
@@ -130,13 +225,26 @@ void MainWindow::createDocks() {
                 for (auto& param : eff.parameters) {
                     if (QString::fromStdString(param.name) == paramName) {
                         param.curve.insertKeyframe(time, value);
-                        timelinePanel->update();
-                        refreshActiveEffectsList();
-                        inspectorPanel->setCurrentTime(currentPlayhead);
+                        if (timelinePanel) timelinePanel->update();
+                        if (inspectorPanel) inspectorPanel->syncParameters(eff.parameters);
                         onTimelineScrubbed(currentPlayhead);
-                        refreshInspectorForSelectedEffect();
                         return;
                     }
+                }
+            }
+        }
+    });
+    connect(inspectorPanel, &Inspector::keyframeInterpolationRequested, this, [this](const QString& effId, const QString& paramName, double time, int mode) {
+        auto* effects = activeEffects();
+        if (!effects) return;
+        for (auto& effect : *effects) {
+            if (QString::fromStdString(effect.pluginId) != effId) continue;
+            for (auto& parameter : effect.parameters) {
+                if (QString::fromStdString(parameter.name) == paramName &&
+                    parameter.curve.setInterpolationAt(time, static_cast<InterpolationMode>(mode))) {
+                    if (timelinePanel) timelinePanel->update();
+                    onTimelineScrubbed(currentPlayhead);
+                    return;
                 }
             }
         }

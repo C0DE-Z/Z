@@ -45,6 +45,9 @@ public:
 private:
     VideoEngine() = default;
     std::map<std::string, std::shared_ptr<VideoDecoder>> decoders;
+    // The worker owns separate FFmpeg contexts so prefetch seeks can never
+    // contend with UI-thread decode state.
+    std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDecoders;
     std::mutex engineMutex;
     std::mutex cacheMutex;
 
@@ -56,8 +59,9 @@ private:
     bool asyncDecodeEnabled = false;
     std::string workerClipId;
     double workerTimestamp = 0.0;
+    double workerPrefetchUntil = -1.0;
 
-    static const size_t MAX_CACHE_SIZE = 48;
+    static const size_t MAX_CACHE_SIZE = 72;
 
     struct CacheEntry {
         std::string clipId;

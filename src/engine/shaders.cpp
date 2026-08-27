@@ -219,6 +219,22 @@ void main() {
 }
 )";
 
+// Composites an effect result over the input using the current detection mask.
+// This makes any effect maskable without requiring every plugin to implement it.
+const char* maskCompositeShaderSource = R"(#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+uniform sampler2D sourceTexture;
+uniform sampler2D effectedTexture;
+uniform sampler2D maskTexture;
+uniform float invertMask;
+void main() {
+    float mask = texture(maskTexture, TexCoord).r;
+    if (invertMask > 0.5) mask = 1.0 - mask;
+    FragColor = mix(texture(sourceTexture, TexCoord), texture(effectedTexture, TexCoord), mask);
+}
+)";
+
 const char* milkdropShaderSource = R"(#version 330 core
 in vec2 TexCoord;
 out vec4 FragColor;

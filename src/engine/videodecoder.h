@@ -18,7 +18,7 @@ public:
     VideoDecoder();
     ~VideoDecoder();
 
-    bool openFile(const std::string& filePath);
+    bool openFile(const std::string& filePath, bool preloadAudio = true);
     void close();
 
     bool decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame);
@@ -60,7 +60,9 @@ private:
     double fps = 0.0;
     int playbackQualityScale = 1;
     double timeBase = 0.0;
+    double streamStartTime = 0.0;
     double lastDecodedTime = -999.0;
+    double lastPacketTime = -999.0;
     bool datamoshEnabled = false;
     double iFrameDropProb = 0.0;
     double pFrameDuplicateProb = 0.0;

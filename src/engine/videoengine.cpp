@@ -33,8 +33,15 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
         workerThread = std::thread(&VideoEngine::workerLoop, this);
     }
 
+    // Let the worker finish its contiguous decode window. Replacing its request
+    // every UI tick was forcing repeated seeks and collapsing playback FPS.
+    if (workerClipId == clipId && timestamp <= workerPrefetchUntil) {
+        return;
+    }
+
     workerClipId = clipId;
     workerTimestamp = timestamp;
+    workerPrefetchUntil = timestamp + 1.0;
     workerHasRequest = true;
     workerCv.notify_one();
 }
@@ -42,7 +49,7 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
 bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
-        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.005) {
+        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.020) {
             outFrame = *entry.frame;
             return true;
         }
@@ -84,6 +91,12 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
     auto decoder = std::make_shared<VideoDecoder>();
     if (decoder->openFile(filePath)) {
         decoders[clipId] = decoder;
+        auto asyncDecoder = std::make_shared<VideoDecoder>();
+        if (asyncDecoder->openFile(filePath, false)) {
+            asyncDecoders[clipId] = std::move(asyncDecoder);
+        } else {
+            asyncDecoders.erase(clipId);
+        }
         return true;
     }
     return false;
@@ -193,6 +206,9 @@ void VideoEngine::setPlaybackQuality(int downscaleFactor) {
     for (auto& pair : decoders) {
         pair.second->setPlaybackQuality(downscaleFactor);
     }
+    for (auto& pair : asyncDecoders) {
+        pair.second->setPlaybackQuality(downscaleFactor);
+    }
 }
 
 bool VideoEngine::getAudioSamples(const std::string& clipId, std::vector<float>& outSamples) {
@@ -212,6 +228,7 @@ void VideoEngine::clear() {
     }
     std::lock_guard<std::mutex> lock(engineMutex);
     decoders.clear();
+    asyncDecoders.clear();
     {
         std::lock_guard<std::mutex> cacheLock(cacheMutex);
         frameCache.clear();
@@ -229,7 +246,7 @@ void VideoEngine::addToCache(const std::string& clipId, double timestamp, std::s
 bool VideoEngine::getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
-        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.005) {
+        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.020) {
             outFrame = *entry.frame;
             return true;
         }
@@ -264,8 +281,8 @@ void VideoEngine::workerLoop() {
         std::shared_ptr<VideoDecoder> decoder;
         {
             std::lock_guard<std::mutex> lock(engineMutex);
-            auto it = decoders.find(clipId);
-            if (it != decoders.end()) {
+            auto it = asyncDecoders.find(clipId);
+            if (it != asyncDecoders.end()) {
                 decoder = it->second;
             }
         }
@@ -276,6 +293,10 @@ void VideoEngine::workerLoop() {
 
         double fps = std::max(1.0, decoder->getFps());
         double frameDuration = 1.0 / fps;
+        {
+            std::lock_guard<std::mutex> lock(workerMutex);
+            workerPrefetchUntil = startTimestamp + (30.0 * frameDuration);
+        }
 
         for (int i = 0; i < 30; ++i) {
             {

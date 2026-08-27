@@ -2,7 +2,9 @@
 #include "core/project.h"
 #include "engine/audioengine.h"
 #include "engine/pluginmanager.h"
+#include <QFileDialog>
 #include <QMenuBar>
+#include <QActionGroup>
 #include <QInputDialog>
 #include <QFileDialog>
 #include <QKeySequence>
@@ -43,8 +45,8 @@
 #include "core/appstate.h"
 #include "core/shortcutmanager.h"
 #include "ui/vector_icons.h"
-#include "media/mediaimporter.h" 
-#include <iostream>
+#include "media/mediaimporter.h"
+
 namespace {
 template <typename Fn>
 auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
@@ -153,7 +155,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(&ShortcutManager::instance(), &ShortcutManager::shortcutsChanged, this, &MainWindow::applyShortcuts);
 
     playbackTimer = new QTimer(this);
+    playbackTimer->setTimerType(Qt::PreciseTimer);
     connect(playbackTimer, &QTimer::timeout, this, &MainWindow::onPlaybackTimer);
+    liveDetectionTimer.start();
 
     statusBar()->showMessage("Ready", 3000);
     updateStatusBar();
@@ -501,9 +505,28 @@ void MainWindow::createMenus() {
 
     QAction* asyncDecodeAct = viewMenu->addAction("Async Video Decode");
     asyncDecodeAct->setCheckable(true);
-    asyncDecodeAct->setChecked(false);
+    asyncDecodeAct->setChecked(true);
     connect(asyncDecodeAct, &QAction::toggled, this, [](bool enabled) {
         VideoEngine::instance().setAsyncDecodeEnabled(enabled);
+    });
+
+    QMenu* rendererMenu = viewMenu->addMenu("Rendering Engine");
+    QActionGroup* rendererGroup = new QActionGroup(rendererMenu);
+    rendererGroup->setExclusive(true);
+    QAction* compatibilityRenderer = rendererMenu->addAction("Compatibility OpenGL");
+    compatibilityRenderer->setCheckable(true);
+    rendererGroup->addAction(compatibilityRenderer);
+    QAction* pipelinedRenderer = rendererMenu->addAction("Pipelined OpenGL (Experimental)");
+    pipelinedRenderer->setCheckable(true);
+    pipelinedRenderer->setChecked(true);
+    rendererGroup->addAction(pipelinedRenderer);
+    connect(compatibilityRenderer, &QAction::triggered, this, [this] {
+        glWidget->setRendererBackend(RenderBackendKind::OpenGLCompatibility);
+        statusBar()->showMessage("Compatibility OpenGL renderer enabled", 2500);
+    });
+    connect(pipelinedRenderer, &QAction::triggered, this, [this] {
+        glWidget->setRendererBackend(RenderBackendKind::OpenGLPipelined);
+        statusBar()->showMessage("Pipelined OpenGL renderer enabled", 2500);
     });
 
     viewMenu->addSeparator();
@@ -521,7 +544,7 @@ void MainWindow::createMenus() {
         );
     });
 
-    VideoEngine::instance().setAsyncDecodeEnabled(false);
+    VideoEngine::instance().setAsyncDecodeEnabled(true);
     QToolBar* mainToolBar = addToolBar("Main Toolbar");
     mainToolBar->addWidget(new QLabel(" Playback Quality: ", this));
     QComboBox* qualityCombo = new QComboBox(this);
@@ -735,14 +758,12 @@ void MainWindow::cutClipAtPlayhead() {
     const double fps = std::max(1.0, VideoEngine::instance().getFps(clip->id));
     const double relTime = std::max(0.0, currentPlayhead - clip->timelineStart);
     const int totalFrames = std::max(2, static_cast<int>(std::round(clip->sourceDuration * fps)));
-    std::cout << "Cutting clip at time: " << relTime << " seconds, fps: " << fps << ", totalFrames: " << totalFrames << std::endl;
-    int cutFrame = static_cast<int>(std::floor((relTime + 1e-5) * fps)); // 1e-5 (0.00001) 
+    // Snap to the frame boundary currently on screen; that frame becomes the start of the right clip.
+    int cutFrame = static_cast<int>(std::floor((relTime + 1e-5) * fps));
     cutFrame = std::clamp(cutFrame, 1, totalFrames - 1);
-    std::cout << "Cut frame: " << cutFrame << std::endl;
     const double leftDuration = static_cast<double>(cutFrame) / fps;
     const double cutTime = clip->timelineStart + leftDuration;
     const double rightDuration = clip->sourceDuration - leftDuration;
-    std::cout << "Left duration: " << leftDuration << ", right duration: " << rightDuration << std::endl;
     if (leftDuration <= 0.001 || rightDuration <= 0.001) {
         if (wasPlaying) togglePlayback();
         return;
@@ -959,7 +980,9 @@ void MainWindow::togglePlayback() {
         playPauseBtn->setIcon(VectorIcon::create(isPlaying ? VectorIcon::Type::Pause : VectorIcon::Type::Play, QColor(245, 158, 248), QSize(18, 18)));
     }
     if (isPlaying) {
-        playbackTimer->start(16); 
+        // A precise 60 Hz tick leaves enough headroom for UI and GPU work while
+        // audio remains the source of truth for the playhead.
+        playbackTimer->start(16);
         AudioEngine::instance().setPlayheadTime(currentPlayhead);
         AudioEngine::instance().start();
     } else {
@@ -989,11 +1012,6 @@ void MainWindow::onPlaybackTimer() {
 
     onTimelineScrubbed(currentPlayhead);
 
-    if (isPlaying && !activeClipId.isEmpty() && VideoEngine::instance().isAsyncDecodeEnabled()) {
-        const double clipFps = std::max(1.0, VideoEngine::instance().getFps(activeClipId.toStdString()));
-        const double prefetchTime = std::min(currentPlayhead + (1.0 / clipFps), maxDuration);
-        VideoEngine::instance().requestFrameAsync(activeClipId.toStdString(), prefetchTime);
-    }
 }
 
 void MainWindow::onTimelineScrubbed(double time) {
@@ -1124,10 +1142,31 @@ void MainWindow::onTimelineScrubbed(double time) {
 
         DecodedVideoFrame frame;
         const std::string clipKey = topClip->id;
-        bool gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
+        bool gotFrame = false;
+        const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
+        if (asyncPlayback) {
+            // Never block the GUI behind a keyframe seek. Display the closest
+            // decoded frame while the worker fills the exact target frame.
+            gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
+            if (!gotFrame) {
+                // Keep a small decode lead so a 60 Hz UI is never waiting for
+                // the same frame it is trying to display.
+                VideoEngine::instance().requestFrameAsync(clipKey, localTime + 0.10);
+                gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.25);
+            }
+        } else {
+            gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
+        }
 
         if (gotFrame && frame.width > 0 && frame.height > 0 && !frame.rgbData.empty()) {
-            glWidget->updateFrame(frame);
+            lastDetectFrame = frame;
+            glWidget->updateFrame(std::move(frame));
+            // Detection is intentionally decoupled from the 60 Hz renderer;
+            // CPU fallback and YOLO are both expensive enough to cause jitter.
+            if (liveDetectEnabled && liveDetectionTimer.elapsed() >= 150) {
+                liveDetectionTimer.restart();
+                runDetectionOnCurrentFrame();
+            }
         } else {
             glWidget->clearFrame();
         }
@@ -1154,6 +1193,96 @@ void MainWindow::onToggleFpsOverlay(bool checked) {
     glWidget->setShowOverlay(checked);
 }
 
+void MainWindow::onDetectionSettingsChanged() {
+    if (!detectSensitivitySlider || !detectMinAreaSlider) return;
+    Detector::instance().setSensitivity(detectSensitivitySlider->value() / 100.0f);
+    Detector::instance().setMinArea(detectMinAreaSlider->value() / 1000.0f);
+    if (!currentDetections.empty() || liveDetectEnabled) {
+        runDetectionOnCurrentFrame();
+    }
+}
+
+void MainWindow::clearDetections() {
+    currentDetections.clear();
+    Detector::instance().reset();
+    if (detectionList) detectionList->clear();
+    if (glWidget) {
+        glWidget->setDetections({});
+        glWidget->setMaskData(0, 0, {});
+        glWidget->setMaskEnabled(false);
+    }
+    if (applyMaskCheck) applyMaskCheck->setChecked(false);
+    if (statusBar()) statusBar()->showMessage("Detections cleared", 2000);
+}
+
+void MainWindow::chooseYoloModel() {
+    const QString path = QFileDialog::getOpenFileName(this, "Load YOLO ONNX model", QString(), "ONNX model (*.onnx)");
+    if (path.isEmpty()) return;
+    std::string error;
+    const bool ready = Detector::instance().setYoloModel(path.toStdString(), &error);
+    if (yoloModelPathEdit) yoloModelPathEdit->setText(path);
+    if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(ready ? "YOLO model loaded" : error));
+    if (ready) runDetectionOnCurrentFrame();
+}
+
+void MainWindow::runDetectionOnCurrentFrame() {
+    DecodedVideoFrame frame = lastDetectFrame;
+
+    if (frame.rgbData.empty() || frame.width <= 0 || frame.height <= 0) {
+        // Fetch a frame for the active clip at the playhead
+        const ProjectClip* clip = currentClip();
+        if (!clip) {
+            auto* track = currentTrack();
+            if (track) clip = clipAtTime(*track, currentPlayhead);
+        }
+        if (!clip) {
+            if (statusBar()) statusBar()->showMessage("No clip under playhead to detect", 2500);
+            return;
+        }
+        const double localTime = clip->sourceStart + std::max(0.0, currentPlayhead - clip->timelineStart);
+        if (!VideoEngine::instance().getFrame(clip->id, localTime, frame) || frame.rgbData.empty()) {
+            if (statusBar()) statusBar()->showMessage("Could not decode frame for detection", 2500);
+            return;
+        }
+        lastDetectFrame = frame;
+    }
+
+    if (detectSensitivitySlider && detectMinAreaSlider) {
+        Detector::instance().setSensitivity(detectSensitivitySlider->value() / 100.0f);
+        Detector::instance().setMinArea(detectMinAreaSlider->value() / 1000.0f);
+    }
+
+    currentDetections = Detector::instance().detectFrame(frame);
+    if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(Detector::instance().status()));
+
+    if (detectionList) {
+        detectionList->clear();
+        for (const auto& box : currentDetections) {
+            detectionList->addItem(QString("%1  (%2%)  [%3x%4]")
+                .arg(QString::fromStdString(box.label))
+                .arg(box.confidence * 100.0f, 0, 'f', 0)
+                .arg(box.w * frame.width, 0, 'f', 0)
+                .arg(box.h * frame.height, 0, 'f', 0));
+        }
+    }
+
+    if (glWidget) {
+        glWidget->setDetections(currentDetections);
+        if (showBoxesCheck) glWidget->setShowDetections(showBoxesCheck->isChecked());
+
+        const bool maskOn = applyMaskCheck && applyMaskCheck->isChecked();
+        glWidget->setMaskEnabled(maskOn);
+        if (maskOn) {
+            auto mask = Detector::buildMaskFromBoxes(frame.width, frame.height, currentDetections, 6.0f);
+            glWidget->setMaskData(frame.width, frame.height, mask);
+        }
+    }
+
+    if (statusBar()) {
+        statusBar()->showMessage(QString("Detected %1 region(s)").arg(currentDetections.size()), 2500);
+    }
+}
+
 void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* activeTrack, const ProjectClip* activeClip) {
     if (!activeTrack) {
         glWidget->clearFrame();
@@ -1167,6 +1296,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
         activeClipId = QString::fromStdString(activeClip->id);
         activeFilePath = QString::fromStdString(activeClip->filePath);
     }
+    // Slop code, change to have a function
     VideoEngine::instance().setDatamoshing(activeClipId.toStdString(), false, false, 0.0, 1, 0.0);
     VideoEngine::instance().setOpticalSmear(activeClipId.toStdString(), false, 0.0, 0.0, 0.0, 0.0);
     VideoEngine::instance().setCpuXor(activeClipId.toStdString(), false, 0.5, 1.0);
@@ -1602,11 +1732,18 @@ bool MainWindow::addTransitionAtCut(int trackIndex, double dropTime, const QStri
 
 void MainWindow::refreshActiveEffectsList() {
     if (!activeEffectsList) return;
+
+    QString selectedId;
+    if (activeEffectsList->currentItem()) {
+        selectedId = activeEffectsList->currentItem()->data(Qt::UserRole).toString();
+    }
+
     activeEffectsList->clear();
 
     const auto* effects = activeEffects();
     if (!effects) return;
 
+    int restoreRow = -1;
     for (const auto& eff : *effects) {
         QString id = QString::fromStdString(eff.pluginId);
         if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
@@ -1617,6 +1754,13 @@ void MainWindow::refreshActiveEffectsList() {
         }
         auto* item = new QListWidgetItem(effectDisplayNameForId(id), activeEffectsList);
         item->setData(Qt::UserRole, id);
+        if (!selectedId.isEmpty() && id == selectedId) {
+            restoreRow = activeEffectsList->count() - 1;
+        }
+    }
+
+    if (restoreRow >= 0) {
+        activeEffectsList->setCurrentRow(restoreRow);
     }
 }
 

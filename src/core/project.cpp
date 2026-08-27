@@ -70,6 +70,11 @@ void Project::fromJson(const QJsonObject& root) {
                         double v = kfObj.value("value").toDouble();
                         int modeInt = kfObj.value("mode").toInt(0);
                         param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                        auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                        key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                        key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                        key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                        key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                     }
 
                     effect.parameters.push_back(param);
@@ -127,6 +132,11 @@ void Project::fromJson(const QJsonObject& root) {
                     double v = kfObj.value("value").toDouble();
                     int modeInt = kfObj.value("mode").toInt(0);
                     param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                    auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                    key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                    key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                    key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                    key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                 }
                 effect.parameters.push_back(param);
             }
@@ -184,6 +194,11 @@ void Project::fromJson(const QJsonObject& root) {
                     double v = kfObj.value("value").toDouble();
                     int modeInt = kfObj.value("mode").toInt(0);
                     param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                    auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                    key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                    key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                    key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                    key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                 }
                 transition.parameters.push_back(param);
             }
@@ -298,6 +313,10 @@ QJsonObject Project::toJson() const {
                         kfObj["time"] = kf.time;
                         kfObj["value"] = kf.value;
                         kfObj["mode"] = static_cast<int>(kf.mode);
+                        kfObj["handleInX"] = kf.handleInX;
+                        kfObj["handleInY"] = kf.handleInY;
+                        kfObj["handleOutX"] = kf.handleOutX;
+                        kfObj["handleOutY"] = kf.handleOutY;
                         keyframesArray.append(kfObj);
                     }
                     paramObj["keyframes"] = keyframesArray;
@@ -333,6 +352,10 @@ QJsonObject Project::toJson() const {
                     kfObj["time"] = kf.time;
                     kfObj["value"] = kf.value;
                     kfObj["mode"] = static_cast<int>(kf.mode);
+                    kfObj["handleInX"] = kf.handleInX;
+                    kfObj["handleInY"] = kf.handleInY;
+                    kfObj["handleOutX"] = kf.handleOutX;
+                    kfObj["handleOutY"] = kf.handleOutY;
                     keyframesArray.append(kfObj);
                 }
                 paramObj["keyframes"] = keyframesArray;
@@ -371,6 +394,10 @@ QJsonObject Project::toJson() const {
                     kfObj["time"] = kf.time;
                     kfObj["value"] = kf.value;
                     kfObj["mode"] = static_cast<int>(kf.mode);
+                    kfObj["handleInX"] = kf.handleInX;
+                    kfObj["handleInY"] = kf.handleInY;
+                    kfObj["handleOutX"] = kf.handleOutX;
+                    kfObj["handleOutY"] = kf.handleOutY;
                     keyframesArray.append(kfObj);
                 }
                 paramObj["keyframes"] = keyframesArray;

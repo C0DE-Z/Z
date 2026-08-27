@@ -11,6 +11,7 @@
 #include <QMouseEvent>
 #include <QColor>
 #include <QInputDialog>
+#include <QComboBox>
 #include <QDebug>
 #include <functional>
 #include <algorithm>
@@ -266,6 +267,19 @@ void Inspector::updateParameterValue(const QString& paramName, double value) {
     setCurrentTime(currentPlayheadTime);
 }
 
+void Inspector::syncParameters(const std::vector<ShaderParameter>& parameters) {
+    if (parameters.size() != currentParameters.size()) {
+        // Structure changed — caller should reload via loadEffect.
+        currentParameters = parameters;
+    } else {
+        for (size_t i = 0; i < parameters.size(); ++i) {
+            currentParameters[i].currentVal = parameters[i].currentVal;
+            currentParameters[i].curve = parameters[i].curve;
+        }
+    }
+    setCurrentTime(currentPlayheadTime);
+}
+
 void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderParameter>& parameters, double currentTime) {
     activeEffectId.clear();
     currentParameters.clear();
@@ -458,7 +472,21 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
             emit keyframeRemoveRequested(effectId, paramName, currentPlayheadTime);
         };
 
-        timeUpdateCallbacks.push_back([this, inputWidget, valLabel, kfButton, curvePreview, pIdx](double t) {
+        QComboBox* interpolation = new QComboBox(this);
+        interpolation->addItems({"Linear", "Hold", "Bezier"});
+        interpolation->setToolTip("Interpolation for the keyframe at the playhead");
+        interpolation->setEnabled(hasKfAtPlayhead);
+        for (const auto& kf : param.curve.getKeyframes()) {
+            if (std::abs(kf.time - currentPlayheadTime) < 0.001) {
+                interpolation->setCurrentIndex(static_cast<int>(kf.mode));
+                break;
+            }
+        }
+        connect(interpolation, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, effectId, paramName](int mode) {
+            emit keyframeInterpolationRequested(effectId, paramName, currentPlayheadTime, mode);
+        });
+
+        timeUpdateCallbacks.push_back([this, inputWidget, valLabel, kfButton, interpolation, curvePreview, pIdx](double t) {
             if (pIdx >= currentParameters.size()) return;
             const auto& curParam = currentParameters[pIdx];
             bool hasKf = false;
@@ -478,10 +506,18 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
                     scrub->setValue(val);
                     scrub->blockSignals(oldState);
                 }
-                for (const auto& kf : curParam.curve.getKeyframes()) {
-                    if (std::abs(kf.time - t) < 0.001) { hasKf = true; break; }
+            for (const auto& kf : curParam.curve.getKeyframes()) {
+                    if (std::abs(kf.time - t) < 0.001) {
+                        hasKf = true;
+                        const bool wasBlocked = interpolation->signalsBlocked();
+                        interpolation->blockSignals(true);
+                        interpolation->setCurrentIndex(static_cast<int>(kf.mode));
+                        interpolation->blockSignals(wasBlocked);
+                        break;
+                    }
                 }
             }
+            interpolation->setEnabled(hasKf);
             curvePreview->setParam(curParam);
             curvePreview->setPlayheadTime(t);
 
@@ -497,6 +533,8 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
         rowLayout->addWidget(kfButton);
         rowLayout->addWidget(nextKfButton);
         scrollLayout->addWidget(rowWidget);
+
+        scrollLayout->addWidget(interpolation);
         scrollLayout->addWidget(curvePreview);
     }
 }

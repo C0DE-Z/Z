@@ -16,6 +16,10 @@ include(Platform)
 # 2. Third-party dependencies
 include(Dependencies)
 
+# Object detection is optional: the editor keeps its lightweight region detector
+# when an OpenCV DNN build (and a YOLO ONNX model) is not available.
+find_package(OpenCV QUIET COMPONENTS core dnn imgproc)
+
 # 3. Source File Definitions
 set(Z_SOURCES
     src/main.cpp
@@ -28,6 +32,7 @@ set(Z_SOURCES
     src/engine/pluginmanager.cpp
     src/engine/videodecoder.cpp
     src/engine/cpueffects.cpp
+    src/engine/detector.cpp
     src/engine/videoengine.cpp
     src/engine/audioengine.cpp
     src/engine/glwidget.cpp
@@ -52,9 +57,11 @@ set(Z_HEADERS
     src/media/mediaimporter.h
     src/media/mediaexporter.h
     src/engine/pluginmanager.h
+    src/engine/renderbackend.h
     src/engine/videoframe.h
     src/engine/videodecoder.h
     src/engine/cpueffects.h
+    src/engine/detector.h
     src/engine/videoengine.h
     src/engine/audioengine.h
     src/engine/glwidget.h
@@ -95,6 +102,12 @@ target_link_libraries(z PRIVATE
     PkgConfig::PORTAUDIO
     SQLite::SQLite3
 )
+
+if(OpenCV_FOUND)
+    target_include_directories(z PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(z PRIVATE ${OpenCV_LIBS})
+    target_compile_definitions(z PRIVATE Z_HAS_OPENCV_DNN=1)
+endif()
 
 if(APPLE)
     target_link_libraries(z PRIVATE "-framework OpenGL" "-framework Cocoa")

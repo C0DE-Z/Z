@@ -17,11 +17,13 @@ public:
     void clearInspector();
     void setCurrentTime(double currentTime);
     void updateParameterValue(const QString& paramName, double value);
+    void syncParameters(const std::vector<ShaderParameter>& parameters);
 
 signals:
     void parameterChanged(const QString& effectId, const QString& paramName, double value);
     void keyframeRequested(const QString& effectId, const QString& paramName, double time, double value);
     void keyframeRemoveRequested(const QString& effectId, const QString& paramName, double time);
+    void keyframeInterpolationRequested(const QString& effectId, const QString& paramName, double time, int mode);
     void parameterSelected(const QString& effectId, const QString& paramName);
     void removeEffectRequested(const QString& effectId);
     void scrubRequested(double time);

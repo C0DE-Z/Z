@@ -46,12 +46,24 @@ void testKeyframeRemoval() {
     std::cout << "[PASS] testKeyframeRemoval\n";
 }
 
+void testKeyframeEditing() {
+    AnimationCurve curve;
+    curve.insertKeyframe(1.0, 10.0);
+    curve.insertKeyframe(3.0, 30.0);
+    assert(curve.moveKeyframe(1.0, 2.0));
+    assert(curve.hasKeyframeAt(2.0));
+    assert(curve.setInterpolationAt(2.0, InterpolationMode::Step));
+    assert(std::abs(curve.evaluate(2.5) - 10.0) < 1e-5);
+    std::cout << "[PASS] testKeyframeEditing\n";
+}
+
 int main() {
     std::cout << "=== Running Keyframe Unit Tests ===\n";
     testConstantCurve();
     testLinearInterpolation();
     testStepInterpolation();
     testKeyframeRemoval();
+    testKeyframeEditing();
     std::cout << "=== All Keyframe Tests Passed ===\n";
     return 0;
 }

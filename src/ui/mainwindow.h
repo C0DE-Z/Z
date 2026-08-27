@@ -17,6 +17,11 @@
 #include "ui/components/effectsbrowser.h"
 #include "ui/components/mediapool.h"
 #include "ui/components/trackcontrol.h"
+#include "engine/detector.h"
+#include <QSlider>
+#include <QCheckBox>
+#include <QLineEdit>
+#include <QElapsedTimer>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -42,6 +47,10 @@ private slots:
     void onToggleFpsOverlay(bool checked);
     void openPreferences();
     void importMediaFile(const QString& filePath, int targetTrack = -1, double targetTime = -1.0);
+    void runDetectionOnCurrentFrame();
+    void onDetectionSettingsChanged();
+    void clearDetections();
+    void chooseYoloModel();
 
 private:
     QTimer* playbackTimer = nullptr;
@@ -63,6 +72,21 @@ private:
     TrackControl* trackControl = nullptr;
     QListWidget* activeEffectsList = nullptr;
     QTabWidget* bottomTabs = nullptr;
+
+    // Detect / Mask UI
+    QListWidget* detectionList = nullptr;
+    QSlider* detectSensitivitySlider = nullptr;
+    QSlider* detectMinAreaSlider = nullptr;
+    QCheckBox* liveDetectCheck = nullptr;
+    QCheckBox* showBoxesCheck = nullptr;
+    QCheckBox* applyMaskCheck = nullptr;
+    QCheckBox* openClCheck = nullptr;
+    QLineEdit* yoloModelPathEdit = nullptr;
+    QLabel* detectionStatusLabel = nullptr;
+    bool liveDetectEnabled = false;
+    QElapsedTimer liveDetectionTimer;
+    std::vector<DetectionBox> currentDetections;
+    DecodedVideoFrame lastDetectFrame;
 
     // Transport Bar UI Elements
     QLabel* timecodeLabel = nullptr;
