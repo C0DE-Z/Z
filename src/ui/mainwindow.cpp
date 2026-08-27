@@ -44,7 +44,7 @@
 #include "core/shortcutmanager.h"
 #include "ui/vector_icons.h"
 #include "media/mediaimporter.h" 
-
+#include <iostream>
 namespace {
 template <typename Fn>
 auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
@@ -73,7 +73,7 @@ auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("Z - Creative Video Engine");
+    setWindowTitle("Z");
     setStyleSheet(R"(
         * {
             font-family: 'Segoe UI', 'JetBrains Mono', 'Consolas', monospace;
@@ -514,9 +514,9 @@ void MainWindow::createMenus() {
     QMenu* helpMenu = menuBar()->addMenu("&Help");
     helpMenu->addAction("&About Z...", this, [this]() {
         QMessageBox::about(this, "About Z",
-            "<h2>Z - Creative Video Engine</h2>"
+            "<h2>Z - A Video Editor</h2>"
             "<p><b>Version 1.0.0</b></p>"
-            "<p>High-performance creative desktop editor for datamoshing, GLSL shaders, and experimental video art.</p>"
+            "<p>Made for experimental video art.</p>"
             "<p>Website: <a href='https://z.codezey.dev'>https://z.codezey.dev</a></p>"
         );
     });
@@ -735,15 +735,14 @@ void MainWindow::cutClipAtPlayhead() {
     const double fps = std::max(1.0, VideoEngine::instance().getFps(clip->id));
     const double relTime = std::max(0.0, currentPlayhead - clip->timelineStart);
     const int totalFrames = std::max(2, static_cast<int>(std::round(clip->sourceDuration * fps)));
-    
-    // Exact frame boundary: the frame currently displayed on screen becomes the start of the right clip
-    int cutFrame = static_cast<int>(std::floor((relTime + 1e-5) * fps));
+    std::cout << "Cutting clip at time: " << relTime << " seconds, fps: " << fps << ", totalFrames: " << totalFrames << std::endl;
+    int cutFrame = static_cast<int>(std::floor((relTime + 1e-5) * fps)); // 1e-5 (0.00001) 
     cutFrame = std::clamp(cutFrame, 1, totalFrames - 1);
-
+    std::cout << "Cut frame: " << cutFrame << std::endl;
     const double leftDuration = static_cast<double>(cutFrame) / fps;
     const double cutTime = clip->timelineStart + leftDuration;
     const double rightDuration = clip->sourceDuration - leftDuration;
-
+    std::cout << "Left duration: " << leftDuration << ", right duration: " << rightDuration << std::endl;
     if (leftDuration <= 0.001 || rightDuration <= 0.001) {
         if (wasPlaying) togglePlayback();
         return;

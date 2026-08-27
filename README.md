@@ -1,21 +1,11 @@
-# Z — Creative Video Engine & Glitch Synthesizer
+# Z — A Video Editor
 
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Qt6](https://img.shields.io/badge/Qt-6.0%2B-green.svg)
 ![OpenGL](https://img.shields.io/badge/OpenGL-3.3%20Core-orange.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
-**Z** is a high-performance, native desktop video editing workstation and experimental graphics synthesizer designed for datamoshing, GLSL shader synthesis, optical flow smearing, and creative video manipulation.
-
----
-
-## Key Capabilities
-
-- **Real-Time GPU Synthesizer**: Multi-pass OpenGL 3.3 Core Profile rendering pipeline with ping-pong FBO feedback loops for temporal recursion, color warping, and circuit-bent artifacts.
-- **Dynamic GLSL Plugin Engine**: Hot-reloadable runtime plugin architecture. Drop `.glsl` shaders and `.json` parameter manifests into `plugins/` to instantly reflect controls and keyframing in the Inspector.
-- **Hardware-Accelerated Timeline**: Multi-track non-linear editor with cubic Hermite keyframe curves, sub-frame scrubbing, ripple trimming, snap magnetism, and in-place transitions.
-- **Audio Synchronization**: Low-latency PortAudio engine with master timecode alignment and live audio energy analysis (`u_audio_low`, `u_audio_mid`, `u_audio_high`).
-- **Professional Export Suite**: Multi-threaded FFmpeg rendering pipeline supporting custom resolutions (Source, 1080p, 4K, 720p), framerates, CRF compression presets, and range exports.
+**Z** is a video editor.. 
 
 ---
 
@@ -84,6 +74,4 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-## License & Community
-Built for digital artists, datamoshers, and video creators. Open source under the MIT License.
 Website: [https://z.codezey.dev](https://z.codezey.dev)
