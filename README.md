@@ -1,11 +1,10 @@
-# Z — A Video Editor
-
+# Z — BETA
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![Qt6](https://img.shields.io/badge/Qt-6.0%2B-green.svg)
 ![OpenGL](https://img.shields.io/badge/OpenGL-3.3%20Core-orange.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
-**Z** is a video editor.. 
+This is the beta branch for Z where unstable and test code is committed , builds may not always work or compile be warned 
 
 ---
 
