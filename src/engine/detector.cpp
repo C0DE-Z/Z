@@ -216,6 +216,7 @@ std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) 
         box.h = static_cast<float>(py1 - py0) / static_cast<float>(h);
         box.confidence = std::clamp(0.35f + c.score / static_cast<float>(gw * gh) * 2.0f, 0.0f, 0.99f);
         box.label = "region_" + std::to_string(objIndex++);
+        
         results.push_back(box);
     }
 

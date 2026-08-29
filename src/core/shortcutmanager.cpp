@@ -19,7 +19,7 @@ void ShortcutManager::initialize() {
         {"playback.clear_inout", "Playback", "Clear In/Out Range", "Ctrl+Shift+X", "Ctrl+Shift+X"},
 
         // Edit
-        {"edit.cut_clip", "Edit", "Cut Clip at Playhead", "Ctrl+K", "Ctrl+K"},
+        {"edit.cut_clip", "Edit", "Cut Clip at Playhead", "C", "Ctrl+K"},
         {"edit.delete_clip", "Edit", "Delete Selected", "Delete", "Delete"},
         {"edit.undo", "Edit", "Undo", "Ctrl+Z", "Ctrl+Z"},
         {"edit.redo", "Edit", "Redo", "Ctrl+Shift+Z", "Ctrl+Shift+Z"},
