@@ -1,6 +1,7 @@
 #include "videodecoder.h"
 #include "cpueffects.h"
 #include <algorithm>
+#include <cmath>
 #include <QDebug>
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -25,6 +26,7 @@ VideoDecoder::VideoDecoder() {
 }
 
 void VideoDecoder::setDatamoshing(bool enabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     datamoshEnabled = enabled;
     iFrameDropProb = iDropProb;
     pFrameDuplicateProb = pDupProb;
@@ -33,6 +35,7 @@ void VideoDecoder::setDatamoshing(bool enabled, double iDropProb, double pDupPro
 }
 
 void VideoDecoder::setOpticalSmear(bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     opticalSmearEnabled = smearEnabled;
     mergeStrength = frameMerge;
     smearStrength = frameSmear;
@@ -41,30 +44,35 @@ void VideoDecoder::setOpticalSmear(bool smearEnabled, double frameMerge, double 
 }
 
 void VideoDecoder::setCpuXor(bool xorEnabled, double xorValue, double intensity) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     cpuXorEnabled = xorEnabled;
     this->cpuXorValue = xorValue;
     this->cpuXorIntensity = intensity;
 }
 
 void VideoDecoder::setCpuOr(bool orEnabled, double orValue, double intensity) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     cpuOrEnabled = orEnabled;
     this->cpuOrValue = orValue;
     this->cpuOrIntensity = intensity;
 }
 
 void VideoDecoder::setCpuAnd(bool andEnabled, double andValue, double intensity) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     cpuAndEnabled = andEnabled;
     this->cpuAndValue = andValue;
     this->cpuAndIntensity = intensity;
 }
 
 void VideoDecoder::setCpuXnor(bool xnorEnabled, double xnorValue, double intensity) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     cpuXnorEnabled = xnorEnabled;
     this->cpuXnorValue = xnorValue;
     this->cpuXnorIntensity = intensity;
 }
 
 void VideoDecoder::setCpuNand(bool nandEnabled, double nandValue, double intensity) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
     cpuNandEnabled = nandEnabled;
     this->cpuNandValue = nandValue;
     this->cpuNandIntensity = intensity;
@@ -91,7 +99,7 @@ VideoDecoder::~VideoDecoder() {
     av_frame_free(&swFrame);
 }
 
-bool VideoDecoder::openFile(const std::string& filePath) {
+bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
     close();
 
     if (!packet) {
@@ -115,7 +123,9 @@ bool VideoDecoder::openFile(const std::string& filePath) {
     height = 0;
     fps = 0.0;
     timeBase = 0.0;
+    streamStartTime = 0.0;
     lastDecodedTime = -999.0;
+    lastPacketTime = -999.0;
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
     audioSamples.clear();
@@ -157,7 +167,9 @@ bool VideoDecoder::openFile(const std::string& filePath) {
             return false;
         }
 
-        codecCtx->thread_count = 4;
+        // Let FFmpeg scale decode workers to the host. A fixed four threads
+        // unnecessarily throttled high-resolution and high-frame-rate clips.
+        codecCtx->thread_count = 0;
         codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         codecCtx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
         codecCtx->err_recognition = 0; 
@@ -239,8 +251,20 @@ bool VideoDecoder::openFile(const std::string& filePath) {
         width = codecCtx->width;
         height = codecCtx->height;
         lastDecodedTime = -999.0;
-        fps = av_q2d(stream->avg_frame_rate);
+        lastPacketTime = -999.0;
         timeBase = av_q2d(stream->time_base);
+        streamStartTime = 0.0;
+        if (stream->start_time != AV_NOPTS_VALUE && timeBase > 0.0) {
+            streamStartTime = stream->start_time * timeBase;
+        }
+
+        fps = av_q2d(stream->avg_frame_rate);
+        if (fps <= 0.0 || !std::isfinite(fps)) {
+            fps = av_q2d(stream->r_frame_rate);
+        }
+        if (fps <= 0.0 || !std::isfinite(fps)) {
+            fps = 30.0;
+        }
     }
 
     duration = formatCtx->duration / (double)AV_TIME_BASE;
@@ -289,7 +313,7 @@ bool VideoDecoder::openFile(const std::string& filePath) {
         }
     }
 
-    if (audioStreamIndex != -1) {
+    if (preloadAudio && audioStreamIndex != -1) {
         preDecodeAudio(filePath);
     }
 
@@ -299,8 +323,23 @@ bool VideoDecoder::openFile(const std::string& filePath) {
 void VideoDecoder::preDecodeAudio(const std::string& filePath) {
     AVFormatContext* aFormatCtx = nullptr;
     if (avformat_open_input(&aFormatCtx, filePath.c_str(), nullptr, nullptr) != 0) return;
+
+    struct AudioPredecodeGuard {
+        AVFormatContext*& fCtx;
+        AVCodecContext* aCodecCtx = nullptr;
+        SwrContext* swrCtx = nullptr;
+        AVPacket* audioPacket = nullptr;
+        AVFrame* audioFrame = nullptr;
+        ~AudioPredecodeGuard() {
+            if (audioPacket) av_packet_free(&audioPacket);
+            if (audioFrame) av_frame_free(&audioFrame);
+            if (swrCtx) swr_free(&swrCtx);
+            if (aCodecCtx) avcodec_free_context(&aCodecCtx);
+            if (fCtx) { avformat_close_input(&fCtx); fCtx = nullptr; }
+        }
+    } guard{aFormatCtx};
+
     if (avformat_find_stream_info(aFormatCtx, nullptr) < 0) {
-        avformat_close_input(&aFormatCtx);
         return;
     }
 
@@ -315,66 +354,58 @@ void VideoDecoder::preDecodeAudio(const std::string& filePath) {
     }
 
     if (aStreamIndex == -1 || !aCodec) {
-        avformat_close_input(&aFormatCtx);
         return;
     }
 
-    AVCodecContext* aCodecCtx = avcodec_alloc_context3(aCodec);
-    avcodec_parameters_to_context(aCodecCtx, aFormatCtx->streams[aStreamIndex]->codecpar);
-    if (avcodec_open2(aCodecCtx, aCodec, nullptr) < 0) {
-        avcodec_free_context(&aCodecCtx);
-        avformat_close_input(&aFormatCtx);
+    guard.aCodecCtx = avcodec_alloc_context3(aCodec);
+    if (!guard.aCodecCtx) return;
+    if (avcodec_parameters_to_context(guard.aCodecCtx, aFormatCtx->streams[aStreamIndex]->codecpar) < 0) return;
+    if (avcodec_open2(guard.aCodecCtx, aCodec, nullptr) < 0) {
         return;
     }
 
-    AVPacket* audioPacket = av_packet_alloc();
-    AVFrame* audioFrame = av_frame_alloc();
+    guard.audioPacket = av_packet_alloc();
+    guard.audioFrame = av_frame_alloc();
+    if (!guard.audioPacket || !guard.audioFrame) return;
 
-    SwrContext* swrCtx = nullptr;
     AVChannelLayout stereoLayout = AV_CHANNEL_LAYOUT_STEREO;
     if (swr_alloc_set_opts2(
-            &swrCtx,
+            &guard.swrCtx,
             &stereoLayout, AV_SAMPLE_FMT_FLT, 44100,
-            &aCodecCtx->ch_layout, aCodecCtx->sample_fmt, aCodecCtx->sample_rate,
-            0, nullptr) < 0 || !swrCtx || swr_init(swrCtx) < 0) {
+            &guard.aCodecCtx->ch_layout, guard.aCodecCtx->sample_fmt, guard.aCodecCtx->sample_rate,
+            0, nullptr) < 0 || !guard.swrCtx || swr_init(guard.swrCtx) < 0) {
         qWarning() << "FFmpeg: Failed to initialize audio resampler for predecode.";
-        if (swrCtx) {
-            swr_free(&swrCtx);
-        }
-        av_frame_free(&audioFrame);
-        av_packet_free(&audioPacket);
-        avcodec_free_context(&aCodecCtx);
-        avformat_close_input(&aFormatCtx);
         return;
     }
 
-    while (av_read_frame(aFormatCtx, audioPacket) >= 0) {
-        if (audioPacket->stream_index == aStreamIndex) {
-            if (avcodec_send_packet(aCodecCtx, audioPacket) == 0) {
-                while (avcodec_receive_frame(aCodecCtx, audioFrame) == 0) {
-                    int maxOutSamples = swr_get_out_samples(swrCtx, audioFrame->nb_samples);
-                    std::vector<float> resampled(maxOutSamples * 2);
-                    uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(resampled.data()) };
+    while (av_read_frame(aFormatCtx, guard.audioPacket) >= 0) {
+        if (guard.audioPacket->stream_index == aStreamIndex) {
+            if (avcodec_send_packet(guard.aCodecCtx, guard.audioPacket) == 0) {
+                while (avcodec_receive_frame(guard.aCodecCtx, guard.audioFrame) == 0) {
+                    int maxOutSamples = swr_get_out_samples(guard.swrCtx, guard.audioFrame->nb_samples);
+                    if (maxOutSamples > 0) {
+                        std::vector<float> resampled(maxOutSamples * 2);
+                        uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(resampled.data()) };
 
-                    int converted = swr_convert(
-                        swrCtx, 
-                        outData, maxOutSamples, 
-                        (const uint8_t**)audioFrame->data, audioFrame->nb_samples
-                    );
+                        int converted = swr_convert(
+                            guard.swrCtx, 
+                            outData, maxOutSamples, 
+                            (const uint8_t**)guard.audioFrame->data, guard.audioFrame->nb_samples
+                        );
 
-                    if (converted > 0) {
-                        audioSamples.insert(audioSamples.end(), resampled.begin(), resampled.begin() + converted * 2);
+                        if (converted > 0) {
+                            audioSamples.insert(audioSamples.end(), resampled.begin(), resampled.begin() + converted * 2);
+                        }
                     }
                 }
             }
         }
-        av_packet_unref(audioPacket);
+        av_packet_unref(guard.audioPacket);
     }
 
-    av_packet_free(&audioPacket);
-    av_frame_free(&audioFrame);
-
-    av_seek_frame(formatCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
+    if (formatCtx) {
+        av_seek_frame(formatCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
+    }
     if (codecCtx) avcodec_flush_buffers(codecCtx);
     if (audioCodecCtx) avcodec_flush_buffers(audioCodecCtx);
 }
@@ -426,7 +457,9 @@ void VideoDecoder::close() {
     height = 0;
     fps = 0.0;
     timeBase = 0.0;
+    streamStartTime = 0.0;
     lastDecodedTime = -999.0;
+    lastPacketTime = -999.0;
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
 }
@@ -435,14 +468,17 @@ bool VideoDecoder::seekTo(double timestamp) {
     if (!formatCtx || videoStreamIndex == -1) return false;
     if (timeBase <= 0.0) return false;
 
-    AVStream* stream = formatCtx->streams[videoStreamIndex];
-    int64_t seekTarget = static_cast<int64_t>(timestamp / timeBase);
+    const double seekSeconds = std::max(0.0, timestamp + streamStartTime);
+    int64_t seekTarget = static_cast<int64_t>(seekSeconds / timeBase);
 
-    if (avformat_seek_file(formatCtx, videoStreamIndex, INT64_MIN, seekTarget, seekTarget, AVSEEK_FLAG_BACKWARD) < 0) {
-        return false;
+    if (av_seek_frame(formatCtx, videoStreamIndex, seekTarget, AVSEEK_FLAG_BACKWARD) < 0) {
+        if (avformat_seek_file(formatCtx, videoStreamIndex, INT64_MIN, seekTarget, seekTarget, 0) < 0) {
+            return false;
+        }
     }
 
     avcodec_flush_buffers(codecCtx);
+    lastPacketTime = -999.0;
     return true;
 }
 
@@ -461,38 +497,42 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
 
     timestamp = std::clamp(timestamp, 0.0, duration);
 
-    double tolerance = (fps > 0.0) ? (0.5 / fps) : 0.015;
+    const double frameDur = (fps > 0.0) ? (1.0 / fps) : 0.033333;
 
-    if (lastDecodedTime >= 0.0 && std::abs(timestamp - lastDecodedTime) <= tolerance && !referenceFrameRgb.empty()) {
-        outFrame.timestamp = lastDecodedTime;
-        outFrame.width = width / playbackQualityScale;
-        outFrame.height = height / playbackQualityScale;
-        outFrame.rgbData = referenceFrameRgb;
-        return true;
+    if (lastDecodedTime >= 0.0 && !referenceFrameRgb.empty()) {
+        if (timestamp >= (lastDecodedTime - 0.0005) && timestamp < (lastDecodedTime + frameDur - 0.0005)) {
+            outFrame.timestamp = lastDecodedTime;
+            outFrame.width = width / playbackQualityScale;
+            outFrame.height = height / playbackQualityScale;
+            outFrame.rgbData = referenceFrameRgb;
+            return true;
+        }
     }
 
-    bool needSeek = (lastDecodedTime < 0.0) || (timestamp < lastDecodedTime - tolerance) || (timestamp - lastDecodedTime > 1.0);
+    bool needSeek = (lastDecodedTime < 0.0) || (timestamp < lastDecodedTime - 0.0005) || (timestamp >= lastDecodedTime + 0.5);
 
     if (needSeek) {
         if (!seekTo(timestamp)) {
             return false;
         }
-        lastDecodedTime = timestamp;
-        hasReferenceFrame = false; 
+        lastDecodedTime = -999.0;
+        lastPacketTime = -999.0;
+        hasReferenceFrame = false;
+        referenceFrameRgb.clear();
     }
 
-    bool isCatchingUp = !needSeek && (timestamp - lastDecodedTime > (2.0 / std::max(fps, 1.0)));
-    if (isCatchingUp) {
-        codecCtx->skip_frame = AVDISCARD_NONREF;
-    }
-    int maxTries = 200;
-    while (maxTries-- > 0) {
+    int maxPackets = 2000;
+    while (maxPackets-- > 0) {
         int readRet = av_read_frame(formatCtx, packet);
         if (readRet < 0) {
-            break; 
-        }
+            avcodec_send_packet(codecCtx, nullptr);
+        } else if (packet->stream_index == videoStreamIndex) {
+            if (packet->pts != AV_NOPTS_VALUE) {
+                lastPacketTime = packet->pts * timeBase - streamStartTime;
+            } else if (packet->dts != AV_NOPTS_VALUE) {
+                lastPacketTime = packet->dts * timeBase - streamStartTime;
+            }
 
-        if (packet->stream_index == videoStreamIndex) {
             bool isIFrame = (packet->flags & AV_PKT_FLAG_KEY);
             int sendCount = 1;
             if (isIFrame) {
@@ -517,90 +557,131 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 if (sendRes == AVERROR(EAGAIN) || sendRes < 0) break;
             }
             av_packet_unref(packet);
-
-            while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-                AVFrame* activeFrame = frame;
-                if (frame->format == hwPixFmt) {
-                    av_frame_unref(swFrame);
-                    if (av_hwframe_transfer_data(swFrame, frame, 0) < 0) {
-                        continue;
-                    }
-                    activeFrame = swFrame;
-                }
-                int64_t pts = activeFrame->best_effort_timestamp;
-                if (pts == AV_NOPTS_VALUE) {
-                    pts = activeFrame->pts;
-                }
-
-                bool hasValidPts = (pts != AV_NOPTS_VALUE);
-                double framePts = hasValidPts ? (pts * timeBase) : timestamp;
-
-                double frameTolerance = (fps > 0.0) ? (0.5 / fps) : 0.0;
-                if (!hasValidPts || framePts >= timestamp - frameTolerance) {
-                    int outWidth = width / playbackQualityScale;
-                    int outHeight = height / playbackQualityScale;
-                    swsCtx = sws_getCachedContext(
-                        swsCtx,
-                        width, height, (AVPixelFormat)activeFrame->format,
-                        outWidth, outHeight, AV_PIX_FMT_RGB24,
-                        SWS_BILINEAR, nullptr, nullptr, nullptr
-                    );
-                    if (!swsCtx) {
-                        qDebug() << "VideoEngine Trace: swsCtx is NULL! Crash imminent.";
-                        return false;
-                    }
-                    outFrame.timestamp = framePts;
-                    outFrame.width = outWidth;
-                    outFrame.height = outHeight;
-                    size_t rgbSize = outWidth * outHeight * 3;
-                    if (outFrame.rgbData.size() != rgbSize) {
-                        outFrame.rgbData.resize(rgbSize);
-                    }
-                    uint8_t* dest[4] = { outFrame.rgbData.data(), nullptr, nullptr, nullptr };
-                    int linesize[4] = { outWidth * 3, 0, 0, 0 };
-                    dest[0] += linesize[0] * (outFrame.height - 1);
-                    linesize[0] = -linesize[0];
-                    sws_scale(
-                        swsCtx,
-                        activeFrame->data,
-                        activeFrame->linesize,
-                        0,
-                        height, 
-                        dest,
-                        linesize
-                    );
-
-                    if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
-                    }
-                    if (cpuXorEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::cpuXorWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuXorValue, cpuXorIntensity);
-                    }
-                    if (cpuOrEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::cpuOrWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuOrValue, cpuOrIntensity);
-                    }
-                    if (cpuAndEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::cpuAndWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuAndValue, cpuAndIntensity);
-                    }
-                    if (cpuXnorEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::cpuXnorWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuXnorValue, cpuXnorIntensity);
-                    }
-                    if (cpuNandEnabled && !referenceFrameRgb.empty()) {
-                        CpuEffects::cpuNandWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuNandValue, cpuNandIntensity);
-                    }
-
-                    referenceFrameRgb = outFrame.rgbData;
-                    hasReferenceFrame = true;
-                    lastDecodedTime = framePts;
-                    if (isCatchingUp) {
-                        codecCtx->skip_frame = AVDISCARD_DEFAULT;
-                    }
-                    return true;
-                }
-            }
         } else {
             av_packet_unref(packet);
+            continue;
         }
+
+        while (avcodec_receive_frame(codecCtx, frame) >= 0) {
+            // Read PTS from the coded frame before HW transfer — sw frames can lose timestamps.
+            int64_t pts = frame->best_effort_timestamp;
+            if (pts == AV_NOPTS_VALUE) {
+                pts = frame->pts;
+            }
+            if (pts == AV_NOPTS_VALUE) {
+                pts = frame->pkt_dts;
+            }
+
+            AVFrame* activeFrame = frame;
+            if (frame->format == hwPixFmt) {
+                av_frame_unref(swFrame);
+                if (av_hwframe_transfer_data(swFrame, frame, 0) < 0) {
+                    continue;
+                }
+                av_frame_copy_props(swFrame, frame);
+                activeFrame = swFrame;
+            }
+
+            bool hasValidPts = (pts != AV_NOPTS_VALUE);
+            double framePts = 0.0;
+            if (hasValidPts) {
+                framePts = pts * timeBase - streamStartTime;
+            } else if (lastPacketTime >= 0.0) {
+                framePts = lastPacketTime;
+                hasValidPts = true;
+            } else if (lastDecodedTime >= 0.0) {
+                framePts = lastDecodedTime + frameDur;
+                hasValidPts = true;
+            } else {
+                // After a seek with no timing info, keep decoding until we get a usable timestamp.
+                continue;
+            }
+
+            // Skip frames that end at or before the requested time (still before the cut/target).
+            if (framePts + frameDur <= timestamp + 0.0001 && framePts < timestamp - 0.0005) {
+                lastDecodedTime = framePts;
+                continue;
+            }
+
+            int outWidth = std::max(2, ((width / playbackQualityScale) / 2) * 2);
+            int outHeight = std::max(2, ((height / playbackQualityScale) / 2) * 2);
+            swsCtx = sws_getCachedContext(
+                swsCtx,
+                width, height, (AVPixelFormat)activeFrame->format,
+                outWidth, outHeight, AV_PIX_FMT_RGB24,
+                SWS_BILINEAR, nullptr, nullptr, nullptr
+            );
+            if (!swsCtx) {
+                qDebug() << "VideoEngine Trace: swsCtx is NULL! Crash imminent.";
+                return false;
+            }
+            outFrame.timestamp = framePts;
+            outFrame.width = outWidth;
+            outFrame.height = outHeight;
+            size_t rgbSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 3;
+            if (outFrame.rgbData.size() != rgbSize) {
+                outFrame.rgbData.resize(rgbSize);
+            }
+            uint8_t* dest[4] = { outFrame.rgbData.data(), nullptr, nullptr, nullptr };
+            int linesize[4] = { outWidth * 3, 0, 0, 0 };
+            dest[0] += linesize[0] * (outFrame.height - 1);
+            linesize[0] = -linesize[0];
+            sws_scale(
+                swsCtx,
+                activeFrame->data,
+                activeFrame->linesize,
+                0,
+                height, 
+                dest,
+                linesize
+            );
+
+            if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
+            }
+            if (cpuXorEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::cpuXorWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuXorValue, cpuXorIntensity);
+            }
+            if (cpuOrEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::cpuOrWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuOrValue, cpuOrIntensity);
+            }
+            if (cpuAndEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::cpuAndWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuAndValue, cpuAndIntensity);
+            }
+            if (cpuXnorEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::cpuXnorWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuXnorValue, cpuXnorIntensity);
+            }
+            if (cpuNandEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::cpuNandWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, cpuNandValue, cpuNandIntensity);
+            }
+
+            // Keeping a second RGB copy costs ~24 MB per 4K frame. It is only
+            // needed by temporal/CPU effects; ordinary playback relies on the
+            // engine cache instead.
+            const bool needsReferenceFrame = datamoshEnabled || opticalSmearEnabled ||
+                cpuXorEnabled || cpuOrEnabled || cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled;
+            if (needsReferenceFrame) {
+                referenceFrameRgb = outFrame.rgbData;
+                hasReferenceFrame = true;
+            } else {
+                referenceFrameRgb.clear();
+                hasReferenceFrame = false;
+            }
+            lastDecodedTime = framePts;
+            return true;
+        }
+
+        if (readRet < 0) {
+            break;
+        }
+    }
+
+    if (hasReferenceFrame && !referenceFrameRgb.empty() && lastDecodedTime >= timestamp - frameDur) {
+        outFrame.timestamp = lastDecodedTime;
+        outFrame.width = width / playbackQualityScale;
+        outFrame.height = height / playbackQualityScale;
+        outFrame.rgbData = referenceFrameRgb;
+        return true;
     }
 
     return false;

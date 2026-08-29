@@ -19,8 +19,18 @@ public:
 
     void zoomIn();
     void zoomOut();
+    void zoomFit(int viewWidth);
+
+    void setInOutPoints(double inPoint, double outPoint);
+    void clearInOutPoints();
 
     void updateDragIndices(int newTrack, int newClip);
+    void clearSelection();
+
+    int getSelectedTrackIndex() const { return selectedTrackIndex; }
+    int getSelectedClipIndex() const { return selectedClipIndex; }
+    int getSelectedTransTrackIndex() const { return selectedTransTrackIndex; }
+    int getSelectedTransIndex() const { return selectedTransIndex; }
 
 signals:
     void scrubbed(double time);
@@ -33,8 +43,10 @@ signals:
     void deleteClipRequested(int trackIndex, int clipIndex);
     void renameClipRequested(int trackIndex, int clipIndex);
     void effectDropped(int trackIndex, double time, const QString& effectName);
+    void fileDropped(int trackIndex, double time, const QString& filePath);
     void transitionSelected(int trackIndex, int transIndex);
     void deleteTransitionRequested(int trackIndex, int transIndex);
+    void transitionApplyRequested(int trackIndex, double cutTime, const QString& transitionId);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -42,6 +54,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
@@ -51,6 +64,8 @@ private:
     double playheadTime = 0.0;
     double totalDuration = 30.0; 
     double pixelsPerSecond = 20.0; 
+    double inPoint = -1.0;
+    double outPoint = -1.0;
     QString activeEffectId;
     QString activeParamName;
 
@@ -79,6 +94,8 @@ private:
     double xToTime(int x) const;
     bool hitTestClip(const QPoint& pos, int& trackIndex, int& clipIndex, double& clipStart, double& clipDuration) const;
     bool hitTestTransition(const QPoint& pos, int& trackIndex, int& transIndex, bool& isLeftEdge) const;
+    bool hitTestCutEdge(const QPoint& pos, int& trackIndex, double& cutTime) const;
+    bool hitTestTransitionButton(const QPoint& pos, int& trackIndex, double& cutTime) const;
 };
 
 #endif 

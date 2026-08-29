@@ -28,6 +28,38 @@ void AnimationCurve::removeKeyframeAt(double time, double tolerance) {
     );
 }
 
+bool AnimationCurve::moveKeyframe(double fromTime, double toTime, double tolerance) {
+    auto it = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - fromTime) <= tolerance;
+    });
+    if (it == keyframes.end()) return false;
+    Keyframe moved = *it;
+    keyframes.erase(it);
+    moved.time = toTime;
+    auto duplicate = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - toTime) <= tolerance;
+    });
+    if (duplicate != keyframes.end()) *duplicate = moved;
+    else keyframes.push_back(moved);
+    std::sort(keyframes.begin(), keyframes.end());
+    return true;
+}
+
+bool AnimationCurve::setInterpolationAt(double time, InterpolationMode mode, double tolerance) {
+    auto it = std::find_if(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - time) <= tolerance;
+    });
+    if (it == keyframes.end()) return false;
+    it->mode = mode;
+    return true;
+}
+
+bool AnimationCurve::hasKeyframeAt(double time, double tolerance) const {
+    return std::any_of(keyframes.begin(), keyframes.end(), [=](const Keyframe& k) {
+        return std::abs(k.time - time) <= tolerance;
+    });
+}
+
 void AnimationCurve::clear() {
     keyframes.clear();
 }
@@ -78,11 +110,14 @@ double AnimationCurve::interpolateLinear(const Keyframe& k1, const Keyframe& k2,
 double AnimationCurve::interpolateBezier(const Keyframe& k1, const Keyframe& k2, double t) const {
     double t2 = t * t;
     double t3 = t2 * t;
-    double h00 = 2 * t3 - 3 * t2 + 1;
-    double h10 = t3 - 2 * t2 + t;
-    double h01 = -2 * t3 + 3 * t2;
+    double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    double h10 = t3 - 2.0 * t2 + t;
+    double h01 = -2.0 * t3 + 3.0 * t2;
     double h11 = t3 - t2;
-    double m1 = k1.handleOutY / (k1.handleOutX > 0 ? k1.handleOutX : 0.1);
-    double m2 = k2.handleInY / (k2.handleInX < 0 ? -k2.handleInX : 0.1);
-    return h00 * k1.value + h10 * m1 + h01 * k2.value + h11 * m2;
+    double dx1 = (std::abs(k1.handleOutX) > 1e-5) ? std::abs(k1.handleOutX) : 0.1;
+    double dx2 = (std::abs(k2.handleInX) > 1e-5) ? std::abs(k2.handleInX) : 0.1;
+    double m1 = k1.handleOutY / dx1;
+    double m2 = k2.handleInY / dx2;
+    double duration = std::max(1e-5, k2.time - k1.time);
+    return h00 * k1.value + h10 * (m1 * duration) + h01 * k2.value + h11 * (m2 * duration);
 }

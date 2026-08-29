@@ -24,6 +24,7 @@ struct ShaderPlugin {
     std::string description;
     std::string fragmentShaderPath;
     std::vector<ShaderParameter> parameters;
+    bool compileAttempted = false;
     bool isCompiled = false;
     unsigned int shaderProgram = 0;
 };

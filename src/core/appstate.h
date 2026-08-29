@@ -19,6 +19,7 @@ public:
     bool undo();
     bool redo();
     void clear();
+    int undoStackSize() const { return static_cast<int>(undoStack.size()); }
 
     double currentPlayhead() const { return playhead; }
     void setPlayhead(double time) { playhead = time; }

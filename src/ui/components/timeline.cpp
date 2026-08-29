@@ -1,15 +1,76 @@
 #include "timeline.h"
 #include "core/project.h"
 #include <algorithm>
+#include <limits>
 #include <QTime>
 #include <QDebug>
 #include <QMenu>
 #include <QAction>
+#include <QFontMetrics>
+#include <QMap>
+#include <QFileInfo>
+#include <QUrl>
+
+namespace {
+std::vector<std::pair<QString, QString>> getTransitionChoices() {
+    std::vector<std::pair<QString, QString>> choices;
+    const auto& plugins = PluginManager::instance().getPlugins();
+    for (const auto& p : plugins) {
+        const QString category = QString::fromStdString(p.category);
+        if (category.startsWith("Transitions", Qt::CaseInsensitive)) {
+            choices.emplace_back(QString::fromStdString(p.name), QString::fromStdString(p.id));
+        }
+    }
+
+    std::sort(choices.begin(), choices.end(), [](const auto& a, const auto& b) {
+        return a.first.toLower() < b.first.toLower();
+    });
+
+    if (choices.empty()) {
+        choices.emplace_back("Cross Dissolve", "cross_dissolve");
+        choices.emplace_back("Datamosh Transition", "datamosh_transition");
+        choices.emplace_back("Glitch Slide Transition", "glitch_slide");
+    }
+
+    return choices;
+}
+
+QMap<QAction*, QString> addTransitionActions(QMenu* menu) {
+    QMap<QAction*, QString> actionToId;
+    const auto choices = getTransitionChoices();
+    for (const auto& [label, id] : choices) {
+        QAction* action = menu->addAction(label);
+        actionToId.insert(action, id);
+    }
+    return actionToId;
+}
+}
 
 Timeline::Timeline(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(120);
+    setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAcceptDrops(true);
+}
+
+void Timeline::clearSelection() {
+    selectedTrackIndex = -1;
+    selectedClipIndex = -1;
+    selectedTransTrackIndex = -1;
+    selectedTransIndex = -1;
+    update();
+}
+
+void Timeline::setInOutPoints(double inPt, double outPt) {
+    inPoint = inPt;
+    outPoint = outPt;
+    update();
+}
+
+void Timeline::clearInOutPoints() {
+    inPoint = -1.0;
+    outPoint = -1.0;
+    update();
 }
 
 void Timeline::setPlayhead(double time) {
@@ -43,6 +104,14 @@ void Timeline::zoomOut() {
         setMinimumWidth(80 + static_cast<int>(totalDuration * pixelsPerSecond) + 50);
         update();
     }
+}
+
+void Timeline::zoomFit(int viewWidth) {
+    if (totalDuration <= 0.0) return;
+    int availableWidth = std::max(200, viewWidth - 140);
+    pixelsPerSecond = std::clamp(static_cast<double>(availableWidth) / totalDuration, 1.0, 1000.0);
+    setMinimumWidth(80 + static_cast<int>(totalDuration * pixelsPerSecond) + 50);
+    update();
 }
 
 void Timeline::selectParameter(const QString& effectId, const QString& paramName) {
@@ -98,7 +167,7 @@ bool Timeline::hitTestClip(const QPoint& pos, int& trackIndex, int& clipIndex, d
         const auto& clip = track.clips[i];
         int startX = timeToX(clip.timelineStart);
         int endX = timeToX(clip.timelineStart + clip.sourceDuration);
-        QRect clipRect(startX, yOffset + idx * trackHeight + 3, endX - startX, trackHeight - 6);
+        QRect clipRect(startX, yOffset + idx * trackHeight + 3, endX - startX, trackHeight - 14);
         if (clipRect.contains(pos)) {
             trackIndex = idx;
             clipIndex = i;
@@ -113,23 +182,29 @@ bool Timeline::hitTestClip(const QPoint& pos, int& trackIndex, int& clipIndex, d
 
 void Timeline::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    painter.fillRect(rect(), QColor(13, 13, 13));
-
-    painter.fillRect(0, 0, 80, height(), QColor(18, 18, 18));
-    painter.setPen(QColor(40, 40, 40));
-    painter.drawLine(80, 0, 80, height());
 
     int trackHeight = 35;
     const auto& tracks = Project::instance().getTracks();
     int numTracks = std::max(1, static_cast<int>(tracks.size()));
+    int neededHeight = 25 + numTracks * trackHeight + (!activeEffectId.isEmpty() ? 100 : 25);
+    if (minimumHeight() != neededHeight) {
+        setMinimumHeight(neededHeight);
+    }
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    painter.fillRect(rect(), QColor(10, 10, 14));
+
+    painter.fillRect(0, 0, 80, height(), QColor(14, 13, 18));
+    painter.setPen(QColor(34, 28, 44));
+    painter.drawLine(80, 0, 80, height());
+
     for (int i = 0; i < numTracks; ++i) {
         int y = 25 + i * trackHeight;
-        painter.setPen(QColor(30, 30, 30));
+        painter.setPen(QColor(26, 22, 34));
         painter.drawLine(0, y + trackHeight, width(), y + trackHeight);
-        painter.setPen(QColor(180, 180, 180));
+        painter.setPen(QColor(180, 170, 195));
         QString title = (i < static_cast<int>(tracks.size()))
             ? QString::fromStdString(tracks[i].name)
             : QString("Track %1").arg(i + 1);
@@ -138,11 +213,11 @@ void Timeline::paintEvent(QPaintEvent* event) {
         painter.drawText(10, y + 20, uppercaseTitle);
     }
 
-    painter.fillRect(80, 0, width() - 80, 25, QColor(24, 24, 24));
-    painter.setPen(QColor(40, 40, 40));
+    painter.fillRect(80, 0, width() - 80, 25, QColor(18, 15, 24));
+    painter.setPen(QColor(34, 28, 44));
     painter.drawLine(80, 25, width(), 25);
 
-    painter.setPen(QColor(120, 120, 120));
+    painter.setPen(QColor(130, 120, 145));
     painter.setFont(QFont("JetBrains Mono", 8));
     double minTickSpacingPx = 80.0;
     double minTickSecs = minTickSpacingPx / pixelsPerSecond;
@@ -171,19 +246,79 @@ void Timeline::paintEvent(QPaintEvent* event) {
         painter.drawText(x - 15, 12, timeStr);
     }
 
+    for (const auto& track : tracks) {
+        for (const auto& trans : track.transitions) {
+            int cutX = timeToX(trans.cutTime);
+            int startX = timeToX(trans.cutTime - trans.duration / 2.0);
+            int endX = timeToX(trans.cutTime + trans.duration / 2.0);
+
+            QRect spanRect(startX, 19, std::max(2, endX - startX), 5);
+            painter.fillRect(spanRect, QColor(168, 85, 247, 220));
+
+            QPolygon marker;
+            marker << QPoint(cutX - 4, 2)
+                   << QPoint(cutX + 4, 2)
+                   << QPoint(cutX, 8);
+            painter.setBrush(QColor(217, 70, 239));
+            painter.setPen(Qt::NoPen);
+            painter.drawPolygon(marker);
+
+            painter.setPen(QPen(QColor(232, 85, 244, 180), 1));
+            painter.drawLine(cutX, 8, cutX, 25);
+        }
+    }
+
+    if (inPoint >= 0.0 && outPoint > inPoint) {
+        int x1 = timeToX(inPoint);
+        int x2 = timeToX(outPoint);
+        painter.fillRect(QRect(x1, 25, std::max(2, x2 - x1), height() - 25), QColor(168, 85, 247, 30));
+    }
+
+    if (inPoint >= 0.0) {
+        int x = timeToX(inPoint);
+        painter.setPen(QPen(QColor(217, 70, 239), 2));
+        painter.drawLine(x, 0, x, height());
+        QPolygon tri;
+        tri << QPoint(x - 5, 0) << QPoint(x + 5, 0) << QPoint(x, 7);
+        painter.setBrush(QColor(217, 70, 239));
+        painter.setPen(Qt::NoPen);
+        painter.drawPolygon(tri);
+    }
+
+    if (outPoint >= 0.0) {
+        int x = timeToX(outPoint);
+        painter.setPen(QPen(QColor(168, 85, 247), 2));
+        painter.drawLine(x, 0, x, height());
+        QPolygon tri;
+        tri << QPoint(x - 5, 0) << QPoint(x + 5, 0) << QPoint(x, 7);
+        painter.setBrush(QColor(168, 85, 247));
+        painter.setPen(Qt::NoPen);
+        painter.drawPolygon(tri);
+    }
+
+    bool hasAnyClips = false;
+    for (const auto& track : tracks) {
+        if (!track.clips.empty()) { hasAnyClips = true; break; }
+    }
+    if (!hasAnyClips) {
+        painter.setPen(QColor(110, 95, 130));
+        painter.setFont(QFont("Segoe UI", 11, QFont::DemiBold));
+        painter.drawText(QRect(80, 25, width() - 80, height() - 25), Qt::AlignCenter, "Drag video files here or press Ctrl+I to import media");
+    }
+
     for (size_t tIdx = 0; tIdx < tracks.size() && tIdx < (size_t)numTracks; ++tIdx) {
         int y = 25 + tIdx * trackHeight;
         for (int cIdx = 0; cIdx < (int)tracks[tIdx].clips.size(); ++cIdx) {
             const auto& clip = tracks[tIdx].clips[cIdx];
             int startX = timeToX(clip.timelineStart);
             int endX = timeToX(clip.timelineStart + clip.sourceDuration);
-            QRect clipRect(startX, y + 3, endX - startX, trackHeight - 6);
-            painter.fillRect(clipRect, QColor(59, 20, 66, 180));
+            QRect clipRect(startX, y + 3, endX - startX, trackHeight - 14);
+            painter.fillRect(clipRect, QColor(48, 16, 58, 200));
             
-            if (tIdx == selectedTrackIndex && cIdx == selectedClipIndex) {
-                painter.setPen(QPen(Qt::white, 2.0));
+            if (static_cast<int>(tIdx) == selectedTrackIndex && cIdx == selectedClipIndex) {
+                painter.setPen(QPen(QColor(245, 158, 248), 2.0));
             } else {
-                painter.setPen(QPen(QColor(232, 85, 244), 1.0));
+                painter.setPen(QPen(QColor(192, 38, 211), 1.0));
             }
             painter.drawRect(clipRect);
             
@@ -192,52 +327,77 @@ void Timeline::paintEvent(QPaintEvent* event) {
             painter.drawText(clipRect.adjusted(5, 0, -30, 0), Qt::AlignLeft | Qt::AlignVCenter, clipName);
 
             if (!clip.effects.empty() || clip.useClipEffects) {
-                painter.setPen(QColor(232, 85, 244));
+                painter.setPen(QColor(245, 158, 248));
                 painter.drawText(clipRect.adjusted(0, 0, -5, 0), Qt::AlignRight | Qt::AlignVCenter, "[FX]");
             }
+
+            const double clipEnd = clip.timelineStart + clip.sourceDuration;
+            const ProjectClip* nextClip = nullptr;
+            double bestNextStart = std::numeric_limits<double>::max();
+            for (const auto& other : tracks[tIdx].clips) {
+                if (other.id == clip.id) continue;
+                if (other.timelineStart >= clipEnd - 0.6 && other.timelineStart < bestNextStart) {
+                    bestNextStart = other.timelineStart;
+                    nextClip = &other;
+                }
+            }
+
+            if (nextClip) {
+                const int bx = timeToX(nextClip->timelineStart);
+                const int by = y + 10;
+                painter.setPen(QPen(QColor(217, 70, 239), 1.5));
+                painter.setBrush(QColor(38, 14, 48, 240));
+                painter.drawEllipse(QPoint(bx, by), 7, 7);
+                painter.setPen(QColor(245, 158, 248));
+                painter.setFont(QFont("JetBrains Mono", 8, QFont::Bold));
+                painter.drawText(QRect(bx - 5, by - 6, 10, 12), Qt::AlignCenter, "+");
+            }
         }
-        // --- Draw transitions ---
-        const int kHandleW = 8;
+        const int laneY = y + trackHeight - 9;
+        const int laneH = 6;
+        const int kHandleW = 5;
         for (int tIdx2 = 0; tIdx2 < (int)tracks[tIdx].transitions.size(); ++tIdx2) {
             const auto& trans = tracks[tIdx].transitions[tIdx2];
             double halfDur = trans.duration / 2.0;
             int startX = timeToX(trans.cutTime - halfDur);
             int endX   = timeToX(trans.cutTime + halfDur);
-            int w = std::max(endX - startX, 4);
-            QRect transRect(startX, y + 3, w, trackHeight - 6);
+            int w = std::max(endX - startX, 8);
+            QRect transRect(startX, laneY, w, laneH);
 
             bool isSel = (tIdx == (size_t)selectedTransTrackIndex && tIdx2 == selectedTransIndex);
 
-            // Body — semi-transparent orange fill with diagonal stripe feel
-            painter.fillRect(transRect, QColor(230, 120, 0, 170));
+            painter.fillRect(transRect, QColor(74, 29, 94, 210));
 
-            // Selected border
-            painter.setPen(QPen(isSel ? Qt::white : QColor(255, 200, 80), isSel ? 2.0 : 1.0));
+            painter.setPen(QPen(isSel ? Qt::white : QColor(192, 38, 211), isSel ? 2.0 : 1.0));
             painter.drawRect(transRect);
 
-            // Plugin name label
-            QString plugName = QString::fromStdString(trans.pluginId).section('/', -1);
-            painter.setPen(Qt::white);
-            painter.setFont(QFont("JetBrains Mono", 8));
-            painter.drawText(transRect.adjusted(kHandleW + 2, 0, -kHandleW - 2, 0),
-                             Qt::AlignCenter | Qt::TextSingleLine, plugName);
+            if (w > 60) {
+                QString plugName = QString::fromStdString(trans.pluginId).section('/', -1);
+                if (auto* pluginMeta = PluginManager::instance().findPlugin(trans.pluginId)) {
+                    plugName = QString::fromStdString(pluginMeta->name);
+                }
+                painter.setPen(QColor(245, 158, 248));
+                QFont labelFont("JetBrains Mono", 7);
+                painter.setFont(labelFont);
+                QFontMetrics fm(labelFont);
+                QString elided = fm.elidedText(plugName, Qt::ElideRight, w - 6);
+                QRect labelRect(startX + 3, laneY - 11, w - 6, 10);
+                painter.drawText(labelRect, Qt::AlignCenter | Qt::TextSingleLine, elided);
+            }
 
-            // Left resize handle
-            QRect lHandle(startX, y + 3, kHandleW, trackHeight - 6);
-            painter.fillRect(lHandle, QColor(255, 180, 60, 210));
-            painter.setPen(QColor(255, 230, 100));
+            QRect lHandle(startX, laneY, kHandleW, laneH);
+            painter.fillRect(lHandle, QColor(147, 51, 234, 220));
+            painter.setPen(QColor(232, 85, 244));
             painter.drawRect(lHandle);
 
-            // Right resize handle
-            QRect rHandle(endX - kHandleW, y + 3, kHandleW, trackHeight - 6);
-            painter.fillRect(rHandle, QColor(255, 180, 60, 210));
-            painter.setPen(QColor(255, 230, 100));
+            QRect rHandle(endX - kHandleW, laneY, kHandleW, laneH);
+            painter.fillRect(rHandle, QColor(147, 51, 234, 220));
+            painter.setPen(QColor(232, 85, 244));
             painter.drawRect(rHandle);
 
-            // Cut-point centre line
             int cutX = timeToX(trans.cutTime);
-            painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt::DashLine));
-            painter.drawLine(cutX, y + 3, cutX, y + trackHeight - 3);
+            painter.setPen(QPen(QColor(245, 158, 248, 90), 1, Qt::DashLine));
+            painter.drawLine(cutX, y + 2, cutX, y + trackHeight - 2);
         }
     }
 
@@ -245,37 +405,48 @@ void Timeline::paintEvent(QPaintEvent* event) {
         int kfLaneY = 25 + numTracks * trackHeight + 10;
         int kfLaneH = height() - kfLaneY - 10;
         if (kfLaneH > 15) {
-            painter.fillRect(80, kfLaneY, width() - 80, kfLaneH, QColor(18, 18, 18));
-            painter.setPen(QColor(40, 40, 40));
+            painter.fillRect(80, kfLaneY, width() - 80, kfLaneH, QColor(14, 12, 18));
+            painter.setPen(QColor(34, 26, 44));
             painter.drawRect(80, kfLaneY, width() - 80, kfLaneH);
 
-            painter.setPen(QColor(100, 100, 100));
+            painter.setPen(QColor(160, 150, 175));
             QString laneLabel = QString("Keyframes: %1 - %2").arg(activeEffectId, activeParamName);
             painter.drawText(90, kfLaneY + 15, laneLabel);
 
             QList<QPointF> kfPoints;
             const auto& tracks = Project::instance().getTracks();
-            for (const auto& track : tracks) {
-                for (const auto& eff : track.effects) {
-                    if (QString::fromStdString(eff.pluginId) == activeEffectId) {
-                        for (const auto& param : eff.parameters) {
-                            if (QString::fromStdString(param.name) == activeParamName) {
-                                for (const auto& kf : param.curve.getKeyframes()) {
-                                    int kfX = timeToX(kf.time);
-                                    double normVal = (param.maxVal > param.minVal) 
-                                        ? (kf.value - param.minVal) / (param.maxVal - param.minVal)
-                                        : 0.5;
-                                    int kfY = kfLaneY + kfLaneH - 10 - static_cast<int>(normVal * (kfLaneH - 20));
-                                    kfPoints.append(QPointF(kfX, kfY));
-                                }
-                            }
+            auto appendKeyframes = [&](const std::vector<AppliedEffect>& effects) {
+                for (const auto& eff : effects) {
+                    if (QString::fromStdString(eff.pluginId) != activeEffectId) continue;
+                    for (const auto& param : eff.parameters) {
+                        if (QString::fromStdString(param.name) != activeParamName) continue;
+                        for (const auto& kf : param.curve.getKeyframes()) {
+                            int kfX = timeToX(kf.time);
+                            double normVal = (param.maxVal > param.minVal)
+                                ? (kf.value - param.minVal) / (param.maxVal - param.minVal)
+                                : 0.5;
+                            int kfY = kfLaneY + kfLaneH - 10 - static_cast<int>(normVal * (kfLaneH - 20));
+                            kfPoints.append(QPointF(kfX, kfY));
                         }
+                    }
+                }
+            };
+
+            for (const auto& track : tracks) {
+                appendKeyframes(track.effects);
+                for (const auto& clip : track.clips) {
+                    if (clip.useClipEffects) {
+                        appendKeyframes(clip.effects);
                     }
                 }
             }
 
+            std::sort(kfPoints.begin(), kfPoints.end(), [](const QPointF& a, const QPointF& b) {
+                return a.x() < b.x();
+            });
+
             if (kfPoints.size() > 1) {
-                painter.setPen(QPen(QColor(232, 85, 244), 1.0, Qt::DashLine));
+                painter.setPen(QPen(QColor(217, 70, 239), 1.0, Qt::DashLine));
                 for (int i = 0; i < kfPoints.size() - 1; ++i) {
                     painter.drawLine(kfPoints[i], kfPoints[i+1]);
                 }
@@ -298,7 +469,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
 
     int phX = timeToX(playheadTime);
     if (phX >= 80) {
-        painter.setPen(QPen(QColor(232, 85, 244), 1.5));
+        painter.setPen(QPen(QColor(245, 158, 248), 1.5));
         painter.drawLine(phX, 0, phX, height());
         QPolygon playheadHead;
         playheadHead << QPoint(phX - 6, 0)
@@ -306,7 +477,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                      << QPoint(phX + 6, 12)
                      << QPoint(phX, 18)
                      << QPoint(phX - 6, 12);
-        painter.setBrush(QColor(232, 85, 244));
+        painter.setBrush(QColor(217, 70, 239));
         painter.drawPolygon(playheadHead);
     }
 }
@@ -315,7 +486,7 @@ bool Timeline::hitTestTransition(const QPoint& pos, int& trackIndex, int& transI
     const auto& tracks = Project::instance().getTracks();
     const int trackHeight = 35;
     const int yOffset = 25;
-    const int kHandleW = 10; // slightly wider hit zone than drawn handle
+    const int kHandleW = 8;
 
     if (pos.x() < 80 || pos.y() < yOffset) return false;
 
@@ -327,10 +498,10 @@ bool Timeline::hitTestTransition(const QPoint& pos, int& trackIndex, int& transI
         double halfDur = trans.duration / 2.0;
         int startX = timeToX(trans.cutTime - halfDur);
         int endX   = timeToX(trans.cutTime + halfDur);
-        int bodyY  = yOffset + tIdx * trackHeight + 3;
-        int bodyH  = trackHeight - 6;
+        int bodyY  = yOffset + tIdx * trackHeight + trackHeight - 9;
+        int bodyH  = 6;
 
-        QRect bodyRect(startX, bodyY, endX - startX, bodyH);
+        QRect bodyRect(startX, bodyY - 3, endX - startX, bodyH + 6);
         if (!bodyRect.contains(pos)) continue;
 
         trackIndex = tIdx;
@@ -348,8 +519,100 @@ bool Timeline::hitTestTransition(const QPoint& pos, int& trackIndex, int& transI
     return false;
 }
 
+bool Timeline::hitTestCutEdge(const QPoint& pos, int& trackIndex, double& cutTime) const {
+    const auto& tracks = Project::instance().getTracks();
+    const int trackHeight = 35;
+    const int yOffset = 25;
+
+    if (pos.x() < 80 || pos.y() < yOffset) return false;
+
+    int tIdx = (pos.y() - yOffset) / trackHeight;
+    if (tIdx < 0 || tIdx >= static_cast<int>(tracks.size())) return false;
+
+    const auto& track = tracks[tIdx];
+    if (track.clips.size() < 2) return false;
+
+    const int snapPx = 14;
+    bool found = false;
+    int bestDx = std::numeric_limits<int>::max();
+    double bestCut = 0.0;
+
+    for (const auto& a : track.clips) {
+        const double endA = a.timelineStart + a.sourceDuration;
+        for (const auto& b : track.clips) {
+            if (a.id == b.id) continue;
+            if (std::abs(endA - b.timelineStart) > 0.35) continue;
+
+            const int cutX = timeToX(b.timelineStart);
+            const int dx = std::abs(pos.x() - cutX);
+            if (dx <= snapPx && dx < bestDx) {
+                bestDx = dx;
+                bestCut = b.timelineStart;
+                found = true;
+            }
+        }
+    }
+
+    if (!found) return false;
+    trackIndex = tIdx;
+    cutTime = bestCut;
+    return true;
+}
+
+bool Timeline::hitTestTransitionButton(const QPoint& pos, int& trackIndex, double& cutTime) const {
+    const auto& tracks = Project::instance().getTracks();
+    const int trackHeight = 35;
+    const int yOffset = 25;
+
+    if (pos.x() < 80 || pos.y() < yOffset) return false;
+
+    int tIdx = (pos.y() - yOffset) / trackHeight;
+    if (tIdx < 0 || tIdx >= static_cast<int>(tracks.size())) return false;
+
+    const auto& track = tracks[tIdx];
+    const int buttonR = 7;
+
+    for (const auto& clip : track.clips) {
+        const double clipEnd = clip.timelineStart + clip.sourceDuration;
+        const ProjectClip* nextClip = nullptr;
+        double bestNextStart = std::numeric_limits<double>::max();
+        for (const auto& other : track.clips) {
+            if (other.id == clip.id) continue;
+            if (other.timelineStart >= clipEnd - 0.6 && other.timelineStart < bestNextStart) {
+                bestNextStart = other.timelineStart;
+                nextClip = &other;
+            }
+        }
+        if (!nextClip) continue;
+
+        int x = timeToX(nextClip->timelineStart);
+        int y = yOffset + tIdx * trackHeight + 10;
+        int dx = pos.x() - x;
+        int dy = pos.y() - y;
+        if (dx * dx + dy * dy <= (buttonR + 2) * (buttonR + 2)) {
+            trackIndex = tIdx;
+            cutTime = nextClip->timelineStart;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void Timeline::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        int btnTrack = -1;
+        double btnCutTime = 0.0;
+        if (hitTestTransitionButton(event->pos(), btnTrack, btnCutTime)) {
+            QMenu quickMenu(this);
+            QMap<QAction*, QString> actionToId = addTransitionActions(&quickMenu);
+            QAction* chosen = quickMenu.exec(event->globalPosition().toPoint());
+            if (actionToId.contains(chosen)) {
+                emit transitionApplyRequested(btnTrack, btnCutTime, actionToId.value(chosen));
+            }
+            return;
+        }
+
         // --- Transition hit test (priority over clips) ---
         int transTrack = -1, transIdx = -1;
         bool isLeftEdge = false;
@@ -368,7 +631,7 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
                 double halfDur = trans.duration / 2.0;
                 int startX = timeToX(trans.cutTime - halfDur);
                 int endX   = timeToX(trans.cutTime + halfDur);
-                const int kHandleW = 10;
+                const int kHandleW = 8;
                 bool inLeftHandle  = event->pos().x() <= startX + kHandleW;
                 bool inRightHandle = event->pos().x() >= endX - kHandleW;
 
@@ -424,10 +687,32 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             selectedTransIndex = transIdx;
             update();
             QMenu contextMenu(this);
+            QMenu* changeTypeMenu = contextMenu.addMenu("Change Transition Type");
+            QMap<QAction*, QString> changeTypeActions = addTransitionActions(changeTypeMenu);
             QAction* deleteAction = contextMenu.addAction("Delete Transition");
             QAction* chosen = contextMenu.exec(event->globalPosition().toPoint());
-            if (chosen == deleteAction) {
+            if (changeTypeActions.contains(chosen)) {
+                const auto& tracks = Project::instance().getTracks();
+                if (transTrack >= 0 && transTrack < static_cast<int>(tracks.size()) &&
+                    transIdx >= 0 && transIdx < static_cast<int>(tracks[transTrack].transitions.size())) {
+                    emit transitionApplyRequested(transTrack, tracks[transTrack].transitions[transIdx].cutTime, changeTypeActions.value(chosen));
+                }
+            } else if (chosen == deleteAction) {
                 emit deleteTransitionRequested(transTrack, transIdx);
+            }
+            return;
+        }
+
+        // --- Clip cut edge right-click ---
+        int cutTrack = -1;
+        double cutTime = 0.0;
+        if (hitTestCutEdge(event->pos(), cutTrack, cutTime)) {
+            QMenu contextMenu(this);
+            QMenu* applyMenu = contextMenu.addMenu("Add Transition");
+            QMap<QAction*, QString> applyActions = addTransitionActions(applyMenu);
+            QAction* chosen = contextMenu.exec(event->globalPosition().toPoint());
+            if (applyActions.contains(chosen)) {
+                emit transitionApplyRequested(cutTrack, cutTime, applyActions.value(chosen));
             }
             return;
         }
@@ -444,11 +729,27 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             update();
 
             QMenu contextMenu(this);
+            QMenu* addTransitionMenu = contextMenu.addMenu("Add Transition");
+            QMap<QAction*, QString> addActions = addTransitionActions(addTransitionMenu);
+            contextMenu.addSeparator();
             QAction* renameAction = contextMenu.addAction("Rename Clip");
             QAction* deleteAction = contextMenu.addAction("Delete Clip");
             
             QAction* chosenAction = contextMenu.exec(event->globalPosition().toPoint());
-            if (chosenAction == renameAction) {
+            if (addActions.contains(chosenAction)) {
+                const auto& tracks = Project::instance().getTracks();
+                if (trackIndex >= 0 && trackIndex < static_cast<int>(tracks.size()) &&
+                    clipIndex >= 0 && clipIndex < static_cast<int>(tracks[trackIndex].clips.size())) {
+                    const auto& clip = tracks[trackIndex].clips[clipIndex];
+                    const double leftEdgeTime = clip.timelineStart;
+                    const double rightEdgeTime = clip.timelineStart + clip.sourceDuration;
+                    const double clickTime = xToTime(event->pos().x());
+                    const double cutTime = (std::abs(clickTime - leftEdgeTime) < std::abs(clickTime - rightEdgeTime))
+                        ? leftEdgeTime
+                        : rightEdgeTime;
+                    emit transitionApplyRequested(trackIndex, cutTime, addActions.value(chosenAction));
+                }
+            } else if (chosenAction == renameAction) {
                 emit renameClipRequested(trackIndex, clipIndex);
             } else if (chosenAction == deleteAction) {
                 emit deleteClipRequested(trackIndex, clipIndex);
@@ -581,26 +882,86 @@ void Timeline::updateDragIndices(int newTrack, int newClip) {
     dragClipIndex = newClip;
 }
 
+void Timeline::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+        if (selectedTransTrackIndex >= 0 && selectedTransIndex >= 0) {
+            int tTrack = selectedTransTrackIndex;
+            int tIdx = selectedTransIndex;
+            selectedTransTrackIndex = -1;
+            selectedTransIndex = -1;
+            emit deleteTransitionRequested(tTrack, tIdx);
+            event->accept();
+            return;
+        }
+        if (selectedTrackIndex >= 0 && selectedClipIndex >= 0) {
+            int cTrack = selectedTrackIndex;
+            int cIdx = selectedClipIndex;
+            selectedTrackIndex = -1;
+            selectedClipIndex = -1;
+            emit deleteClipRequested(cTrack, cIdx);
+            event->accept();
+            return;
+        }
+    }
+    QWidget::keyPressEvent(event);
+}
+
 void Timeline::dragEnterEvent(QDragEnterEvent* event) {
-    if (event->mimeData()->hasText() || event->mimeData()->hasFormat("application/x-qabstractitemmodeldatalist")) {
+    if (event->mimeData()->hasText() || event->mimeData()->hasFormat("application/x-qabstractitemmodeldatalist") || event->mimeData()->hasUrls()) {
         event->acceptProposedAction();
     }
 }
 
 void Timeline::dragMoveEvent(QDragMoveEvent* event) {
-    event->acceptProposedAction();
+    if (event->mimeData()->hasText() || event->mimeData()->hasFormat("application/x-qabstractitemmodeldatalist") || event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
 }
 
 void Timeline::dropEvent(QDropEvent* event) {
-    int y = event->pos().y();
+    int y = event->position().toPoint().y();
     if (y < 25) return;
     int trackIndex = (y - 25) / 35; 
-    double dropTime = (event->pos().x() - 80) / pixelsPerSecond; 
+    double dropTime = (event->position().toPoint().x() - 80) / pixelsPerSecond; 
     if (dropTime < 0) dropTime = 0;
+
+    if (event->mimeData()->hasUrls()) {
+        const QList<QUrl> urls = event->mimeData()->urls();
+        for (const QUrl& url : urls) {
+            if (url.isLocalFile()) {
+                QString path = url.toLocalFile();
+                QString ext = QFileInfo(path).suffix().toLower();
+                if (ext == "mp4" || ext == "m4v" || ext == "mov" || ext == "avi" || ext == "mkv" || ext == "webm" || ext == "flv" || ext == "ts") {
+                    emit fileDropped(trackIndex, dropTime, path);
+                    event->acceptProposedAction();
+                    return;
+                }
+            }
+        }
+    }
+
     QString effectName;
     if (event->mimeData()->hasText()) {
         effectName = event->mimeData()->text();
+    } else if (event->mimeData()->hasFormat("application/x-qabstractitemmodeldatalist")) {
+        QByteArray encoded = event->mimeData()->data("application/x-qabstractitemmodeldatalist");
+        QDataStream stream(&encoded, QIODevice::ReadOnly);
+        while (!stream.atEnd()) {
+            int row, col;
+            QMap<int, QVariant> roleDataMap;
+            stream >> row >> col >> roleDataMap;
+            if (roleDataMap.contains(Qt::UserRole)) {
+                effectName = roleDataMap.value(Qt::UserRole).toString();
+                break;
+            }
+            if (roleDataMap.contains(Qt::DisplayRole)) {
+                effectName = roleDataMap.value(Qt::DisplayRole).toString();
+                break;
+            }
+        }
     }
-    emit effectDropped(trackIndex, dropTime, effectName);
+    if (!effectName.isEmpty()) {
+        emit effectDropped(trackIndex, dropTime, effectName);
+    }
     event->acceptProposedAction();
 }

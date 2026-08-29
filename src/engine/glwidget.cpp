@@ -2,10 +2,13 @@
 #include <QOpenGLFramebufferObjectFormat>
 #include <QApplication>
 #include <QCursor>
+#include <QPainter>
+#include <QPaintEvent>
 #include <cmath>
 #include <QDebug>
 #include <QFile>
 #include <QIODevice>
+#include <cstring>
 #include "engine/audioengine.h"
 
 #include "engine/shaders.h"
@@ -16,13 +19,15 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     format.setProfile(QSurfaceFormat::NoProfile);
     setFormat(format);
     fpsTimer.start();
+    setAutoFillBackground(false);
     overlayLabel = new QLabel(this);
     overlayLabel->setStyleSheet(
         "QLabel {"
-        "  color: rgb(250, 255, 250);"
-        "  background-color: rgba(0, 0, 0, 160);"
-        "  font-family: Consolas, monospace;"
-        "  font-size: 13px;"
+        "  color: #f59ef8;"
+        "  background-color: rgba(14, 10, 18, 200);"
+        "  border: 1px solid #4a1d5e;"
+        "  font-family: 'JetBrains Mono', Consolas, monospace;"
+        "  font-size: 11px;"
         "  font-weight: bold;"
         "  padding: 4px 8px;"
         "  border-radius: 4px;"
@@ -37,7 +42,13 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
 GLWidget::~GLWidget() {
     makeCurrent();
     if (videoTexture) glDeleteTextures(1, &videoTexture);
+    if (videoTexture2) glDeleteTextures(1, &videoTexture2);
+    if (maskTexture) glDeleteTextures(1, &maskTexture);
+    glDeleteBuffers(static_cast<GLsizei>(uploadPbos.size()), uploadPbos.data());
+    quadVao.destroy();
+    quadVbo.destroy();
     delete passthroughShader;
+    delete maskCompositeShader;
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
@@ -46,7 +57,7 @@ GLWidget::~GLWidget() {
 
 void GLWidget::initializeGL() {
     initializeOpenGLFunctions();
-    glClearColor(0.08f, 0.08f, 0.08f, 1.0f);
+    glClearColor(0.04f, 0.04f, 0.06f, 1.0f);
 
     initShaders();
 
@@ -82,6 +93,20 @@ void GLWidget::initializeGL() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     unsigned char blackPixel[3] = { 0, 0, 0 };
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, blackPixel);
+
+    glGenTextures(1, &maskTexture);
+    glBindTexture(GL_TEXTURE_2D, maskTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    unsigned char whitePixel = 255;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0, GL_RED, GL_UNSIGNED_BYTE, &whitePixel);
+    hasMaskTexture = false;
+
+    // Triple-buffered unpack buffers let the driver DMA a prior frame while the
+    // CPU prepares the next one, avoiding the usual glTexSubImage2D stall.
+    glGenBuffers(static_cast<GLsizei>(uploadPbos.size()), uploadPbos.data());
 }
 
 void GLWidget::initShaders() {
@@ -90,6 +115,13 @@ void GLWidget::initShaders() {
     passthroughShader->addShaderFromSourceCode(QOpenGLShader::Fragment, passthroughShaderSource);
     if (!passthroughShader->link()) {
         qWarning() << "Failed to link passthrough shader:" << passthroughShader->log();
+    }
+
+    maskCompositeShader = new QOpenGLShaderProgram(this);
+    maskCompositeShader->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
+    maskCompositeShader->addShaderFromSourceCode(QOpenGLShader::Fragment, maskCompositeShaderSource);
+    if (!maskCompositeShader->link()) {
+        qWarning() << "Failed to link mask composite shader:" << maskCompositeShader->log();
     }
 
 }
@@ -132,6 +164,14 @@ void GLWidget::updateFrame(const DecodedVideoFrame& frame) {
     update();
 }
 
+void GLWidget::updateFrame(DecodedVideoFrame&& frame) {
+    std::lock_guard<std::mutex> lock(m_frameMutex);
+    currentFrame = std::move(frame);
+    hasNewFrame = true;
+    isTransitioning = false;
+    update();
+}
+
 void GLWidget::updateTransitionFrames(const DecodedVideoFrame& f1, const DecodedVideoFrame& f2, double progress, const std::string& pluginId) {
     std::lock_guard<std::mutex> lock(m_frameMutex);
     transitionFrame1 = f1;
@@ -166,23 +206,204 @@ void GLWidget::setShowOverlay(bool show) {
     if (overlayLabel) overlayLabel->setVisible(show);
 }
 
-void GLWidget::compileCustomPluginShader(ShaderPlugin& plugin) {
-    if (plugin.isCompiled) return;
+void GLWidget::setAsyncTextureUploads(bool enabled) {
+    m_asyncTextureUploads = enabled;
+}
 
-    QOpenGLShaderProgram* program = new QOpenGLShaderProgram(this);
-    program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
+void GLWidget::setRendererBackend(RenderBackendKind backend) {
+    m_rendererBackend = backend;
+    m_asyncTextureUploads = renderBackendUsesPbo(backend);
+    update();
+}
+
+void GLWidget::uploadPrimaryVideoTexture(const DecodedVideoFrame& frame) {
+    if (frame.rgbData.empty() || frame.width <= 0 || frame.height <= 0) return;
+    const bool resized = lastFrameWidth != frame.width || lastFrameHeight != frame.height;
+    const GLsizeiptr byteCount = static_cast<GLsizeiptr>(frame.rgbData.size());
+    bool uploadedWithPbo = false;
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, videoTexture);
+
+    if (m_asyncTextureUploads && uploadPbos[0] != 0) {
+        const GLuint pbo = uploadPbos[nextUploadPbo++ % uploadPbos.size()];
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+        // Orphaning prevents the map from waiting on DMA still using this PBO.
+        glBufferData(GL_PIXEL_UNPACK_BUFFER, byteCount, nullptr, GL_STREAM_DRAW);
+        void* destination = glMapBufferRange(
+            GL_PIXEL_UNPACK_BUFFER, 0, byteCount,
+            GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+        if (destination) {
+            std::memcpy(destination, frame.rgbData.data(), static_cast<size_t>(byteCount));
+            if (glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) == GL_TRUE) {
+                if (resized) {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                } else {
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                }
+                uploadedWithPbo = true;
+            }
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
+
+    if (!uploadedWithPbo) {
+        if (resized) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame.rgbData.data());
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, GL_RGB, GL_UNSIGNED_BYTE, frame.rgbData.data());
+        }
+    }
+    lastFrameWidth = frame.width;
+    lastFrameHeight = frame.height;
+}
+
+void GLWidget::setDetections(const std::vector<DetectionBox>& boxes) {
+    detections = boxes;
+    update();
+}
+
+void GLWidget::setShowDetections(bool show) {
+    m_showDetections = show;
+    update();
+}
+
+void GLWidget::setMaskEnabled(bool enabled) {
+    m_maskEnabled = enabled;
+    update();
+}
+
+void GLWidget::setMaskData(int width, int height, const std::vector<uint8_t>& maskR) {
+    pendingMaskW = width;
+    pendingMaskH = height;
+    pendingMask = maskR;
+    maskDirty = true;
+    hasMaskTexture = (width > 0 && height > 0 && !maskR.empty());
+    update();
+}
+
+void GLWidget::uploadMaskIfNeeded() {
+    if (!maskDirty || !maskTexture) return;
+    maskDirty = false;
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, maskTexture);
+    if (pendingMaskW <= 0 || pendingMaskH <= 0 || pendingMask.empty()) {
+        unsigned char whitePixel = 255;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0, GL_RED, GL_UNSIGNED_BYTE, &whitePixel);
+        lastMaskWidth = 1;
+        lastMaskHeight = 1;
+        hasMaskTexture = false;
+        return;
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (lastMaskWidth != pendingMaskW || lastMaskHeight != pendingMaskH) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, pendingMaskW, pendingMaskH, 0, GL_RED, GL_UNSIGNED_BYTE, pendingMask.data());
+        lastMaskWidth = pendingMaskW;
+        lastMaskHeight = pendingMaskH;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, pendingMaskW, pendingMaskH, GL_RED, GL_UNSIGNED_BYTE, pendingMask.data());
+    }
+    hasMaskTexture = true;
+}
+
+void GLWidget::paintEvent(QPaintEvent* event) {
+    QOpenGLWidget::paintEvent(event);
+
+    if (!m_showDetections || detections.empty()) return;
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor colors[] = {
+        QColor(245, 158, 248),
+        QColor(56, 189, 248),
+        QColor(52, 211, 153),
+        QColor(251, 191, 36),
+        QColor(248, 113, 113),
+    };
+
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const auto& box = detections[i];
+        const QColor color = colors[i % 5];
+        const QRectF rect(
+            box.x * width(),
+            box.y * height(),
+            box.w * width(),
+            box.h * height()
+        );
+
+        QPen pen(color, 2.0);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(rect);
+
+        const QString label = QString("%1  %2%")
+            .arg(QString::fromStdString(box.label))
+            .arg(box.confidence * 100.0f, 0, 'f', 0);
+
+        QFont font = painter.font();
+        font.setBold(true);
+        font.setPointSize(9);
+        painter.setFont(font);
+
+        QFontMetrics fm(font);
+        const QRect textRect = fm.boundingRect(label).adjusted(-4, -2, 4, 2);
+        QRect badge(
+            static_cast<int>(rect.left()),
+            std::max(0, static_cast<int>(rect.top()) - textRect.height()),
+            textRect.width(),
+            textRect.height()
+        );
+
+        painter.fillRect(badge, QColor(color.red(), color.green(), color.blue(), 210));
+        painter.setPen(QColor(20, 16, 28));
+        painter.drawText(badge, Qt::AlignCenter, label);
+    }
+}
+
+void GLWidget::compileCustomPluginShader(ShaderPlugin& plugin) {
+    if (plugin.compileAttempted) return;
+    plugin.compileAttempted = true;
+
+    auto program = std::make_unique<QOpenGLShaderProgram>();
+    if (!program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource)) {
+        qWarning() << "Failed to compile vertex shader for plugin:" << QString::fromStdString(plugin.name)
+                   << program->log();
+        return;
+    }
     QFile file(QString::fromStdString(plugin.fragmentShaderPath));
     if (file.open(QIODevice::ReadOnly)) {
         QString fragSource = file.readAll();
-        program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragSource);
+        if (!program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragSource)) {
+            qWarning() << "Failed to compile fragment shader for plugin:" << QString::fromStdString(plugin.name)
+                       << program->log();
+            return;
+        }
+    } else {
+        qWarning() << "Failed to open developer plugin fragment shader:" << QString::fromStdString(plugin.fragmentShaderPath);
+        return;
     }
     if (program->link()) {
         plugin.shaderProgram = program->programId();
+        uniformLocations.erase(plugin.shaderProgram);
         plugin.isCompiled = true;
+        program.release()->setParent(this);
     } else {
-        qWarning() << "Failed to compile developer plugin shader:" << QString::fromStdString(plugin.name)
+        qWarning() << "Failed to link developer plugin shader:" << QString::fromStdString(plugin.name)
                    << program->log();
     }
+}
+
+GLint GLWidget::uniformLocation(GLuint program, const char* name) {
+    auto& locations = uniformLocations[program];
+    const auto found = locations.find(name);
+    if (found != locations.end()) return found->second;
+    const GLint location = glGetUniformLocation(program, name);
+    locations.emplace(name, location);
+    return location;
 }
 
 void GLWidget::paintGL() {
@@ -191,35 +412,15 @@ void GLWidget::paintGL() {
     int w = width();
     int h = height();
     allocateFBOs(w, h);
+    uploadMaskIfNeeded();
 
     if (hasNewFrame) {
         std::lock_guard<std::mutex> lock(m_frameMutex);
         if (!isTransitioning) {
-            if (!currentFrame.rgbData.empty()) {
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, videoTexture);
-
-                if (lastFrameWidth != currentFrame.width || lastFrameHeight != currentFrame.height) {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, currentFrame.width, currentFrame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, currentFrame.rgbData.data());
-                    lastFrameWidth = currentFrame.width;
-                    lastFrameHeight = currentFrame.height;
-                } else {
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, currentFrame.width, currentFrame.height, GL_RGB, GL_UNSIGNED_BYTE, currentFrame.rgbData.data());
-                }
-            }
+            uploadPrimaryVideoTexture(currentFrame);
         } else {
             if (!transitionFrame1.rgbData.empty()) {
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, videoTexture);
-                if (lastFrameWidth != transitionFrame1.width || lastFrameHeight != transitionFrame1.height) {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, transitionFrame1.width, transitionFrame1.height, 0, GL_RGB, GL_UNSIGNED_BYTE, transitionFrame1.rgbData.data());
-                    lastFrameWidth = transitionFrame1.width;
-                    lastFrameHeight = transitionFrame1.height;
-                } else {
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, transitionFrame1.width, transitionFrame1.height, GL_RGB, GL_UNSIGNED_BYTE, transitionFrame1.rgbData.data());
-                }
+                uploadPrimaryVideoTexture(transitionFrame1);
             }
             if (!transitionFrame2.rgbData.empty()) {
                 glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -232,19 +433,19 @@ void GLWidget::paintGL() {
     }
 
     auto bindRichUniforms = [&](GLuint prog) {
-        GLint timeLoc = glGetUniformLocation(prog, "time");
+        GLint timeLoc = uniformLocation(prog, "time");
         if (timeLoc != -1) glUniform1f(timeLoc, (float)m_time);
 
-        GLint resLoc = glGetUniformLocation(prog, "resolution");
+        GLint resLoc = uniformLocation(prog, "resolution");
         if (resLoc != -1) glUniform2f(resLoc, (float)w, (float)h);
 
-        GLint aspectLoc = glGetUniformLocation(prog, "aspect");
+        GLint aspectLoc = uniformLocation(prog, "aspect");
         if (aspectLoc != -1) glUniform1f(aspectLoc, (float)w / std::max(1.0f, (float)h));
 
-        GLint frameLoc = glGetUniformLocation(prog, "frameIndex");
+        GLint frameLoc = uniformLocation(prog, "frameIndex");
         if (frameLoc != -1) glUniform1i(frameLoc, (int)(m_time * 30.0));
 
-        GLint fpsLoc = glGetUniformLocation(prog, "fps");
+        GLint fpsLoc = uniformLocation(prog, "fps");
         if (fpsLoc != -1) glUniform1f(fpsLoc, 30.0f);
 
         QPoint pt = mapFromGlobal(QCursor::pos());
@@ -252,29 +453,29 @@ void GLWidget::paintGL() {
         float normMouseY = (float)(h - pt.y()) / std::max(1.0f, (float)h);
         bool isMouseDown = (QApplication::mouseButtons() & Qt::LeftButton);
 
-        GLint mouseLoc = glGetUniformLocation(prog, "mouse");
+        GLint mouseLoc = uniformLocation(prog, "mouse");
         if (mouseLoc != -1) glUniform2f(mouseLoc, normMouseX, normMouseY);
 
-        GLint mouseXLoc = glGetUniformLocation(prog, "mouseX");
+        GLint mouseXLoc = uniformLocation(prog, "mouseX");
         if (mouseXLoc != -1) glUniform1f(mouseXLoc, normMouseX);
 
-        GLint mouseYLoc = glGetUniformLocation(prog, "mouseY");
+        GLint mouseYLoc = uniformLocation(prog, "mouseY");
         if (mouseYLoc != -1) glUniform1f(mouseYLoc, normMouseY);
 
-        GLint mousePressLoc = glGetUniformLocation(prog, "mousePressed");
+        GLint mousePressLoc = uniformLocation(prog, "mousePressed");
         if (mousePressLoc != -1) glUniform1i(mousePressLoc, isMouseDown ? 1 : 0);
 
         float b = AudioEngine::instance().getBass();
         float m = AudioEngine::instance().getMid();
         float t = AudioEngine::instance().getHigh();
 
-        GLint bassLoc = glGetUniformLocation(prog, "audioBass");
+        GLint bassLoc = uniformLocation(prog, "audioBass");
         if (bassLoc != -1) glUniform1f(bassLoc, b);
-        GLint midLoc = glGetUniformLocation(prog, "audioMid");
+        GLint midLoc = uniformLocation(prog, "audioMid");
         if (midLoc != -1) glUniform1f(midLoc, m);
-        GLint trebleLoc = glGetUniformLocation(prog, "audioTreble");
+        GLint trebleLoc = uniformLocation(prog, "audioTreble");
         if (trebleLoc != -1) glUniform1f(trebleLoc, t);
-        GLint volLoc = glGetUniformLocation(prog, "audioVolume");
+        GLint volLoc = uniformLocation(prog, "audioVolume");
         if (volLoc != -1) glUniform1f(volLoc, (b + m + t) / 3.0f);
     };
 
@@ -290,16 +491,16 @@ void GLWidget::paintGL() {
 
                 glUseProgram(plugin->shaderProgram);
 
-                GLint videoTexLoc = glGetUniformLocation(plugin->shaderProgram, "videoTexture");
+                GLint videoTexLoc = uniformLocation(plugin->shaderProgram, "videoTexture");
                 glUniform1i(videoTexLoc, 0);
-                GLint videoTex2Loc = glGetUniformLocation(plugin->shaderProgram, "videoTexture2");
+                GLint videoTex2Loc = uniformLocation(plugin->shaderProgram, "videoTexture2");
                 glUniform1i(videoTex2Loc, 1);
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, videoTexture);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, videoTexture2);
 
-                GLint progressLoc = glGetUniformLocation(plugin->shaderProgram, "progress");
+                GLint progressLoc = uniformLocation(plugin->shaderProgram, "progress");
                 if (progressLoc != -1) glUniform1f(progressLoc, (float)transitionProgress);
 
                 bindRichUniforms(plugin->shaderProgram);
@@ -320,6 +521,9 @@ void GLWidget::paintGL() {
         if (plugin) {
             compileCustomPluginShader(*plugin);
             if (plugin->isCompiled && plugin->shaderProgram > 0) {
+                // Preserve the incoming texture: after the plugin renders, a
+                // shared composite pass limits that effect to the active mask.
+                const GLuint sourceTex = currentTex;
                 fboPong->bind();
                 glViewport(0, 0, w, h);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -330,20 +534,27 @@ void GLWidget::paintGL() {
 
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, currentTex);
-                GLint videoTexLoc = glGetUniformLocation(plugin->shaderProgram, "videoTexture");
+                GLint videoTexLoc = uniformLocation(plugin->shaderProgram, "videoTexture");
                 if (videoTexLoc != -1) glUniform1i(videoTexLoc, 0);
-                GLint currentTexLoc = glGetUniformLocation(plugin->shaderProgram, "currentTexture");
+                GLint currentTexLoc = uniformLocation(plugin->shaderProgram, "currentTexture");
                 if (currentTexLoc != -1) glUniform1i(currentTexLoc, 0);
 
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, fboFeedback->texture());
-                GLint feedbackTexLoc = glGetUniformLocation(plugin->shaderProgram, "feedbackTexture");
+                GLint feedbackTexLoc = uniformLocation(plugin->shaderProgram, "feedbackTexture");
                 if (feedbackTexLoc != -1) glUniform1i(feedbackTexLoc, 1);
-                GLint blendTexLoc = glGetUniformLocation(plugin->shaderProgram, "blendTexture");
+                GLint blendTexLoc = uniformLocation(plugin->shaderProgram, "blendTexture");
                 if (blendTexLoc != -1) glUniform1i(blendTexLoc, 1);
 
+                glActiveTexture(GL_TEXTURE2);
+                glBindTexture(GL_TEXTURE_2D, maskTexture);
+                GLint maskTexLoc = uniformLocation(plugin->shaderProgram, "maskTexture");
+                if (maskTexLoc != -1) glUniform1i(maskTexLoc, 2);
+                GLint hasMaskLoc = uniformLocation(plugin->shaderProgram, "hasMask");
+                if (hasMaskLoc != -1) glUniform1i(hasMaskLoc, (m_maskEnabled && hasMaskTexture) ? 1 : 0);
+
                 for (const auto& param : eff.parameters) {
-                    GLint paramLoc = glGetUniformLocation(plugin->shaderProgram, param.name.c_str());
+                    GLint paramLoc = uniformLocation(plugin->shaderProgram, param.name.c_str());
                     if (paramLoc != -1) {
                         double paramVal = param.curve.getKeyframes().empty() ? param.currentVal : param.curve.evaluate(m_time);
                         glUniform1f(paramLoc, (float)paramVal);
@@ -357,8 +568,39 @@ void GLWidget::paintGL() {
 
                 currentTex = fboPong->texture();
                 std::swap(fboPing, fboPong);
+
+                if (m_maskEnabled && hasMaskTexture && eff.pluginId != "object_mask" &&
+                    maskCompositeShader && maskCompositeShader->isLinked()) {
+                    fboPong->bind();
+                    glViewport(0, 0, w, h);
+                    maskCompositeShader->bind();
+                    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, sourceTex);
+                    maskCompositeShader->setUniformValue("sourceTexture", 0);
+                    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, currentTex);
+                    maskCompositeShader->setUniformValue("effectedTexture", 1);
+                    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, maskTexture);
+                    maskCompositeShader->setUniformValue("maskTexture", 2);
+                    maskCompositeShader->setUniformValue("invertMask", 0.0f);
+                    renderQuad();
+                    maskCompositeShader->release();
+                    fboPong->release();
+                    currentTex = fboPong->texture();
+                    std::swap(fboPing, fboPong);
+                }
             }
         }
+    }
+
+    if (fboFeedback && passthroughShader && passthroughShader->isLinked()) {
+        fboFeedback->bind();
+        glViewport(0, 0, w, h);
+        passthroughShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, currentTex);
+        passthroughShader->setUniformValue("videoTexture", 0);
+        renderQuad();
+        passthroughShader->release();
+        fboFeedback->release();
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());

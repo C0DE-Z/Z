@@ -70,6 +70,11 @@ void Project::fromJson(const QJsonObject& root) {
                         double v = kfObj.value("value").toDouble();
                         int modeInt = kfObj.value("mode").toInt(0);
                         param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                        auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                        key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                        key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                        key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                        key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                     }
 
                     effect.parameters.push_back(param);
@@ -118,6 +123,7 @@ void Project::fromJson(const QJsonObject& root) {
                 param.maxVal = paramObj.value("max").toDouble();
                 param.defaultVal = paramObj.value("default").toDouble();
                 param.currentVal = paramObj.value("value").toDouble();
+                param.isBool = paramObj.value("isBool").toBool(false);
                 param.curve = AnimationCurve(param.defaultVal);
                 QJsonArray curvesArray = paramObj.value("keyframes").toArray();
                 for (int m = 0; m < curvesArray.size(); ++m) {
@@ -126,6 +132,11 @@ void Project::fromJson(const QJsonObject& root) {
                     double v = kfObj.value("value").toDouble();
                     int modeInt = kfObj.value("mode").toInt(0);
                     param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                    auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                    key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                    key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                    key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                    key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                 }
                 effect.parameters.push_back(param);
             }
@@ -140,7 +151,11 @@ void Project::fromJson(const QJsonObject& root) {
                         for (const auto& p : plugin->parameters) {
                             bool found = false;
                             for (auto& ep : effect.parameters) {
-                                if (ep.name == p.name) { found = true; break; }
+                                if (ep.name == p.name) {
+                                    ep.isBool = p.isBool;
+                                    found = true;
+                                    break;
+                                }
                             }
                             if (!found) effect.parameters.push_back(p);
                         }
@@ -179,6 +194,11 @@ void Project::fromJson(const QJsonObject& root) {
                     double v = kfObj.value("value").toDouble();
                     int modeInt = kfObj.value("mode").toInt(0);
                     param.curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                    auto& key = *std::find_if(param.curve.getKeyframes().begin(), param.curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                    key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                    key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                    key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                    key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
                 }
                 transition.parameters.push_back(param);
             }
@@ -190,7 +210,11 @@ void Project::fromJson(const QJsonObject& root) {
                     for (const auto& p : plugin->parameters) {
                         bool found = false;
                         for (auto& ep : transition.parameters) {
-                            if (ep.name == p.name) { found = true; break; }
+                            if (ep.name == p.name) {
+                                ep.isBool = p.isBool;
+                                found = true;
+                                break;
+                            }
                         }
                         if (!found) transition.parameters.push_back(p);
                     }
@@ -281,6 +305,7 @@ QJsonObject Project::toJson() const {
                     paramObj["max"] = param.maxVal;
                     paramObj["default"] = param.defaultVal;
                     paramObj["value"] = param.currentVal;
+                    paramObj["isBool"] = param.isBool;
 
                     QJsonArray keyframesArray;
                     for (const auto& kf : param.curve.getKeyframes()) {
@@ -288,6 +313,10 @@ QJsonObject Project::toJson() const {
                         kfObj["time"] = kf.time;
                         kfObj["value"] = kf.value;
                         kfObj["mode"] = static_cast<int>(kf.mode);
+                        kfObj["handleInX"] = kf.handleInX;
+                        kfObj["handleInY"] = kf.handleInY;
+                        kfObj["handleOutX"] = kf.handleOutX;
+                        kfObj["handleOutY"] = kf.handleOutY;
                         keyframesArray.append(kfObj);
                     }
                     paramObj["keyframes"] = keyframesArray;
@@ -323,6 +352,10 @@ QJsonObject Project::toJson() const {
                     kfObj["time"] = kf.time;
                     kfObj["value"] = kf.value;
                     kfObj["mode"] = static_cast<int>(kf.mode);
+                    kfObj["handleInX"] = kf.handleInX;
+                    kfObj["handleInY"] = kf.handleInY;
+                    kfObj["handleOutX"] = kf.handleOutX;
+                    kfObj["handleOutY"] = kf.handleOutY;
                     keyframesArray.append(kfObj);
                 }
                 paramObj["keyframes"] = keyframesArray;
@@ -361,6 +394,10 @@ QJsonObject Project::toJson() const {
                     kfObj["time"] = kf.time;
                     kfObj["value"] = kf.value;
                     kfObj["mode"] = static_cast<int>(kf.mode);
+                    kfObj["handleInX"] = kf.handleInX;
+                    kfObj["handleInY"] = kf.handleInY;
+                    kfObj["handleOutX"] = kf.handleOutX;
+                    kfObj["handleOutY"] = kf.handleOutY;
                     keyframesArray.append(kfObj);
                 }
                 paramObj["keyframes"] = keyframesArray;

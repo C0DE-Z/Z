@@ -7,6 +7,17 @@
 
 class GLWidget;
 
+struct ExportSettings {
+    QString outputPath;
+    int width = 1920;
+    int height = 1080;
+    double fps = 30.0;
+    int crf = 22;
+    double startTime = 0.0;
+    double duration = 0.0;
+    bool includeAudio = true;
+};
+
 class MediaExporter {
 public:
     static void exportVideo(
@@ -16,7 +27,9 @@ public:
         GLWidget* glWidget,
         std::function<void(double)> scrubCallback,
         std::function<void()> togglePlaybackCallback,
-        bool wasPlaying
+        bool wasPlaying,
+        double markIn = -1.0,
+        double markOut = -1.0
     );
 };
 

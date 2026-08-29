@@ -9,9 +9,15 @@
 #include <QOpenGLVertexArrayObject>
 #include <QElapsedTimer>
 #include <QLabel>
+#include <QPaintEvent>
 #include <mutex>
+#include <vector>
+#include <unordered_map>
+#include <array>
 #include "engine/pluginmanager.h"
 #include "engine/videoengine.h"
+#include "engine/detector.h"
+#include "engine/renderbackend.h"
 #include "core/project.h"
 
 class GLWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions {
@@ -21,6 +27,7 @@ public:
     ~GLWidget();
 
     void updateFrame(const DecodedVideoFrame& frame);
+    void updateFrame(DecodedVideoFrame&& frame);
     void updateTransitionFrames(const DecodedVideoFrame& frame1, const DecodedVideoFrame& frame2, double progress, const std::string& transitionPluginId);
     void clearFrame();
 
@@ -28,11 +35,24 @@ public:
 
     void setActiveEffects(const std::vector<AppliedEffect>& effects);
     void setShowOverlay(bool show);
+    void setAsyncTextureUploads(bool enabled);
+    bool asyncTextureUploads() const { return m_asyncTextureUploads; }
+    void setRendererBackend(RenderBackendKind backend);
+    RenderBackendKind rendererBackend() const { return m_rendererBackend; }
+
+    void setDetections(const std::vector<DetectionBox>& boxes);
+    void setShowDetections(bool show);
+    bool showDetections() const { return m_showDetections; }
+
+    void setMaskEnabled(bool enabled);
+    bool maskEnabled() const { return m_maskEnabled; }
+    void setMaskData(int width, int height, const std::vector<uint8_t>& maskR);
 
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void paintEvent(QPaintEvent* event) override;
 
 private:
     double m_time = 0.0;
@@ -53,14 +73,31 @@ private:
 
     GLuint videoTexture = 0;
     GLuint videoTexture2 = 0;
+    GLuint maskTexture = 0;
+    std::array<GLuint, 3> uploadPbos{};
+    unsigned int nextUploadPbo = 0;
+    bool m_asyncTextureUploads = true;
+    RenderBackendKind m_rendererBackend = RenderBackendKind::OpenGLPipelined;
     int lastFrameWidth = 0;
     int lastFrameHeight = 0;
+    int lastMaskWidth = 0;
+    int lastMaskHeight = 0;
+    bool hasMaskTexture = false;
+    bool m_maskEnabled = false;
+    bool maskDirty = false;
+    std::vector<uint8_t> pendingMask;
+    int pendingMaskW = 0;
+    int pendingMaskH = 0;
+
+    bool m_showDetections = true;
+    std::vector<DetectionBox> detections;
 
     QOpenGLFramebufferObject* fboPing = nullptr;
     QOpenGLFramebufferObject* fboPong = nullptr;
-    QOpenGLFramebufferObject* fboFeedback = nullptr; 
+    QOpenGLFramebufferObject* fboFeedback = nullptr;
 
     QOpenGLShaderProgram* passthroughShader = nullptr;
+    QOpenGLShaderProgram* maskCompositeShader = nullptr;
 
     std::vector<AppliedEffect> activeEffects;
 
@@ -70,6 +107,10 @@ private:
     void allocateFBOs(int w, int h);
     void renderQuad();
     void compileCustomPluginShader(ShaderPlugin& plugin);
+    void uploadMaskIfNeeded();
+    void uploadPrimaryVideoTexture(const DecodedVideoFrame& frame);
+    GLint uniformLocation(GLuint program, const char* name);
+    std::unordered_map<GLuint, std::unordered_map<std::string, GLint>> uniformLocations;
 };
 
-#endif 
+#endif
