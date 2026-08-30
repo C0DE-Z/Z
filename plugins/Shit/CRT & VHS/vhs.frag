@@ -31,7 +31,7 @@ void main() {
     float r = texture(videoTexture, uv - vec2(chromaDelay, 0.0)).r;
     float g = texture(videoTexture, uv).g;
     float b = texture(videoTexture, uv + vec2(chromaDelay, 0.0)).b;
-    vec4 color = vec4(r, g, b, 1.0);
+    vec4 color = vec4(r, g, b, texture(videoTexture, uv).a);
     if (noise > 0.0 || wear > 0.0) {
         float n = hash(uv + time);
         color.rgb += vec3(n * 0.15 * noise);

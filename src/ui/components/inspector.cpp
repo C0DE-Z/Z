@@ -277,6 +277,8 @@ void Inspector::syncParameters(const std::vector<ShaderParameter>& parameters) {
             currentParameters[i].curve = parameters[i].curve;
         }
     }
+    // Force repaint of curve preview widgets by triggering time update
+    if (scrollWidget) scrollWidget->update();
     setCurrentTime(currentPlayheadTime);
 }
 

@@ -10,6 +10,7 @@ extern "C" {
 #include <libswresample/swresample.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 }
 
 #ifndef AV_CH_LAYOUT_MONO
@@ -88,6 +89,8 @@ void VideoDecoder::setPlaybackQuality(int downscaleFactor) {
             swsCtx = nullptr;
         }
         referenceFrameRgb.clear();
+        referenceFrameAlpha.clear();
+        referenceFrameHasAlpha = false;
         hasReferenceFrame = false;
     }
 }
@@ -128,6 +131,8 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
     lastPacketTime = -999.0;
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
+    referenceFrameAlpha.clear();
+    referenceFrameHasAlpha = false;
     audioSamples.clear();
 
     if (avformat_open_input(&formatCtx, filePath.c_str(), nullptr, nullptr) != 0) {
@@ -462,6 +467,8 @@ void VideoDecoder::close() {
     lastPacketTime = -999.0;
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
+    referenceFrameAlpha.clear();
+    referenceFrameHasAlpha = false;
 }
 
 bool VideoDecoder::seekTo(double timestamp) {
@@ -505,6 +512,8 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
             outFrame.width = width / playbackQualityScale;
             outFrame.height = height / playbackQualityScale;
             outFrame.rgbData = referenceFrameRgb;
+            outFrame.alphaData = referenceFrameAlpha;
+            outFrame.hasAlpha = referenceFrameHasAlpha;
             return true;
         }
     }
@@ -519,9 +528,11 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
         lastPacketTime = -999.0;
         hasReferenceFrame = false;
         referenceFrameRgb.clear();
+        referenceFrameAlpha.clear();
+        referenceFrameHasAlpha = false;
     }
 
-    int maxPackets = 2000;
+    int maxPackets = 20000;
     while (maxPackets-- > 0) {
         int readRet = av_read_frame(formatCtx, packet);
         if (readRet < 0) {
@@ -605,10 +616,24 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
 
             int outWidth = std::max(2, ((width / playbackQualityScale) / 2) * 2);
             int outHeight = std::max(2, ((height / playbackQualityScale) / 2) * 2);
+
+            // Ask FFmpeg's descriptor instead of maintaining a partial list of
+            // formats. This covers new packed, planar, and high-bit-depth YUVA
+            // formats (including the formats commonly produced by ProRes).
+            const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(
+                static_cast<AVPixelFormat>(activeFrame->format));
+            const bool sourceHasAlpha = descriptor && (descriptor->flags & AV_PIX_FMT_FLAG_ALPHA);
+
+            const char* formatName = av_get_pix_fmt_name((AVPixelFormat)activeFrame->format);
+            qDebug() << "VideoDecoder: Frame format =" << activeFrame->format
+                     << "(" << (formatName ? formatName : "unknown") << ")"
+                     << "has alpha:" << sourceHasAlpha;
+
+            const AVPixelFormat targetFmt = sourceHasAlpha ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24;
             swsCtx = sws_getCachedContext(
                 swsCtx,
                 width, height, (AVPixelFormat)activeFrame->format,
-                outWidth, outHeight, AV_PIX_FMT_RGB24,
+                outWidth, outHeight, targetFmt,
                 SWS_BILINEAR, nullptr, nullptr, nullptr
             );
             if (!swsCtx) {
@@ -618,23 +643,42 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
             outFrame.timestamp = framePts;
             outFrame.width = outWidth;
             outFrame.height = outHeight;
-            size_t rgbSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 3;
-            if (outFrame.rgbData.size() != rgbSize) {
-                outFrame.rgbData.resize(rgbSize);
+            outFrame.hasAlpha = sourceHasAlpha;
+            outFrame.alphaData.clear();
+
+            if (sourceHasAlpha) {
+                const size_t rgbaSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 4;
+                std::vector<uint8_t> rgbaData(rgbaSize);
+                uint8_t* dest[4] = { rgbaData.data(), nullptr, nullptr, nullptr };
+                int linesize[4] = { outWidth * 4, 0, 0, 0 };
+                dest[0] += linesize[0] * (outFrame.height - 1);
+                linesize[0] = -linesize[0];
+                sws_scale(swsCtx, activeFrame->data, activeFrame->linesize, 0, height, dest, linesize);
+
+                const size_t rgbSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 3;
+                if (outFrame.rgbData.size() != rgbSize) {
+                    outFrame.rgbData.resize(rgbSize);
+                }
+                outFrame.alphaData.resize(outWidth * outHeight);
+                for (size_t i = 0; i < outWidth * outHeight; ++i) {
+                    outFrame.rgbData[i * 3 + 0] = rgbaData[i * 4 + 0];
+                    outFrame.rgbData[i * 3 + 1] = rgbaData[i * 4 + 1];
+                    outFrame.rgbData[i * 3 + 2] = rgbaData[i * 4 + 2];
+                    outFrame.alphaData[i] = rgbaData[i * 4 + 3];
+                }
+            } else {
+                const size_t rgbSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 3;
+                if (outFrame.rgbData.size() != rgbSize) {
+                    outFrame.rgbData.resize(rgbSize);
+                }
+                uint8_t* dest[4] = { outFrame.rgbData.data(), nullptr, nullptr, nullptr };
+                int linesize[4] = { outWidth * 3, 0, 0, 0 };
+                dest[0] += linesize[0] * (outFrame.height - 1);
+                linesize[0] = -linesize[0];
+                sws_scale(swsCtx, activeFrame->data, activeFrame->linesize, 0, height, dest, linesize);
+                outFrame.alphaData.clear();
+                outFrame.hasAlpha = false;
             }
-            uint8_t* dest[4] = { outFrame.rgbData.data(), nullptr, nullptr, nullptr };
-            int linesize[4] = { outWidth * 3, 0, 0, 0 };
-            dest[0] += linesize[0] * (outFrame.height - 1);
-            linesize[0] = -linesize[0];
-            sws_scale(
-                swsCtx,
-                activeFrame->data,
-                activeFrame->linesize,
-                0,
-                height, 
-                dest,
-                linesize
-            );
 
             if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
                 CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
@@ -662,9 +706,13 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 cpuXorEnabled || cpuOrEnabled || cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled;
             if (needsReferenceFrame) {
                 referenceFrameRgb = outFrame.rgbData;
+                referenceFrameAlpha = outFrame.alphaData;
+                referenceFrameHasAlpha = outFrame.hasAlpha;
                 hasReferenceFrame = true;
             } else {
                 referenceFrameRgb.clear();
+                referenceFrameAlpha.clear();
+                referenceFrameHasAlpha = false;
                 hasReferenceFrame = false;
             }
             lastDecodedTime = framePts;
@@ -681,6 +729,8 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
         outFrame.width = width / playbackQualityScale;
         outFrame.height = height / playbackQualityScale;
         outFrame.rgbData = referenceFrameRgb;
+        outFrame.alphaData = referenceFrameAlpha;
+        outFrame.hasAlpha = referenceFrameHasAlpha;
         return true;
     }
 

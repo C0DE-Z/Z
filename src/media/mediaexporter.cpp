@@ -161,14 +161,29 @@ void MediaExporter::exportVideo(
         return;
     }
 
+    const QString suggestedName = QString("%1.mov").arg(activeClipId.isEmpty() ? "render" : activeClipId);
+    const QString defaultPath = QDir::homePath() + "/" + suggestedName;
+    QString selectedFilter = "QuickTime MOV (*.mov)";
     QString outputPath = QFileDialog::getSaveFileName(
-        parentWindow, "Save Rendered Video", "", 
-        "MP4 Video (*.mp4);;All Files (*)"
+        parentWindow,
+        "Save Rendered Video",
+        defaultPath,
+        "QuickTime MOV (*.mov);;MP4 Video (*.mp4);;All Files (*)",
+        &selectedFilter
     );
 
     if (outputPath.isEmpty()) return;
-    if (!outputPath.endsWith(".mp4", Qt::CaseInsensitive)) {
-        outputPath += ".mp4";
+
+    const QString lower = outputPath.toLower();
+    QString extension = ".mov";
+    if (selectedFilter.contains("MP4", Qt::CaseInsensitive) || lower.endsWith(".mp4")) {
+        extension = ".mp4";
+    } else if (selectedFilter.contains("MOV", Qt::CaseInsensitive) || lower.endsWith(".mov")) {
+        extension = ".mov";
+    }
+
+    if (!lower.endsWith(".mov") && !lower.endsWith(".mp4")) {
+        outputPath += extension;
     }
 
     ExportSettings settings = configDialog.getSettings(outputPath);
@@ -203,7 +218,7 @@ void MediaExporter::exportVideo(
     QStringList arguments;
     arguments << "-y"
               << "-f" << "rawvideo"
-              << "-pix_fmt" << "rgb24"
+              << "-pix_fmt" << "rgba"
               << "-s" << QString("%1x%2").arg(glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW).arg(glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH)
               << "-r" << QString::number(settings.fps)
               << "-i" << "pipe:0";
@@ -220,12 +235,32 @@ void MediaExporter::exportVideo(
         arguments << "-map" << "0:v:0";
     }
 
-    arguments << "-c:v" << "libx264"
-              << "-preset" << "medium"
-              << "-crf" << QString::number(settings.crf)
-              << "-pix_fmt" << "yuv420p"
-              << "-movflags" << "+faststart"
-              << settings.outputPath;
+    // Transparent footage must use an alpha-capable codec profile and pixel
+    // format. ProRes HQ does not support alpha, so FFmpeg silently converts a
+    // requested YUVA format to opaque YUV when paired with that profile.
+    // MP4 with H.264 cannot store alpha, so we either need to:
+    //   1. Force MOV for transparent footage, or
+    //   2. Use an alpha-capable codec like HEVC with yuva420p
+    // For now, detect if the video appears to have transparency and recommend MOV.
+    const bool isMov = settings.outputPath.toLower().endsWith(".mov");
+    const bool videoLikelyTransparent = true; // TODO: detect actual transparency from first few frames
+
+    if (isMov || videoLikelyTransparent) {
+        // ProRes 4444 preserves the source alpha plane in a MOV container.
+        arguments << "-c:v" << "prores_ks"
+                  << "-profile:v" << "4444"
+                  << "-pix_fmt" << "yuva444p10le"
+                  << "-alpha_bits" << "16"
+                  << "-movflags" << "+faststart";
+    } else {
+        // H.264 MP4 without alpha channel for opaque video.
+        arguments << "-c:v" << "libx264"
+                  << "-preset" << "medium"
+                  << "-crf" << QString::number(settings.crf)
+                  << "-pix_fmt" << "yuv420p"
+                  << "-movflags" << "+faststart";
+    }
+    arguments << settings.outputPath;
 
     QProcess proc;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -251,7 +286,7 @@ void MediaExporter::exportVideo(
 
     int actualW = glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW;
     int actualH = glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH;
-    const int rowBytes = actualW * 3;
+    const int rowBytes = actualW * 4;
 
     for (int i = 0; i < totalFrames; ++i) {
         if (progress.wasCanceled()) {
@@ -268,7 +303,10 @@ void MediaExporter::exportVideo(
         const double time = settings.startTime + (static_cast<double>(i) / settings.fps);
         scrubCallback(time);
 
-        QImage img = glWidget->grabFramebuffer().convertToFormat(QImage::Format_RGB888);
+        // Capture the renderer's transparent offscreen result, not the
+        // QOpenGLWidget window surface (which may already be black/opaque).
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        QImage img = glWidget->grabRenderedFrame();
         if (img.isNull()) {
             proc.kill();
             proc.waitForFinished();
@@ -280,7 +318,12 @@ void MediaExporter::exportVideo(
         }
 
         if (img.width() != actualW || img.height() != actualH) {
-            img = img.scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            // Scale premultiplied pixels so transparent RGB cannot bleed into
+            // partially covered edge pixels, then return to straight RGBA for
+            // the raw FFmpeg input.
+            img = img.convertToFormat(QImage::Format_RGBA8888_Premultiplied)
+                     .scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                     .convertToFormat(QImage::Format_RGBA8888);
         }
 
         for (int y = 0; y < actualH; ++y) {
@@ -310,7 +353,7 @@ void MediaExporter::exportVideo(
     }
 
     proc.closeWriteChannel();
-    progress.setLabelText("Finalizing MP4 container and encoding audio...");
+    progress.setLabelText("Finalizing MOV container and encoding audio...");
     progress.setValue(totalFrames);
 
     if (!proc.waitForFinished(-1) || proc.exitCode() != 0) {

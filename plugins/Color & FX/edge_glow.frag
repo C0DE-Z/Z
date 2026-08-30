@@ -26,8 +26,12 @@ void main() {
     vec4 bm = texture(videoTexture, TexCoord + vec2(0.0, px.y));
     vec4 br = texture(videoTexture, TexCoord + vec2(px.x, px.y));
 
-    float gx = -tl.r - 2.0*ml.r - bl.r + tr.r + 2.0*mr.r + br.r;
-    float gy = -tl.r - 2.0*tm.r - tr.r + bl.r + 2.0*bm.r + br.r;
+    // Transparent RGB values are often black. Weight samples by alpha so
+    // hidden color values cannot create false dark edges or halos.
+    float gx = -(tl.r * tl.a) - 2.0*(ml.r * ml.a) - (bl.r * bl.a)
+             + (tr.r * tr.a) + 2.0*(mr.r * mr.a) + (br.r * br.a);
+    float gy = -(tl.r * tl.a) - 2.0*(tm.r * tm.a) - (tr.r * tr.a)
+             + (bl.r * bl.a) + 2.0*(bm.r * bm.a) + (br.r * br.a);
     float edge = sqrt(gx*gx + gy*gy);
 
     if (invert > 0.5) edge = 1.0 - edge;
@@ -38,5 +42,5 @@ void main() {
     color.rgb = mix(color.rgb, glow, glowColor * edge);
     color.rgb += glow * 0.3;
 
-    FragColor = clamp(color, 0.0, 1.0);
+    FragColor = vec4(clamp(color.rgb, 0.0, 1.0), color.a);
 }

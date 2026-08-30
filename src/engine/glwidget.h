@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QLabel>
 #include <QPaintEvent>
+#include <QImage>
 #include <mutex>
 #include <vector>
 #include <unordered_map>
@@ -47,6 +48,7 @@ public:
     void setMaskEnabled(bool enabled);
     bool maskEnabled() const { return m_maskEnabled; }
     void setMaskData(int width, int height, const std::vector<uint8_t>& maskR);
+    QImage grabRenderedFrame();
 
 protected:
     void initializeGL() override;
@@ -80,6 +82,7 @@ private:
     RenderBackendKind m_rendererBackend = RenderBackendKind::OpenGLPipelined;
     int lastFrameWidth = 0;
     int lastFrameHeight = 0;
+    bool lastFrameHasAlpha = false;
     int lastMaskWidth = 0;
     int lastMaskHeight = 0;
     bool hasMaskTexture = false;
@@ -95,9 +98,13 @@ private:
     QOpenGLFramebufferObject* fboPing = nullptr;
     QOpenGLFramebufferObject* fboPong = nullptr;
     QOpenGLFramebufferObject* fboFeedback = nullptr;
+    QOpenGLFramebufferObject* exportFbo = nullptr;
+    GLuint renderedTexture = 0;
 
     QOpenGLShaderProgram* passthroughShader = nullptr;
+    QOpenGLShaderProgram* transparencyGridShader = nullptr;
     QOpenGLShaderProgram* maskCompositeShader = nullptr;
+    QOpenGLShaderProgram* alphaGuardShader = nullptr;
 
     std::vector<AppliedEffect> activeEffects;
 

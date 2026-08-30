@@ -5,7 +5,7 @@
 
 class MediaImporter {
 public:
-    static QString transcodeToStandardMp4(const QString& sourcePath);
+    static QString transcodeToStandardMov(const QString& sourcePath);
     static QString standardizedImportDir();
     static QString standardizedImportPathForSource(const QString& sourcePath);
 };

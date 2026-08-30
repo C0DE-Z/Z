@@ -243,6 +243,7 @@ void MainWindow::createDocks() {
                 if (QString::fromStdString(parameter.name) == paramName &&
                     parameter.curve.setInterpolationAt(time, static_cast<InterpolationMode>(mode))) {
                     if (timelinePanel) timelinePanel->update();
+                    if (inspectorPanel) inspectorPanel->syncParameters(effect.parameters);
                     onTimelineScrubbed(currentPlayhead);
                     return;
                 }

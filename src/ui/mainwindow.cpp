@@ -50,22 +50,10 @@
 namespace {
 template <typename Fn>
 auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
+    (void)parent;
+    (void)label;
     using ReturnT = std::invoke_result_t<Fn>;
     auto future = std::async(std::launch::async, std::forward<Fn>(fn));
-
-    QProgressDialog dialog(label, QString(), 0, 0, parent);
-    dialog.setWindowModality(Qt::ApplicationModal);
-    dialog.setCancelButton(nullptr);
-    dialog.setMinimumDuration(0);
-    dialog.setAutoClose(false);
-    dialog.setAutoReset(false);
-    dialog.show();
-
-    while (future.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 32);
-    }
-
-    dialog.close();
     if constexpr (std::is_void_v<ReturnT>) {
         future.get();
     } else {
@@ -75,6 +63,8 @@ auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    setAttribute(Qt::WA_TranslucentBackground, false);
+    setAttribute(Qt::WA_NoSystemBackground, false);
     setWindowTitle("Z");
     setStyleSheet(R"(
         * {
@@ -83,7 +73,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             color: #b0b0c0;
         }
         QMainWindow {
-            background-color: #0b0b0e;
+            background: #0b0b0e;
         }
         QDockWidget {
             background: #0b0b0e;
@@ -137,6 +127,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     PluginManager::instance().scanPluginsDir(pluginsPath.toStdString());
 
     QWidget* centerWidget = new QWidget(this);
+    centerWidget->setAttribute(Qt::WA_TranslucentBackground, false);
+    centerWidget->setAttribute(Qt::WA_NoSystemBackground, false);
+    centerWidget->setStyleSheet("background: #0b0b0e;");
     QVBoxLayout* centerLayout = new QVBoxLayout(centerWidget);
     centerLayout->setContentsMargins(0, 0, 0, 0);
     centerLayout->setSpacing(0);
@@ -835,7 +828,7 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
     }
 
     QString standardizedPath = runWithLoader(this, "Transcoding media for editing...", [filePath]() {
-        return MediaImporter::transcodeToStandardMp4(filePath);
+        return MediaImporter::transcodeToStandardMov(filePath);
     });
     if (standardizedPath.isEmpty()) {
         standardizedPath = filePath;
@@ -1121,7 +1114,8 @@ void MainWindow::onTimelineScrubbed(double time) {
         } else if (gotFrame2 && !frame2.rgbData.empty()) {
             glWidget->updateFrame(frame2);
         } else {
-            glWidget->clearFrame();
+            // Keep the last valid frame while async decoding catches up.
+            // Clearing here produced intermittent blank frames during playback.
         }
         applyEffectsToRenderer(time, topTrack, nullptr);
     } else if (topClip) {
@@ -1145,15 +1139,13 @@ void MainWindow::onTimelineScrubbed(double time) {
         bool gotFrame = false;
         const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
         if (asyncPlayback) {
-            // Never block the GUI behind a keyframe seek. Display the closest
-            // decoded frame while the worker fills the exact target frame.
+            // Never block the GUI behind async decode lag. Prefer the nearest
+            // cached frame in either direction, then request a small lead ahead.
             gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
             if (!gotFrame) {
-                // Keep a small decode lead so a 60 Hz UI is never waiting for
-                // the same frame it is trying to display.
-                VideoEngine::instance().requestFrameAsync(clipKey, localTime + 0.10);
                 gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.25);
             }
+            VideoEngine::instance().requestFrameAsync(clipKey, localTime + 0.10);
         } else {
             gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
         }
@@ -1168,7 +1160,7 @@ void MainWindow::onTimelineScrubbed(double time) {
                 runDetectionOnCurrentFrame();
             }
         } else {
-            glWidget->clearFrame();
+            // Keep the last valid frame while async decoding catches up.
         }
         applyEffectsToRenderer(time, topTrack, topClip);
     } else {
@@ -1805,7 +1797,7 @@ void MainWindow::onParameterChanged(const QString& effectId, const QString& para
                         if (timelinePanel) timelinePanel->update(); 
                     }
                     if (inspectorPanel) {
-                        inspectorPanel->updateParameterValue(paramName, value);
+                        inspectorPanel->syncParameters(eff.parameters);
                     }
                     syncEffectStackToRenderer();
                     onTimelineScrubbed(currentPlayhead);

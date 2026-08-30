@@ -95,7 +95,6 @@ std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) 
             (77 * frame.rgbData[o] + 150 * frame.rgbData[o + 1] + 29 * frame.rgbData[o + 2]) >> 8);
     }
 
-    // Downsample grid for cheap connected regions
     const int cell = std::max(8, std::min(w, h) / 48);
     const int gw = (w + cell - 1) / cell;
     const int gh = (h + cell - 1) / cell;

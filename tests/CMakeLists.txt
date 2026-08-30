@@ -10,6 +10,14 @@ target_include_directories(test_keyframe PRIVATE ../src)
 target_link_libraries(test_keyframe PRIVATE Qt6::Core)
 add_test(NAME KeyframeTests COMMAND test_keyframe)
 
+add_executable(test_mediaimporter
+    unit/test_mediaimporter.cpp
+    ../src/media/mediaimporter.cpp
+)
+target_include_directories(test_mediaimporter PRIVATE ../src)
+target_link_libraries(test_mediaimporter PRIVATE Qt6::Core Qt6::Widgets)
+add_test(NAME MediaImporterTests COMMAND test_mediaimporter)
+
 add_executable(test_appstate
     unit/test_appstate.cpp
     ../src/core/appstate.cpp

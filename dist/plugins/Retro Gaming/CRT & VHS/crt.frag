@@ -21,7 +21,7 @@ void main() {
         uv = uv + 0.5;
     }
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
+        FragColor = vec4(0.0); return;
     }
     float r = texture(videoTexture, uv - vec2(rgbOffset, 0.0)).r;
     float g = texture(videoTexture, uv).g;
@@ -34,5 +34,5 @@ void main() {
         blurColor += texture(videoTexture, uv - vec2(0.005, 0.005)).rgb;
         color += blurColor * 0.12 * bloom;
     }
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, texture(videoTexture, uv).a);
 }

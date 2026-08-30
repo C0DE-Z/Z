@@ -106,7 +106,7 @@ void main() {
     float g = texture(videoTexture, uv).g;
     float b = texture(videoTexture, uv + vec2(chromaDelay, 0.0)).b;
 
-    vec4 color = vec4(r, g, b, 1.0);
+    vec4 color = vec4(r, g, b, texture(videoTexture, uv).a);
 
     // Add Tape Noise / Generation Loss Wear
     if (noise > 0.0 || wear > 0.0) {
@@ -145,7 +145,7 @@ void main() {
 
     // Border cut off for curved tube edges
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        FragColor = vec4(0.0);
         return;
     }
 
@@ -170,7 +170,7 @@ void main() {
         color += blurColor * 0.12 * bloom;
     }
 
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, texture(videoTexture, uv).a);
 }
 )";
 
@@ -219,6 +219,20 @@ void main() {
 }
 )";
 
+// Used only for the editor preview. The exported frame is read from
+// renderedTexture before this background is drawn, so it stays transparent.
+const char* transparencyGridShaderSource = R"(#version 330 core
+out vec4 FragColor;
+void main() {
+    const float squareSize = 20.0;
+    vec2 square = floor(gl_FragCoord.xy / squareSize);
+    float parity = mod(square.x + square.y, 2.0);
+    vec3 dark = vec3(0.075, 0.070, 0.095);
+    vec3 light = vec3(0.120, 0.110, 0.145);
+    FragColor = vec4(mix(dark, light, parity), 1.0);
+}
+)";
+
 // Composites an effect result over the input using the current detection mask.
 // This makes any effect maskable without requiring every plugin to implement it.
 const char* maskCompositeShaderSource = R"(#version 330 core
@@ -231,7 +245,26 @@ uniform float invertMask;
 void main() {
     float mask = texture(maskTexture, TexCoord).r;
     if (invertMask > 0.5) mask = 1.0 - mask;
-    FragColor = mix(texture(sourceTexture, TexCoord), texture(effectedTexture, TexCoord), mask);
+    vec4 source = texture(sourceTexture, TexCoord);
+    vec4 effected = texture(effectedTexture, TexCoord);
+    FragColor = mix(source, effected, mask);
+    FragColor.a = max(source.a, effected.a);
+}
+)";
+
+// Keeps effects inside the source alpha coverage. This is deliberately
+// applied outside plugin shaders so custom effects cannot turn transparent
+// pixels opaque or create RGB artifacts in fully transparent areas.
+const char* alphaGuardShaderSource = R"(#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+uniform sampler2D sourceTexture;
+uniform sampler2D effectedTexture;
+void main() {
+    vec4 source = texture(sourceTexture, TexCoord);
+    vec4 effected = texture(effectedTexture, TexCoord);
+    vec3 rgb = source.a <= 0.0001 ? source.rgb : effected.rgb;
+    FragColor = vec4(rgb, source.a);
 }
 )";
 
@@ -260,11 +293,13 @@ void main() {
     float radius = length(uv);
     uv *= z - (sin(radius * 10.0 - time * 5.0) * mid * 0.05);
     uv += 0.5;
-    // Chromatic aberration driven by bass
+    // Chromatic aberration driven by bass. Sample alpha from center to preserve
+    // transparency correctly across the distorted/offset RGB channels.
     float r = texture(videoTexture, uv + (uv - 0.5) * bass * 0.05).r;
     float g = texture(videoTexture, uv).g;
     float b = texture(videoTexture, uv - (uv - 0.5) * bass * 0.05).b;
-    vec4 color = vec4(r, g, b, 1.0);
+    float a = texture(videoTexture, uv).a;
+    vec4 color = vec4(r, g, b, a);
     // Brighten based on mid/treble hits
     color.rgb *= 1.0 + (mid * 0.2) + (treble * 0.2);
     FragColor = color;
@@ -287,6 +322,6 @@ void main() {
     uvec3 u2 = uvec3(c2.rgb * 255.0);
     uvec3 xorVal = u1 ^ u2;
     vec3 result = vec3(xorVal) / 255.0;
-    FragColor = vec4(mix(c1.rgb, result, intensity), 1.0);
+    FragColor = vec4(mix(c1.rgb, result, intensity), c1.a);
 }
 )";

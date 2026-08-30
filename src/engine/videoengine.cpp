@@ -19,6 +19,9 @@ VideoEngine::~VideoEngine() {
 void VideoEngine::setAsyncDecodeEnabled(bool enabled) {
     std::lock_guard<std::mutex> lock(workerMutex);
     asyncDecodeEnabled = enabled;
+    ++workerGeneration;
+    workerHasRequest = false;
+    workerPrefetchUntil = -1.0;
     workerCv.notify_all();
 }
 
@@ -42,6 +45,7 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
     workerClipId = clipId;
     workerTimestamp = timestamp;
     workerPrefetchUntil = timestamp + 1.0;
+    ++workerGeneration;
     workerHasRequest = true;
     workerCv.notify_one();
 }
@@ -68,13 +72,15 @@ bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double tim
             continue;
         }
 
-        const double distance = timestamp - entry.timestamp;
-        if (distance < 0.0 || distance > bestDistance) {
+        const double distance = std::abs(timestamp - entry.timestamp);
+        if (distance > bestDistance) {
             continue;
         }
 
-        bestDistance = distance;
-        bestEntry = &entry;
+        if (!bestEntry || distance < bestDistance) {
+            bestDistance = distance;
+            bestEntry = &entry;
+        }
     }
 
     if (bestEntry) {
@@ -225,6 +231,7 @@ void VideoEngine::clear() {
     {
         std::lock_guard<std::mutex> lock(workerMutex);
         workerHasRequest = false;
+        ++workerGeneration;
     }
     std::lock_guard<std::mutex> lock(engineMutex);
     decoders.clear();
@@ -258,6 +265,7 @@ void VideoEngine::workerLoop() {
     while (true) {
         std::string clipId;
         double startTimestamp = 0.0;
+        uint64_t generation = 0;
 
         {
             std::unique_lock<std::mutex> lock(workerMutex);
@@ -275,6 +283,7 @@ void VideoEngine::workerLoop() {
 
             clipId = workerClipId;
             startTimestamp = workerTimestamp;
+            generation = workerGeneration;
             workerHasRequest = false;
         }
 
@@ -301,7 +310,7 @@ void VideoEngine::workerLoop() {
         for (int i = 0; i < 30; ++i) {
             {
                 std::lock_guard<std::mutex> lock(workerMutex);
-                if (workerStop || workerHasRequest) {
+                if (workerStop || !asyncDecodeEnabled || workerHasRequest || generation != workerGeneration) {
                     break;
                 }
             }
@@ -328,6 +337,12 @@ void VideoEngine::workerLoop() {
 
             DecodedVideoFrame decoded;
             if (decoder->decodeFrameAt(targetTime, decoded)) {
+                {
+                    std::lock_guard<std::mutex> lock(workerMutex);
+                    if (workerStop || !asyncDecodeEnabled || workerHasRequest || generation != workerGeneration) {
+                        break;
+                    }
+                }
                 auto framePtr = std::make_shared<DecodedVideoFrame>(std::move(decoded));
                 addToCache(clipId, targetTime, std::move(framePtr));
             }

@@ -2,7 +2,6 @@
 #include <QStyleFactory>
 #include "utils/logging.h"
 #include "ui/mainwindow.h"
-#include <cpr/cpr.h>
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -104,21 +103,6 @@ int main(int argc, char *argv[]) {
         "QStatusBar { background: #0d0c11; border-top: 1px solid #221a2c; color: #9c8eb9; font-size: 10px; }"
         "QStatusBar::item { border: none; padding: 2px 6px; }"
     );
-
-
-    cpr::Response r = cpr::Get(cpr::Url{"https://github.com/C0DE-Z/Z/releases/latest"}); 
-    if (r.status_code < 200 || r.status_code >= 300) {
-        qWarning() << "Failed to check for updates. HTTP status code:" << r.status_code;
-    } else if (r.text.find("Z/releases/tag/") != std::string::npos) {
-        std::string latestTag = r.text.substr(r.text.find("Z/releases/tag/") + 16);
-        latestTag = latestTag.substr(0, latestTag.find('"'));
-        if (latestTag != app.applicationVersion().toStdString()) {
-            qInfo() << "A new version of Z is available: " << QString::fromStdString(latestTag);
-        }
-    }
-
-
-
 
     MainWindow mainWin;
     mainWin.resize(1600, 900);

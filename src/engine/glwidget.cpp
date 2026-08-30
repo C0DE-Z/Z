@@ -10,13 +10,20 @@
 #include <QIODevice>
 #include <cstring>
 #include "engine/audioengine.h"
+#include "../utils/profiler.h"
 
 #include "engine/shaders.h"
 
 GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setStyleSheet("background: transparent;");
+
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::NoProfile);
+    format.setAlphaBufferSize(8);
+    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     setFormat(format);
     fpsTimer.start();
     setAutoFillBackground(false);
@@ -48,16 +55,21 @@ GLWidget::~GLWidget() {
     quadVao.destroy();
     quadVbo.destroy();
     delete passthroughShader;
+    delete transparencyGridShader;
     delete maskCompositeShader;
+    delete alphaGuardShader;
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
+    delete exportFbo;
     doneCurrent();
 }
 
 void GLWidget::initializeGL() {
     initializeOpenGLFunctions();
-    glClearColor(0.04f, 0.04f, 0.06f, 1.0f);
+    glClearColor(0.04f, 0.04f, 0.06f, 0.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     initShaders();
 
@@ -83,16 +95,20 @@ void GLWidget::initializeGL() {
     glBindTexture(GL_TEXTURE_2D, videoTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glGenTextures(1, &videoTexture2);
     glBindTexture(GL_TEXTURE_2D, videoTexture2);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    unsigned char blackPixel[3] = { 0, 0, 0 };
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, blackPixel);
+
+    unsigned char blackPixel[4] = { 0, 0, 0, 255 };
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blackPixel);
+    glBindTexture(GL_TEXTURE_2D, videoTexture2);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blackPixel);
 
     glGenTextures(1, &maskTexture);
     glBindTexture(GL_TEXTURE_2D, maskTexture);
@@ -117,11 +133,25 @@ void GLWidget::initShaders() {
         qWarning() << "Failed to link passthrough shader:" << passthroughShader->log();
     }
 
+    transparencyGridShader = new QOpenGLShaderProgram(this);
+    transparencyGridShader->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
+    transparencyGridShader->addShaderFromSourceCode(QOpenGLShader::Fragment, transparencyGridShaderSource);
+    if (!transparencyGridShader->link()) {
+        qWarning() << "Failed to link transparency grid shader:" << transparencyGridShader->log();
+    }
+
     maskCompositeShader = new QOpenGLShaderProgram(this);
     maskCompositeShader->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
     maskCompositeShader->addShaderFromSourceCode(QOpenGLShader::Fragment, maskCompositeShaderSource);
     if (!maskCompositeShader->link()) {
         qWarning() << "Failed to link mask composite shader:" << maskCompositeShader->log();
+    }
+
+    alphaGuardShader = new QOpenGLShaderProgram(this);
+    alphaGuardShader->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
+    alphaGuardShader->addShaderFromSourceCode(QOpenGLShader::Fragment, alphaGuardShaderSource);
+    if (!alphaGuardShader->link()) {
+        qWarning() << "Failed to link alpha guard shader:" << alphaGuardShader->log();
     }
 
 }
@@ -144,11 +174,50 @@ void GLWidget::allocateFBOs(int w, int h) {
     fboPing = new QOpenGLFramebufferObject(w, h, format);
     fboPong = new QOpenGLFramebufferObject(w, h, format);
     fboFeedback = new QOpenGLFramebufferObject(w, h, format);
+    exportFbo = new QOpenGLFramebufferObject(w, h, format);
 
-    fboFeedback->bind();
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    for (QOpenGLFramebufferObject* fbo : { fboPing, fboPong, fboFeedback, exportFbo }) {
+        if (!fbo) continue;
+        fbo->bind();
+        glViewport(0, 0, w, h);
+        glDisable(GL_BLEND);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        fbo->release();
+    }
+}
+
+QImage GLWidget::grabRenderedFrame() {
+    if (!renderedTexture || width() <= 0 || height() <= 0) {
+        return {};
+    }
+
+    makeCurrent();
+    if (!exportFbo || exportFbo->width() != width() || exportFbo->height() != height()) {
+        delete exportFbo;
+        QOpenGLFramebufferObjectFormat format;
+        format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+        format.setInternalTextureFormat(GL_RGBA);
+        exportFbo = new QOpenGLFramebufferObject(width(), height(), format);
+    }
+
+    exportFbo->bind();
+    glViewport(0, 0, width(), height());
+    glDisable(GL_BLEND);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    fboFeedback->release();
+    passthroughShader->bind();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderedTexture);
+    passthroughShader->setUniformValue("videoTexture", 0);
+    renderQuad();
+    passthroughShader->release();
+
+    QImage image(width(), height(), QImage::Format_RGBA8888);
+    glReadPixels(0, 0, width(), height(), GL_RGBA, GL_UNSIGNED_BYTE, image.bits());
+    exportFbo->release();
+    doneCurrent();
+    return image.mirrored(false, true);
 }
 
 void GLWidget::resizeGL(int w, int h) {
@@ -186,8 +255,10 @@ void GLWidget::clearFrame() {
     int w = lastFrameWidth > 0 ? lastFrameWidth : 1280;
     int h = lastFrameHeight > 0 ? lastFrameHeight : 720;
     currentFrame.rgbData.assign(w * h * 3, 0);
+    currentFrame.alphaData.assign(w * h, 0);
     currentFrame.width = w;
     currentFrame.height = h;
+    currentFrame.hasAlpha = false;
     hasNewFrame = true;
     update();
 }
@@ -219,7 +290,29 @@ void GLWidget::setRendererBackend(RenderBackendKind backend) {
 void GLWidget::uploadPrimaryVideoTexture(const DecodedVideoFrame& frame) {
     if (frame.rgbData.empty() || frame.width <= 0 || frame.height <= 0) return;
     const bool resized = lastFrameWidth != frame.width || lastFrameHeight != frame.height;
-    const GLsizeiptr byteCount = static_cast<GLsizeiptr>(frame.rgbData.size());
+
+    std::vector<uint8_t> rgbaData;
+    const uint8_t* sourceData = frame.rgbData.data();
+    const size_t pixelCount = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+    const bool needsAlpha = frame.hasAlpha && !frame.alphaData.empty() && frame.alphaData.size() == pixelCount;
+    // The upload format is part of the texture allocation. Submitting RGBA
+    // pixels to an existing RGB allocation (or vice versa) is invalid OpenGL
+    // and was the reason alpha sometimes appeared as black after clip changes.
+    const bool formatChanged = lastFrameHasAlpha != needsAlpha;
+
+    if (needsAlpha) {
+        rgbaData.resize(pixelCount * 4);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const size_t srcIndex = i * 3;
+            const size_t dstIndex = i * 4;
+            rgbaData[dstIndex + 0] = frame.rgbData[srcIndex + 0];
+            rgbaData[dstIndex + 1] = frame.rgbData[srcIndex + 1];
+            rgbaData[dstIndex + 2] = frame.rgbData[srcIndex + 2];
+            rgbaData[dstIndex + 3] = frame.alphaData[i];
+        }
+        sourceData = rgbaData.data();
+    }
+    const GLsizeiptr byteCount = static_cast<GLsizeiptr>(needsAlpha ? rgbaData.size() : frame.rgbData.size());
     bool uploadedWithPbo = false;
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -229,18 +322,17 @@ void GLWidget::uploadPrimaryVideoTexture(const DecodedVideoFrame& frame) {
     if (m_asyncTextureUploads && uploadPbos[0] != 0) {
         const GLuint pbo = uploadPbos[nextUploadPbo++ % uploadPbos.size()];
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-        // Orphaning prevents the map from waiting on DMA still using this PBO.
         glBufferData(GL_PIXEL_UNPACK_BUFFER, byteCount, nullptr, GL_STREAM_DRAW);
         void* destination = glMapBufferRange(
             GL_PIXEL_UNPACK_BUFFER, 0, byteCount,
             GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
         if (destination) {
-            std::memcpy(destination, frame.rgbData.data(), static_cast<size_t>(byteCount));
+            std::memcpy(destination, sourceData, static_cast<size_t>(byteCount));
             if (glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER) == GL_TRUE) {
-                if (resized) {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                if (resized || formatChanged) {
+                    glTexImage2D(GL_TEXTURE_2D, 0, needsAlpha ? GL_RGBA : GL_RGB, frame.width, frame.height, 0, needsAlpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, nullptr);
                 } else {
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, needsAlpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, nullptr);
                 }
                 uploadedWithPbo = true;
             }
@@ -249,14 +341,15 @@ void GLWidget::uploadPrimaryVideoTexture(const DecodedVideoFrame& frame) {
     }
 
     if (!uploadedWithPbo) {
-        if (resized) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame.width, frame.height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame.rgbData.data());
+        if (resized || formatChanged) {
+            glTexImage2D(GL_TEXTURE_2D, 0, needsAlpha ? GL_RGBA : GL_RGB, frame.width, frame.height, 0, needsAlpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, sourceData);
         } else {
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, GL_RGB, GL_UNSIGNED_BYTE, frame.rgbData.data());
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame.width, frame.height, needsAlpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, sourceData);
         }
     }
     lastFrameWidth = frame.width;
     lastFrameHeight = frame.height;
+    lastFrameHasAlpha = needsAlpha;
 }
 
 void GLWidget::setDetections(const std::vector<DetectionBox>& boxes) {
@@ -409,10 +502,13 @@ GLint GLWidget::uniformLocation(GLuint program, const char* name) {
 void GLWidget::paintGL() {
     if (!passthroughShader || !passthroughShader->isLinked()) return;
 
+    Profiler::instance().mark("frame_start");
+
     int w = width();
     int h = height();
     allocateFBOs(w, h);
     uploadMaskIfNeeded();
+    glDisable(GL_BLEND);
 
     if (hasNewFrame) {
         std::lock_guard<std::mutex> lock(m_frameMutex);
@@ -426,7 +522,21 @@ void GLWidget::paintGL() {
                 glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, videoTexture2);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, transitionFrame2.width, transitionFrame2.height, 0, GL_RGB, GL_UNSIGNED_BYTE, transitionFrame2.rgbData.data());
+                const bool hasAlpha = transitionFrame2.hasAlpha && !transitionFrame2.alphaData.empty() && transitionFrame2.alphaData.size() == static_cast<size_t>(transitionFrame2.width) * static_cast<size_t>(transitionFrame2.height);
+                if (hasAlpha) {
+                    std::vector<uint8_t> rgbaData(static_cast<size_t>(transitionFrame2.width) * static_cast<size_t>(transitionFrame2.height) * 4);
+                    for (size_t i = 0; i < rgbaData.size() / 4; ++i) {
+                        const size_t srcIndex = i * 3;
+                        const size_t dstIndex = i * 4;
+                        rgbaData[dstIndex + 0] = transitionFrame2.rgbData[srcIndex + 0];
+                        rgbaData[dstIndex + 1] = transitionFrame2.rgbData[srcIndex + 1];
+                        rgbaData[dstIndex + 2] = transitionFrame2.rgbData[srcIndex + 2];
+                        rgbaData[dstIndex + 3] = transitionFrame2.alphaData[i];
+                    }
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, transitionFrame2.width, transitionFrame2.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgbaData.data());
+                } else {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, transitionFrame2.width, transitionFrame2.height, 0, GL_RGB, GL_UNSIGNED_BYTE, transitionFrame2.rgbData.data());
+                }
             }
         }
         hasNewFrame = false;
@@ -479,6 +589,29 @@ void GLWidget::paintGL() {
         if (volLoc != -1) glUniform1f(volLoc, (b + m + t) / 3.0f);
     };
 
+    auto guardEffectAlpha = [&](GLuint sourceTex, GLuint effectedTex) -> GLuint {
+        if (!alphaGuardShader || !alphaGuardShader->isLinked()) {
+            return effectedTex;
+        }
+
+        fboPong->bind();
+        glViewport(0, 0, w, h);
+        alphaGuardShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sourceTex);
+        alphaGuardShader->setUniformValue("sourceTexture", 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, effectedTex);
+        alphaGuardShader->setUniformValue("effectedTexture", 1);
+        renderQuad();
+        alphaGuardShader->release();
+        fboPong->release();
+
+        const GLuint guardedTex = fboPong->texture();
+        std::swap(fboPing, fboPong);
+        return guardedTex;
+    };
+
     GLuint currentTex = videoTexture;
     if (isTransitioning) {
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(currentTransitionPlugin);
@@ -487,6 +620,7 @@ void GLWidget::paintGL() {
             if (plugin->isCompiled && plugin->shaderProgram > 0) {
                 fboPong->bind();
                 glViewport(0, 0, w, h);
+                glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
 
                 glUseProgram(plugin->shaderProgram);
@@ -512,11 +646,13 @@ void GLWidget::paintGL() {
 
                 currentTex = fboPong->texture();
                 std::swap(fboPing, fboPong);
+                currentTex = guardEffectAlpha(videoTexture, currentTex);
             }
         }
     }
 
     for (const AppliedEffect& eff : activeEffects) {
+        Profiler::instance().mark("effect_" + eff.pluginId);
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(eff.pluginId);
         if (plugin) {
             compileCustomPluginShader(*plugin);
@@ -526,6 +662,7 @@ void GLWidget::paintGL() {
                 const GLuint sourceTex = currentTex;
                 fboPong->bind();
                 glViewport(0, 0, w, h);
+                glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
 
                 glUseProgram(plugin->shaderProgram);
@@ -566,6 +703,8 @@ void GLWidget::paintGL() {
                 glUseProgram(0);
                 fboPong->release();
 
+                Profiler::instance().sample("effect_" + eff.pluginId, Profiler::instance().elapsed("effect_" + eff.pluginId));
+
                 currentTex = fboPong->texture();
                 std::swap(fboPing, fboPong);
 
@@ -587,6 +726,10 @@ void GLWidget::paintGL() {
                     currentTex = fboPong->texture();
                     std::swap(fboPing, fboPong);
                 }
+
+                // Enforce the source alpha after every effect. This prevents
+                // custom shaders from changing fully transparent pixels.
+                currentTex = guardEffectAlpha(sourceTex, currentTex);
             }
         }
     }
@@ -594,6 +737,8 @@ void GLWidget::paintGL() {
     if (fboFeedback && passthroughShader && passthroughShader->isLinked()) {
         fboFeedback->bind();
         glViewport(0, 0, w, h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
         passthroughShader->bind();
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, currentTex);
@@ -603,9 +748,23 @@ void GLWidget::paintGL() {
         fboFeedback->release();
     }
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     glViewport(0, 0, w, h);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+
+    // Transparency has no visible color on a native window surface and is
+    // commonly shown as black by Windows. Draw an editor-only checkerboard so
+    // alpha is unmistakable; grabRenderedFrame() never reads this framebuffer.
+    if (transparencyGridShader && transparencyGridShader->isLinked()) {
+        glDisable(GL_BLEND);
+        transparencyGridShader->bind();
+        renderQuad();
+        transparencyGridShader->release();
+        glEnable(GL_BLEND);
+    }
 
     passthroughShader->bind();
     glActiveTexture(GL_TEXTURE0);
@@ -615,6 +774,7 @@ void GLWidget::paintGL() {
     renderQuad();
 
     passthroughShader->release();
+    renderedTexture = currentTex;
     frameCount++;
     if (fpsTimer.elapsed() > 1000) {
         currentFps = frameCount / (fpsTimer.elapsed() / 1000.0);

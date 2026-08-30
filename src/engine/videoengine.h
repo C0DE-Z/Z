@@ -8,6 +8,7 @@
 #include <map>
 #include <thread>
 #include <condition_variable>
+#include <cstdint>
 #include "videodecoder.h"
 
 class VideoEngine {
@@ -60,6 +61,7 @@ private:
     std::string workerClipId;
     double workerTimestamp = 0.0;
     double workerPrefetchUntil = -1.0;
+    uint64_t workerGeneration = 0;
 
     static const size_t MAX_CACHE_SIZE = 72;
 
