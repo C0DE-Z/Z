@@ -44,9 +44,13 @@ QString MediaImporter::transcodeToStandardMov(const QString& sourcePath) {
     QString ffmpegPath = "ffmpeg";
 #endif
     proc.setProcessEnvironment(env);
+    // Long transcodes can emit a large amount of progress text. Do not retain
+    // it in QProcess buffers while the conversion is running.
+    proc.setProcessChannelMode(QProcess::ForwardedErrorChannel);
 
     QStringList args;
     args << "-y"
+         << "-hide_banner" << "-loglevel" << "error"
          << "-i" << sourcePath
          << "-map" << "0:v:0"
          << "-map" << "0:a?"

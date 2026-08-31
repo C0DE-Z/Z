@@ -33,12 +33,23 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStatusBar>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSaveFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDesktopServices>
+#include <QSettings>
+#include <QUrl>
 #include "ui/preferencesdialog.h"
 #include <algorithm>
+#include <array>
+#include <set>
 #include <limits>
 #include <cmath>
 #include <future>
 #include <chrono>
+#include <optional>
 #include "utils/logging.h"
 #include "engine/videoengine.h"
 #include "media/mediaexporter.h"
@@ -48,6 +59,27 @@
 #include "media/mediaimporter.h"
 
 namespace {
+constexpr auto kLatestReleaseApi = "https://api.github.com/repos/C0DE-Z/Z/releases/latest";
+
+std::optional<std::array<int, 3>> parseSemanticVersion(QString version) {
+    version = version.trimmed();
+    if (version.startsWith('v', Qt::CaseInsensitive)) version.remove(0, 1);
+    const QStringList parts = version.split('.');
+    if (parts.size() != 3) return std::nullopt;
+
+    std::array<int, 3> parsed{};
+    for (int i = 0; i < 3; ++i) {
+        bool valid = false;
+        parsed[i] = parts[i].toInt(&valid);
+        if (!valid || parsed[i] < 0 || QString::number(parsed[i]) != parts[i]) return std::nullopt;
+    }
+    return parsed;
+}
+
+bool isNewerVersion(const std::array<int, 3>& candidate, const std::array<int, 3>& current) {
+    return candidate > current;
+}
+
 template <typename Fn>
 auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
     (void)parent;
@@ -136,6 +168,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     glWidget = new GLWidget(centerWidget);
     centerLayout->addWidget(glWidget, 1);
+    modelDownloadManager = new QNetworkAccessManager(this);
+    updateCheckManager = new QNetworkAccessManager(this);
 
     setCentralWidget(centerWidget);
 
@@ -155,6 +189,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     statusBar()->showMessage("Ready", 3000);
     updateStatusBar();
     updateEffectsState();
+    QTimer::singleShot(1500, this, [this] { checkForUpdates(false); });
 }
 
 MainWindow::~MainWindow() {
@@ -522,16 +557,37 @@ void MainWindow::createMenus() {
         statusBar()->showMessage("Pipelined OpenGL renderer enabled", 2500);
     });
 
+    QMenu* guidesMenu = viewMenu->addMenu("Guide Overlay");
+    QActionGroup* guideGroup = new QActionGroup(guidesMenu);
+    guideGroup->setExclusive(true);
+    const std::vector<std::pair<QString, GLWidget::GuideOverlay>> guides = {
+        {"No Guides", GLWidget::GuideOverlay::None},
+        {"Center Cross", GLWidget::GuideOverlay::Center},
+        {"Rule of Thirds", GLWidget::GuideOverlay::RuleOfThirds},
+        {"Title / Action Safe Areas", GLWidget::GuideOverlay::SafeAreas},
+        {"8 × 8 Alignment Grid", GLWidget::GuideOverlay::Grid},
+    };
+    for (const auto& [label, guide] : guides) {
+        QAction* action = guidesMenu->addAction(label);
+        action->setCheckable(true);
+        action->setChecked(guide == GLWidget::GuideOverlay::None);
+        guideGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, guide] {
+            glWidget->setGuideOverlay(guide);
+        });
+    }
+
     viewMenu->addSeparator();
     viewMenu->addAction(zoomInAct);
     viewMenu->addAction(zoomOutAct);
     viewMenu->addAction(zoomFitAct);
 
     QMenu* helpMenu = menuBar()->addMenu("&Help");
+    helpMenu->addAction("Check for Updates...", this, [this] { checkForUpdates(true); });
     helpMenu->addAction("&About Z...", this, [this]() {
         QMessageBox::about(this, "About Z",
             "<h2>Z - A Video Editor</h2>"
-            "<p><b>Version 1.0.0</b></p>"
+            "<p><b>Version " + QApplication::applicationVersion() + "</b></p>"
             "<p>Made for experimental video art.</p>"
             "<p>Website: <a href='https://z.codezey.dev'>https://z.codezey.dev</a></p>"
         );
@@ -555,7 +611,7 @@ void MainWindow::createMenus() {
 
 void MainWindow::refreshTrackList() {
     if (trackControl) {
-        trackControl->populateTracks(Project::instance().getTracks().size());
+        trackControl->populateTracks(Project::instance().getTracks());
         if (mediaPool) mediaPool->clearMedia();
     }
 }
@@ -607,7 +663,8 @@ void MainWindow::selectClip(int trackIndex, int clipIndex) {
     activeClipId = QString::fromStdString(clip.id);
     activeFilePath = QString::fromStdString(clip.filePath);
     std::vector<float> audioSamples;
-    if (VideoEngine::instance().getAudioSamples(clip.id, audioSamples)) {
+    const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
+    if (VideoEngine::instance().getAudioSamples(mediaId, audioSamples)) {
         AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart, clip.sourceStart, clip.sourceDuration);
     } else {
         AudioEngine::instance().clearClipSamples();
@@ -748,7 +805,8 @@ void MainWindow::cutClipAtPlayhead() {
         return;
     }
 
-    const double fps = std::max(1.0, VideoEngine::instance().getFps(clip->id));
+    const std::string mediaId = clip->mediaId.empty() ? clip->id : clip->mediaId;
+    const double fps = std::max(1.0, VideoEngine::instance().getFps(mediaId));
     const double relTime = std::max(0.0, currentPlayhead - clip->timelineStart);
     const int totalFrames = std::max(2, static_cast<int>(std::round(clip->sourceDuration * fps)));
     // Snap to the frame boundary currently on screen; that frame becomes the start of the right clip.
@@ -777,16 +835,8 @@ void MainWindow::cutClipAtPlayhead() {
 
     clip->sourceDuration = leftDuration;
 
-    bool loadOk = runWithLoader(this, "Splitting clip and loading media...", [rightClip]() {
-        return VideoEngine::instance().loadVideo(rightClip.id, rightClip.filePath);
-    });
-
-    if (loadOk) {
-        track.clips.insert(std::upper_bound(track.clips.begin(), track.clips.end(), rightClip.timelineStart,
-            [](double time, const ProjectClip& c) { return time < c.timelineStart; }), rightClip);
-    } else {
-        qWarning() << "MainWindow Trace: Failed to load split clip" << QString::fromStdString(rightClip.id);
-    }
+    track.clips.insert(std::upper_bound(track.clips.begin(), track.clips.end(), rightClip.timelineStart,
+        [](double time, const ProjectClip& c) { return time < c.timelineStart; }), rightClip);
 
     currentPlayhead = cutTime;
 
@@ -843,33 +893,57 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
         AppState::instance().pushUndoState();
         if (mediaPool) mediaPool->addMedia(clipId);
 
-        ProjectClip clip;
-        clip.id = clipId.toStdString();
-        clip.name = clip.id;
-        clip.filePath = standardizedPath.toStdString();
-        clip.sourceStart = 0.0;
+        ProjectClip videoClip;
+        videoClip.id = clipId.toStdString();
+        videoClip.mediaId = videoClip.id;
+        videoClip.name = videoClip.id;
+        videoClip.filePath = standardizedPath.toStdString();
+        videoClip.sourceStart = 0.0;
         DecodedVideoFrame dummy;
-        VideoEngine::instance().getFrame(clip.id, 0.0, dummy);
-        clip.sourceDuration = VideoEngine::instance().getDuration(clip.id);
-        if (clip.sourceDuration <= 0.0) clip.sourceDuration = 30.0;
+        VideoEngine::instance().getFrame(videoClip.id, 0.0, dummy);
+        videoClip.sourceDuration = VideoEngine::instance().getDuration(videoClip.id);
+        if (videoClip.sourceDuration <= 0.0) videoClip.sourceDuration = 30.0;
 
         auto& tracks = Project::instance().getTracks();
         int trackIdx = targetTrack;
-        if (trackIdx < 0 || trackIdx >= static_cast<int>(tracks.size())) {
-            TimelineTrack track;
-            track.id = static_cast<int>(tracks.size()) + 1;
-            track.name = "Track " + std::to_string(track.id);
-            tracks.push_back(track);
+        const bool droppingOnExistingTrack = trackIdx >= 0 && trackIdx < static_cast<int>(tracks.size());
+        if (!droppingOnExistingTrack) {
+            TimelineTrack videoTrack;
+            videoTrack.id = static_cast<int>(tracks.size()) + 1;
+            videoTrack.name = "Video " + std::to_string(videoTrack.id);
+            videoTrack.type = TimelineTrackType::Video;
+            tracks.push_back(videoTrack);
             trackIdx = static_cast<int>(tracks.size()) - 1;
         }
 
-        clip.timelineStart = (targetTime >= 0.0) ? targetTime : Project::instance().getDuration();
-        tracks[trackIdx].clips.push_back(clip);
+        videoClip.timelineStart = (targetTime >= 0.0) ? targetTime : Project::instance().getDuration();
+        if (tracks[trackIdx].type == TimelineTrackType::Video) {
+            tracks[trackIdx].clips.push_back(videoClip);
+        }
         sortTrackClips(tracks[trackIdx]);
+
+        // A normal import creates a separately movable audio clip directly
+        // below the video. Both refer to the same decoder/media cache.
+        if (!droppingOnExistingTrack || tracks[trackIdx].type == TimelineTrackType::Audio) {
+            int audioTrackIndex = trackIdx;
+            if (!droppingOnExistingTrack) {
+                TimelineTrack audioTrack;
+                audioTrack.id = static_cast<int>(tracks.size()) + 1;
+                audioTrack.name = "Audio " + std::to_string(audioTrack.id);
+                audioTrack.type = TimelineTrackType::Audio;
+                tracks.push_back(audioTrack);
+                audioTrackIndex = static_cast<int>(tracks.size()) - 1;
+            }
+            ProjectClip audioClip = videoClip;
+            audioClip.id += "_audio";
+            audioClip.name += " (Audio)";
+            tracks[audioTrackIndex].clips.push_back(audioClip);
+            sortTrackClips(tracks[audioTrackIndex]);
+        }
 
         std::vector<float> audioSamples;
         if (VideoEngine::instance().getAudioSamples(clipId.toStdString(), audioSamples)) {
-            AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart, clip.sourceStart, clip.sourceDuration);
+            AudioEngine::instance().loadClipSamples(audioSamples, videoClip.timelineStart, videoClip.sourceStart, videoClip.sourceDuration);
         } else {
             AudioEngine::instance().clearClipSamples();
         }
@@ -877,18 +951,22 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
         refreshTrackList();
         selectTrackIndex(trackIdx);
 
-        activeClipId = clipId;
-        selectedClipId = clipId;
+        activeClipId = videoClip.id.empty() ? QString() : clipId;
+        selectedClipId = activeClipId;
         activeFilePath = standardizedPath;
 
         if (timelinePanel) {
             timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
             timelinePanel->update();
         }
-        onTimelineScrubbed(clip.timelineStart);
+        onTimelineScrubbed(videoClip.timelineStart);
 
         if (statusBar()) {
-            statusBar()->showMessage(QString("Imported: %1 (%2s)").arg(QFileInfo(filePath).fileName()).arg(clip.sourceDuration, 0, 'f', 1), 4000);
+            QString message = QString("Imported: %1 (%2s)").arg(QFileInfo(filePath).fileName()).arg(videoClip.sourceDuration, 0, 'f', 1);
+            if (VideoEngine::instance().wasAudioPreloadSkipped(videoClip.id)) {
+                message += " — audio preload skipped for this long clip to keep Z stable";
+            }
+            statusBar()->showMessage(message, 7000);
         }
         updateStatusBar();
         refreshActiveEffectsList();
@@ -912,17 +990,22 @@ void MainWindow::openProject() {
 
         if (Project::instance().load(path.toStdString())) {
             if (mediaPool) mediaPool->clearMedia();
-            int clipCount = 0;
+            std::set<std::string> mediaIds;
             for (const auto& track : Project::instance().getTracks()) {
-                clipCount += static_cast<int>(track.clips.size());
+                for (const auto& clip : track.clips) {
+                    mediaIds.insert(clip.mediaId.empty() ? clip.id : clip.mediaId);
+                }
             }
+            const int mediaCount = static_cast<int>(mediaIds.size());
             int idx = 0;
             for (const auto& track : Project::instance().getTracks()) {
                 for (const auto& clip : track.clips) {
-                    ++idx;
-                    QString label = QString("Loading project media (%1/%2)...").arg(idx).arg(std::max(1, clipCount));
-                    runWithLoader(this, label, [clip]() {
-                        VideoEngine::instance().loadVideo(clip.id, clip.filePath);
+                    const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
+                    if (!mediaIds.erase(mediaId)) continue;
+                    const int currentIndex = ++idx;
+                    QString label = QString("Loading project media (%1/%2)...").arg(currentIndex).arg(std::max(1, mediaCount));
+                    runWithLoader(this, label, [mediaId, clip]() {
+                        VideoEngine::instance().loadVideo(mediaId, clip.filePath);
                     });
                 }
             }
@@ -1014,6 +1097,39 @@ void MainWindow::onTimelineScrubbed(double time) {
     inspectorPanel->setCurrentTime(time);
     glWidget->setPlaybackTime(time);
 
+    // Audio lanes are independent from the visible clip stack. Existing
+    // projects without audio lanes retain their original video-attached audio.
+    const auto& allTracks = Project::instance().getTracks();
+    const bool hasDedicatedAudioTracks = std::any_of(allTracks.begin(), allTracks.end(), [](const TimelineTrack& track) {
+        return track.type == TimelineTrackType::Audio;
+    });
+    const ProjectClip* activeAudioClip = nullptr;
+    for (auto it = allTracks.rbegin(); it != allTracks.rend() && !activeAudioClip; ++it) {
+        if (it->type != TimelineTrackType::Audio && hasDedicatedAudioTracks) continue;
+        for (const auto& clip : it->clips) {
+            if (time >= clip.timelineStart && time < clip.timelineStart + clip.sourceDuration) {
+                activeAudioClip = &clip;
+                break;
+            }
+        }
+    }
+    if (activeAudioClip) {
+        const QString audioClipId = QString::fromStdString(activeAudioClip->id);
+        if (activeAudioClipId != audioClipId) {
+            const std::string mediaId = activeAudioClip->mediaId.empty() ? activeAudioClip->id : activeAudioClip->mediaId;
+            std::vector<float> audioSamples;
+            if (VideoEngine::instance().getAudioSamples(mediaId, audioSamples)) {
+                AudioEngine::instance().loadClipSamples(audioSamples, activeAudioClip->timelineStart, activeAudioClip->sourceStart, activeAudioClip->sourceDuration);
+            } else {
+                AudioEngine::instance().clearClipSamples();
+            }
+            activeAudioClipId = audioClipId;
+        }
+    } else if (!activeAudioClipId.isEmpty()) {
+        AudioEngine::instance().clearClipSamples();
+        activeAudioClipId.clear();
+    }
+
     const ProjectClip* topClip = nullptr;
     const TimelineTrack* topTrack = nullptr;
     const ProjectTransition* activeTrans = nullptr;
@@ -1021,6 +1137,7 @@ void MainWindow::onTimelineScrubbed(double time) {
     const ProjectClip* transRightClip = nullptr;
     const auto& tracks = Project::instance().getTracks();
     for (auto it = tracks.rbegin(); it != tracks.rend(); ++it) {
+        if (it->type == TimelineTrackType::Audio) continue;
             for (const auto& trans : it->transitions) {
             const ProjectClip* left = nullptr;
             const ProjectClip* right = nullptr;
@@ -1087,25 +1204,17 @@ void MainWindow::onTimelineScrubbed(double time) {
         double progress = (time - transStart) / activeTrans->duration;
         progress = std::clamp(progress, 0.0, 1.0);
 
-        const ProjectClip* audioClip = (progress < 0.5) ? transLeftClip : transRightClip;
-        if (audioClip && activeClipId != QString::fromStdString(audioClip->id)) {
-            activeClipId = QString::fromStdString(audioClip->id);
-            activeFilePath = QString::fromStdString(audioClip->filePath);
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(audioClip->id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, audioClip->timelineStart, audioClip->sourceStart, audioClip->sourceDuration);
-            } else {
-                AudioEngine::instance().clearClipSamples();
-            }
-        }
-
         double localTime1 = transLeftClip->sourceStart + std::max(0.0, time - transLeftClip->timelineStart);
         double localTime2 = transRightClip->sourceStart + std::max(0.0, time - transRightClip->timelineStart);
         AudioEngine::instance().setPlayheadTime(time);
 
         DecodedVideoFrame frame1, frame2;
-        bool gotFrame1 = VideoEngine::instance().getFrame(transLeftClip->id, localTime1, frame1);
-        bool gotFrame2 = VideoEngine::instance().getFrame(transRightClip->id, localTime2, frame2);
+        const ProjectClip* effectClip = progress < 0.5 ? transLeftClip : transRightClip;
+        applyEffectsToRenderer(time, topTrack, effectClip);
+        const std::string mediaId1 = transLeftClip->mediaId.empty() ? transLeftClip->id : transLeftClip->mediaId;
+        const std::string mediaId2 = transRightClip->mediaId.empty() ? transRightClip->id : transRightClip->mediaId;
+        bool gotFrame1 = VideoEngine::instance().getFrame(mediaId1, localTime1, frame1);
+        bool gotFrame2 = VideoEngine::instance().getFrame(mediaId2, localTime2, frame2);
 
         if (gotFrame1 && gotFrame2 && !frame1.rgbData.empty() && !frame2.rgbData.empty()) {
             glWidget->updateTransitionFrames(frame1, frame2, progress, activeTrans->pluginId);
@@ -1117,25 +1226,17 @@ void MainWindow::onTimelineScrubbed(double time) {
             // Keep the last valid frame while async decoding catches up.
             // Clearing here produced intermittent blank frames during playback.
         }
-        applyEffectsToRenderer(time, topTrack, nullptr);
     } else if (topClip) {
-        if (activeClipId != QString::fromStdString(topClip->id)) {
-            activeClipId = QString::fromStdString(topClip->id);
-            activeFilePath = QString::fromStdString(topClip->filePath);
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(topClip->id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, topClip->timelineStart, topClip->sourceStart, topClip->sourceDuration);
-            } else {
-                AudioEngine::instance().clearClipSamples();
-            }
-        }
+        activeClipId = QString::fromStdString(topClip->id);
+        activeFilePath = QString::fromStdString(topClip->filePath);
 
         double localTime = topClip->sourceStart + std::max(0.0, time - topClip->timelineStart);
         if (localTime < 0.0) localTime = 0.0;
         AudioEngine::instance().setPlayheadTime(time);
 
         DecodedVideoFrame frame;
-        const std::string clipKey = topClip->id;
+        applyEffectsToRenderer(time, topTrack, topClip);
+        const std::string clipKey = topClip->mediaId.empty() ? topClip->id : topClip->mediaId;
         bool gotFrame = false;
         const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
         if (asyncPlayback) {
@@ -1162,11 +1263,9 @@ void MainWindow::onTimelineScrubbed(double time) {
         } else {
             // Keep the last valid frame while async decoding catches up.
         }
-        applyEffectsToRenderer(time, topTrack, topClip);
     } else {
         glWidget->clearFrame();
         AudioEngine::instance().setPlayheadTime(time);
-        AudioEngine::instance().clearClipSamples();
         activeClipId.clear();
         activeFilePath.clear();
         glWidget->setActiveEffects({});
@@ -1217,6 +1316,127 @@ void MainWindow::chooseYoloModel() {
     if (ready) runDetectionOnCurrentFrame();
 }
 
+void MainWindow::downloadRecommendedYoloModel() {
+    if (!modelDownloadManager) return;
+
+    // Official Ultralytics YOLO11 nano COCO detector: small enough for local
+    // editing, with general-purpose labels such as person, pet, vehicle, etc.
+    const QUrl modelUrl("https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx");
+    const QString modelDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/models";
+    QDir().mkpath(modelDir);
+    const QString modelPath = modelDir + "/yolo11n.onnx";
+
+    auto* progress = new QProgressDialog("Downloading recommended YOLO11n object model...", "Cancel", 0, 100, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(true);
+    progress->show();
+
+    QNetworkRequest request(modelUrl);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = modelDownloadManager->get(request);
+    connect(progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
+    connect(reply, &QNetworkReply::downloadProgress, progress, [progress](qint64 received, qint64 total) {
+        if (total > 0) progress->setValue(static_cast<int>(received * 100 / total));
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, progress, modelPath] {
+        progress->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString message = "Model download failed: " + reply->errorString();
+            if (detectionStatusLabel) detectionStatusLabel->setText(message);
+            if (statusBar()) statusBar()->showMessage(message, 5000);
+            reply->deleteLater();
+            return;
+        }
+
+        QSaveFile modelFile(modelPath);
+        if (!modelFile.open(QIODevice::WriteOnly) || modelFile.write(reply->readAll()) < 0 || !modelFile.commit()) {
+            const QString message = "Could not save the downloaded YOLO model.";
+            if (detectionStatusLabel) detectionStatusLabel->setText(message);
+            if (statusBar()) statusBar()->showMessage(message, 5000);
+            reply->deleteLater();
+            return;
+        }
+
+        std::string error;
+        const bool ready = Detector::instance().setYoloModel(modelPath.toStdString(), &error);
+        if (yoloModelPathEdit) yoloModelPathEdit->setText(modelPath);
+        const QString message = ready ? "YOLO11n downloaded and ready" : QString::fromStdString(error);
+        if (detectionStatusLabel) detectionStatusLabel->setText(message);
+        if (statusBar()) statusBar()->showMessage(message, 5000);
+        if (ready) runDetectionOnCurrentFrame();
+        reply->deleteLater();
+    });
+}
+
+void MainWindow::checkForUpdates() {
+    checkForUpdates(true);
+}
+
+void MainWindow::checkForUpdates(bool interactive) {
+    if (!updateCheckManager) return;
+
+    QNetworkRequest request(QUrl(QString::fromLatin1(kLatestReleaseApi)));
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Z-VideoEditor/" + QApplication::applicationVersion());
+    request.setRawHeader("Accept", "application/vnd.github+json");
+    QNetworkReply* reply = updateCheckManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, interactive] {
+        const auto finish = [reply] { reply->deleteLater(); };
+        if (reply->error() != QNetworkReply::NoError) {
+            if (interactive) {
+                QMessageBox::information(this, "Z Updates", "Could not check for updates right now.\n\n" + reply->errorString());
+            }
+            finish();
+            return;
+        }
+
+        const QJsonObject release = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString tag = release.value("tag_name").toString();
+        const QString releaseUrl = release.value("html_url").toString();
+        const auto current = parseSemanticVersion(QApplication::applicationVersion());
+        const auto available = parseSemanticVersion(tag);
+        if (!current || !available) {
+            if (interactive) {
+                QMessageBox::information(this, "Z Updates", "The latest release does not use a supported integer version number.");
+            }
+            finish();
+            return;
+        }
+
+        if (!isNewerVersion(*available, *current)) {
+            if (interactive) {
+                QMessageBox::information(this, "Z Updates", "Z is up to date (version " + QApplication::applicationVersion() + ").");
+            }
+            finish();
+            return;
+        }
+
+        QSettings settings;
+        const QString ignoredVersion = settings.value("updates/ignoredVersion").toString();
+        if (!interactive && ignoredVersion == tag) {
+            finish();
+            return;
+        }
+
+        QMessageBox dialog(this);
+        dialog.setWindowTitle("Update Available");
+        dialog.setIcon(QMessageBox::Information);
+        dialog.setText("Z " + tag + " is available. You are using " + QApplication::applicationVersion() + ".");
+        dialog.setInformativeText("Download the new installer from the Z GitHub release page?");
+        QPushButton* downloadButton = dialog.addButton("Open Download Page", QMessageBox::AcceptRole);
+        QPushButton* laterButton = dialog.addButton("Not Now", QMessageBox::RejectRole);
+        Q_UNUSED(laterButton);
+        dialog.exec();
+        if (dialog.clickedButton() == downloadButton) {
+            QDesktopServices::openUrl(QUrl(releaseUrl));
+        } else {
+            settings.setValue("updates/ignoredVersion", tag);
+        }
+        finish();
+    });
+}
+
 void MainWindow::runDetectionOnCurrentFrame() {
     DecodedVideoFrame frame = lastDetectFrame;
 
@@ -1232,7 +1452,8 @@ void MainWindow::runDetectionOnCurrentFrame() {
             return;
         }
         const double localTime = clip->sourceStart + std::max(0.0, currentPlayhead - clip->timelineStart);
-        if (!VideoEngine::instance().getFrame(clip->id, localTime, frame) || frame.rgbData.empty()) {
+        const std::string mediaId = clip->mediaId.empty() ? clip->id : clip->mediaId;
+        if (!VideoEngine::instance().getFrame(mediaId, localTime, frame) || frame.rgbData.empty()) {
             if (statusBar()) statusBar()->showMessage("Could not decode frame for detection", 2500);
             return;
         }
@@ -1261,11 +1482,15 @@ void MainWindow::runDetectionOnCurrentFrame() {
     if (glWidget) {
         glWidget->setDetections(currentDetections);
         if (showBoxesCheck) glWidget->setShowDetections(showBoxesCheck->isChecked());
+        const DetectionShape shape = detectionShapeCombo
+            ? static_cast<DetectionShape>(detectionShapeCombo->currentData().toInt())
+            : DetectionShape::Rectangle;
+        glWidget->setDetectionShape(shape);
 
         const bool maskOn = applyMaskCheck && applyMaskCheck->isChecked();
         glWidget->setMaskEnabled(maskOn);
         if (maskOn) {
-            auto mask = Detector::buildMaskFromBoxes(frame.width, frame.height, currentDetections, 6.0f);
+            auto mask = Detector::buildMaskFromBoxes(frame.width, frame.height, currentDetections, 6.0f, shape);
             glWidget->setMaskData(frame.width, frame.height, mask);
         }
     }
@@ -1276,6 +1501,7 @@ void MainWindow::runDetectionOnCurrentFrame() {
 }
 
 void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* activeTrack, const ProjectClip* activeClip) {
+    Q_UNUSED(activeTrack);
     if (!activeTrack) {
         glWidget->clearFrame();
         glWidget->setActiveEffects({});
@@ -1284,26 +1510,32 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     auto evalParam = [time](const ShaderParameter& p) {
         return p.curve.getKeyframes().empty() ? p.currentVal : p.curve.evaluate(time);
     };
-    if (activeClip && (activeClipId != QString::fromStdString(activeClip->id))) {
-        activeClipId = QString::fromStdString(activeClip->id);
-        activeFilePath = QString::fromStdString(activeClip->filePath);
-    }
-    // Slop code, change to have a function
-    VideoEngine::instance().setDatamoshing(activeClipId.toStdString(), false, false, 0.0, 1, 0.0);
-    VideoEngine::instance().setOpticalSmear(activeClipId.toStdString(), false, 0.0, 0.0, 0.0, 0.0);
-    VideoEngine::instance().setCpuXor(activeClipId.toStdString(), false, 0.5, 1.0);
-    VideoEngine::instance().setCpuOr(activeClipId.toStdString(), false, 0.5, 1.0);
-    VideoEngine::instance().setCpuAnd(activeClipId.toStdString(), false, 1.0, 1.0);
-    VideoEngine::instance().setCpuXnor(activeClipId.toStdString(), false, 0.5, 1.0);
-    VideoEngine::instance().setCpuNand(activeClipId.toStdString(), false, 0.5, 1.0);
-
     if (!activeClip) {
+        glWidget->setActiveEffects({});
         glWidget->update();
         return;
     }
 
+    activeClipId = QString::fromStdString(activeClip->id);
+    activeFilePath = QString::fromStdString(activeClip->filePath);
+    const std::string mediaId = activeClip->mediaId.empty() ? activeClip->id : activeClip->mediaId;
+    const double clipTime = std::clamp(time - activeClip->timelineStart, 0.0, activeClip->sourceDuration);
+    glWidget->setPlaybackTime(clipTime);
+
+    bool datamoshEnabled = false;
+    double iDrop = 0.0, pDup = 0.0, pDrop = 0.0;
+    int pDupCount = 1;
+    bool smearEnabled = false;
+    double frameMerge = 0.0, frameSmear = 0.0, colorBleed = 0.0, lumaBias = 0.0;
+    bool xorEnabled = false, orEnabled = false, andEnabled = false, xnorEnabled = false, nandEnabled = false;
+    double xorValue = 0.5, xorIntensity = 1.0, orValue = 0.5, orIntensity = 1.0;
+    double andValue = 1.0, andIntensity = 1.0, xnorValue = 0.5, xnorIntensity = 1.0;
+    double nandValue = 0.5, nandIntensity = 1.0;
+    std::vector<AppliedEffect> shaderEffects;
+
     const auto& effects = activeClip->effects;
     for (const auto& eff : effects) {
+        if (clipTime + 1e-5 < eff.startOffset) continue;
         if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
             const QString cat = QString::fromStdString(pluginMeta->category);
             if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
@@ -1311,50 +1543,61 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
             }
         }
 
+        AppliedEffect evaluatedEffect = eff;
+        for (auto& param : evaluatedEffect.parameters) {
+            param.currentVal = evalParam(param);
+            // The GPU receives the evaluated value. Keeping project curves out
+            // of this transient copy prevents stale global-time evaluation.
+            param.curve = AnimationCurve(param.currentVal);
+        }
+        auto readParam = [&](size_t index, double fallback) {
+            return index < evaluatedEffect.parameters.size() ? evaluatedEffect.parameters[index].currentVal : fallback;
+        };
         if (eff.pluginId == "datamosh") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double iDrop = readParam(0, 0.0), pDup = readParam(1, 0.0), pDupCount = readParam(2, 4.0), pDrop = readParam(3, 0.0);
-            bool datamoshEnabled = (iDrop >= 0.5) || (pDup > 0.0) || (pDrop > 0.0);
-            VideoEngine::instance().setDatamoshing(activeClipId.toStdString(), datamoshEnabled, (iDrop >= 0.5), pDup, static_cast<int>(pDupCount), pDrop);
+            iDrop = readParam(0, 0.0);
+            pDup = readParam(1, 0.0);
+            pDupCount = std::max(1, static_cast<int>(readParam(2, 4.0)));
+            pDrop = readParam(3, 0.0);
+            datamoshEnabled = iDrop >= 0.5 || pDup > 0.0 || pDrop > 0.0;
         } else if (eff.pluginId == "optical_smear") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double frameMerge = readParam(0, 0.25), frameSmear = readParam(1, 0.1), colorBleed = readParam(2, 0.25), lumaBias = readParam(3, 0.2);
-            bool smearEnabled = (frameMerge > 0.0) || (frameSmear > 0.0) || (colorBleed > 0.0) || (lumaBias > 0.0);
-            VideoEngine::instance().setOpticalSmear(activeClipId.toStdString(), smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
+            frameMerge = readParam(0, 0.25);
+            frameSmear = readParam(1, 0.1);
+            colorBleed = readParam(2, 0.25);
+            lumaBias = readParam(3, 0.2);
+            smearEnabled = frameMerge > 0.0 || frameSmear > 0.0 || colorBleed > 0.0 || lumaBias > 0.0;
         } else if (eff.pluginId == "cpu_xor") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double xorValue = readParam(0, 0.5);
-            double intensity = readParam(1, 1.0);
-            VideoEngine::instance().setCpuXor(activeClipId.toStdString(), true, xorValue, intensity);
+            xorValue = readParam(0, 0.5);
+            xorIntensity = readParam(1, 1.0);
+            xorEnabled = true;
         } else if (eff.pluginId == "cpu_or") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double orValue = readParam(0, 0.5);
-            double intensity = readParam(1, 1.0);
-            VideoEngine::instance().setCpuOr(activeClipId.toStdString(), true, orValue, intensity);
+            orValue = readParam(0, 0.5);
+            orIntensity = readParam(1, 1.0);
+            orEnabled = true;
         } else if (eff.pluginId == "cpu_and") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double andValue = readParam(0, 1.0);
-            double intensity = readParam(1, 1.0);
-            VideoEngine::instance().setCpuAnd(activeClipId.toStdString(), true, andValue, intensity);
+            andValue = readParam(0, 1.0);
+            andIntensity = readParam(1, 1.0);
+            andEnabled = true;
         } else if (eff.pluginId == "cpu_xnor") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double xnorValue = readParam(0, 0.5);
-            double intensity = readParam(1, 1.0);
-            VideoEngine::instance().setCpuXnor(activeClipId.toStdString(), true, xnorValue, intensity);
+            xnorValue = readParam(0, 0.5);
+            xnorIntensity = readParam(1, 1.0);
+            xnorEnabled = true;
         } else if (eff.pluginId == "cpu_nand") {
-            auto readParam = [&](size_t index, double fallback) { return index < eff.parameters.size() ? evalParam(eff.parameters[index]) : fallback; };
-            double nandValue = readParam(0, 0.5);
-            double intensity = readParam(1, 1.0);
-            VideoEngine::instance().setCpuNand(activeClipId.toStdString(), true, nandValue, intensity);
+            nandValue = readParam(0, 0.5);
+            nandIntensity = readParam(1, 1.0);
+            nandEnabled = true;
         } else {
-            ShaderPlugin* plugin = PluginManager::instance().findPlugin(eff.pluginId);
-            if (plugin) {
-                for (size_t p = 0; p < eff.parameters.size() && p < plugin->parameters.size(); ++p) {
-                    plugin->parameters[p].currentVal = evalParam(eff.parameters[p]);
-                }
-            }
+            shaderEffects.push_back(std::move(evaluatedEffect));
         }
     }
+
+    VideoEngine::instance().setDatamoshing(mediaId, datamoshEnabled, iDrop >= 0.5 ? 1.0 : 0.0, pDup, pDupCount, pDrop);
+    VideoEngine::instance().setOpticalSmear(mediaId, smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
+    VideoEngine::instance().setCpuXor(mediaId, xorEnabled, xorValue, xorIntensity);
+    VideoEngine::instance().setCpuOr(mediaId, orEnabled, orValue, orIntensity);
+    VideoEngine::instance().setCpuAnd(mediaId, andEnabled, andValue, andIntensity);
+    VideoEngine::instance().setCpuXnor(mediaId, xnorEnabled, xnorValue, xnorIntensity);
+    VideoEngine::instance().setCpuNand(mediaId, nandEnabled, nandValue, nandIntensity);
+    glWidget->setActiveEffects(shaderEffects);
     glWidget->update();
 }
 
@@ -1377,6 +1620,7 @@ void MainWindow::onClipSelected(const QString& clipId) {
 void MainWindow::onEffectSelected(const QString& targetId) {
     auto* track = currentTrack();
     if (!track) return;
+    if (track->type == TimelineTrackType::Audio) return;
 
     if (auto* plugin = PluginManager::instance().findPlugin(targetId.toStdString())) {
         const QString cat = QString::fromStdString(plugin->category);
@@ -1390,18 +1634,26 @@ void MainWindow::onEffectSelected(const QString& targetId) {
         }
     }
 
-    auto* clip = currentClip();
+    ProjectClip* clip = nullptr;
+    auto& tracks = Project::instance().getTracks();
+    for (auto it = tracks.rbegin(); it != tracks.rend() && !clip; ++it) {
+        if (it->type == TimelineTrackType::Audio) continue;
+        clip = clipAtTime(*it, currentPlayhead);
+    }
+    if (!clip) clip = currentClip();
     if (!clip) return;
+    selectedClipId = QString::fromStdString(clip->id);
     clip->useClipEffects = true;
 
-    auto* effects = activeEffects();
-    if (!effects) return;
+    auto* effects = &clip->effects;
 
     if (std::none_of(effects->begin(), effects->end(), [&](const AppliedEffect& eff) {
             return QString::fromStdString(eff.pluginId) == targetId;
         })) {
         AppState::instance().pushUndoState();
-        effects->push_back(createEffectTemplate(targetId));
+        AppliedEffect effect = createEffectTemplate(targetId);
+        effect.startOffset = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+        effects->push_back(std::move(effect));
     }
 
     refreshActiveEffectsList();
@@ -1583,7 +1835,7 @@ AppliedEffect MainWindow::createEffectTemplate(const QString& effectId) const {
         };
         effect.parameters = {
             make("iDrop", "I-Frame Drop Toggle", 0.0, 1.0, 0.0, true),
-            make("pDup", "P-Frame Bloom Duplicate", 0.0, 1.0, 0.0),
+            make("pDup", "P-Frame Bloom Duplicate", 0.0, 1.0, 0.35),
             make("pDupCount", "P-Frame Duplicate Count", 1.0, 20.0, 4.0),
             make("pDrop", "P-Frame Stutter Drop", 0.0, 1.0, 0.0)
         };
@@ -1738,6 +1990,9 @@ void MainWindow::refreshActiveEffectsList() {
     int restoreRow = -1;
     for (const auto& eff : *effects) {
         QString id = QString::fromStdString(eff.pluginId);
+        if (id == "object_mask") {
+            continue;
+        }
         if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
             const QString cat = QString::fromStdString(pluginMeta->category);
             if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
@@ -1765,6 +2020,9 @@ void MainWindow::syncEffectStackToRenderer() {
     }
     const auto& effects = clip->effects;
     for (const auto& eff : effects) {
+        if (eff.pluginId == "object_mask") {
+            continue;
+        }
         if (auto* pluginMeta = PluginManager::instance().findPlugin(eff.pluginId)) {
             const QString cat = QString::fromStdString(pluginMeta->category);
             if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {

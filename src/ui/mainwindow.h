@@ -21,7 +21,9 @@
 #include <QSlider>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QComboBox>
 #include <QElapsedTimer>
+#include <QNetworkAccessManager>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -51,6 +53,8 @@ private slots:
     void onDetectionSettingsChanged();
     void clearDetections();
     void chooseYoloModel();
+    void downloadRecommendedYoloModel();
+    void checkForUpdates();
 
 private:
     QTimer* playbackTimer = nullptr;
@@ -62,6 +66,7 @@ private:
 
     QString selectedClipId;
     QString activeClipId;
+    QString activeAudioClipId;
     QString activeFilePath;
 
     GLWidget* glWidget = nullptr;
@@ -81,8 +86,11 @@ private:
     QCheckBox* showBoxesCheck = nullptr;
     QCheckBox* applyMaskCheck = nullptr;
     QCheckBox* openClCheck = nullptr;
+    QComboBox* detectionShapeCombo = nullptr;
     QLineEdit* yoloModelPathEdit = nullptr;
     QLabel* detectionStatusLabel = nullptr;
+    QNetworkAccessManager* modelDownloadManager = nullptr;
+    QNetworkAccessManager* updateCheckManager = nullptr;
     bool liveDetectEnabled = false;
     QElapsedTimer liveDetectionTimer;
     std::vector<DetectionBox> currentDetections;
@@ -118,6 +126,7 @@ private:
 
     void createActions();
     void createMenus();
+    void checkForUpdates(bool interactive);
     void createDocks();
     void createTransportToolbar();
     void applyShortcuts();

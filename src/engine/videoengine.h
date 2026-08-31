@@ -40,6 +40,7 @@ public:
 
     double getFps(const std::string& clipId);
     bool getAudioSamples(const std::string& clipId, std::vector<float>& outSamples);
+    bool wasAudioPreloadSkipped(const std::string& clipId);
 
     void clear();
 
@@ -64,6 +65,7 @@ private:
     uint64_t workerGeneration = 0;
 
     static const size_t MAX_CACHE_SIZE = 72;
+    static const size_t MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
     struct CacheEntry {
         std::string clipId;
@@ -72,6 +74,7 @@ private:
     };
     std::vector<CacheEntry> frameCache;
 
+    static size_t frameByteSize(const DecodedVideoFrame& frame);
     void addToCache(const std::string& clipId, double timestamp, std::shared_ptr<DecodedVideoFrame> frame);
     bool getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     void workerLoop();

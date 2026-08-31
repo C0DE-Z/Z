@@ -19,6 +19,14 @@ struct DetectionBox {
     float h = 0.0f; // normalized 0-1
 };
 
+// CPU-defined geometry used by the detector overlay and generated mask.
+// It deliberately lives outside the GLSL plugin system.
+enum class DetectionShape {
+    Rectangle,
+    Ellipse,
+    Outline
+};
+
 // Lightweight CPU region detector (motion / contrast blobs).
 // Pluggable foundation — replace detectFrame body later with ONNX YOLO/etc.
 class Detector {
@@ -47,7 +55,9 @@ public:
         int width,
         int height,
         const std::vector<DetectionBox>& boxes,
-        float featherPx = 4.0f);
+        float featherPx = 4.0f,
+        DetectionShape shape = DetectionShape::Rectangle,
+        float outlineWidthPx = 6.0f);
 
 private:
     Detector() = default;

@@ -1,7 +1,7 @@
-const LATEST_RELEASE_URL = `https://api.github.com/repos/C0DE-Z/Z/releases/latest`;
-const RELEASES_URL = `https://api.github.com/repos/C0DE-Z/Z/releases`;
-const TAGS_URL = `https://api.github.com/repos/C0DE-Z/Z/tags`;
-const FALLBACK_DOWNLOAD_URL = `https://github.com/C0DE-Z/Z/releases`;
+const GITHUB_REPO = 'C0DE-Z/Z';
+const LATEST_RELEASE_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const RELEASES_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
+const FALLBACK_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases`;
 
 function detectOS() {
     const ua = navigator.userAgent.toLowerCase();
@@ -13,103 +13,58 @@ function detectOS() {
 }
 
 function pickAssetForOS(assets, os) {
-    if (!assets || assets.length === 0) return null;
-
-    const platformKeywords = {
-        windows: ['windows', 'win64', 'win-x64', 'win_x64'],
-        macos:   ['macos', 'mac-', 'osx', 'darwin'],
-        linux:   ['linux', 'ubuntu', 'appimage'],
+    if (!Array.isArray(assets)) return null;
+    const name = asset => asset.name.toLowerCase();
+    const preferences = {
+        windows: [asset => name(asset).includes('setup-windows') && name(asset).endsWith('.exe'), asset => name(asset).includes('windows') && name(asset).endsWith('.zip')],
+        macos: [asset => name(asset).includes('macos') && name(asset).endsWith('.zip')],
+        linux: [asset => name(asset).includes('linux') && name(asset).endsWith('.tar.gz')],
     };
+    return (preferences[os] || preferences.windows).map(matches => assets.find(matches)).find(Boolean) || null;
+}
 
-    const extensionPrefs = {
-        windows: ['.exe', '-windows.zip', '-win.zip'],
-        macos:   ['.dmg'],
-        linux:   ['.tar.gz', '.appimage', '.deb'],
-    };
-
-    const keywords = platformKeywords[os] || platformKeywords.windows;
-    const exts = extensionPrefs[os] || extensionPrefs.windows;
-
-    const name = (a) => a.name.toLowerCase();
-
-    for (const kw of keywords) {
-        const match = assets.find(a => name(a).includes(kw));
-        if (match) return match.browser_download_url;
-    }
-
-    for (const ext of exts) {
-        const match = assets.find(a => name(a).endsWith(ext));
-        if (match) return match.browser_download_url;
-    }
-
-    return null;
+function setReleaseUI(release) {
+    const os = detectOS();
+    const tagName = release?.tag_name || 'Latest';
+    const downloadUrl = pickAssetForOS(release?.assets, os)?.browser_download_url || release?.html_url || FALLBACK_DOWNLOAD_URL;
+    const platform = { windows: 'Windows', macos: 'macOS', linux: 'Linux' }[os] || 'your platform';
+    document.querySelectorAll('.brand-tag').forEach(el => { el.textContent = tagName; });
+    document.querySelectorAll('.download-version').forEach(el => { el.textContent = `Z VIDEO EDITOR — ${tagName.toUpperCase()}`; });
+    document.querySelectorAll('.btn-download-nav').forEach(el => { el.href = '#download'; });
+    document.querySelectorAll('.btn-download-main').forEach(el => {
+        el.href = downloadUrl;
+        el.textContent = `Download ${tagName} for ${platform}`;
+        el.setAttribute('aria-label', `Download Z ${tagName} for ${platform}`);
+    });
 }
 
 async function fetchLatestRelease() {
-    let tagName = 'Beta';
-    let downloadUrl = FALLBACK_DOWNLOAD_URL;
-    const os = detectOS();
-
     try {
-        let res = await fetch(LATEST_RELEASE_URL);
-
-        if (res.ok) {
-            const data = await res.json();
-            tagName = data.tag_name || 'Beta';
-            downloadUrl = pickAssetForOS(data.assets, os) || data.html_url || FALLBACK_DOWNLOAD_URL;
-        } else {
-            res = await fetch(RELEASES_URL);
-            if (res.ok) {
-                const releases = await res.json();
-                if (releases && releases.length > 0) {
-                    tagName = releases[0].tag_name || 'Beta';
-                    downloadUrl = pickAssetForOS(releases[0].assets, os) || releases[0].html_url || FALLBACK_DOWNLOAD_URL;
-                } else {
-                    const tagRes = await fetch(TAGS_URL);
-                    if (tagRes.ok) {
-                        const tags = await tagRes.json();
-                        if (tags && tags.length > 0) {
-                            tagName = tags[0].name || 'Beta';
-                            downloadUrl = `https://github.com/${GITHUB_REPO}/releases/tag/${tagName}`;
-                        }
-                    }
-                }
-            }
+        let response = await fetch(LATEST_RELEASE_URL, { headers: { Accept: 'application/vnd.github+json' } });
+        if (!response.ok) {
+            response = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' } });
+            const releases = response.ok ? await response.json() : [];
+            setReleaseUI(releases[0]);
+            return;
         }
-    } catch (err) {
-        console.warn('GitHub API fetch failed:', err);
+        setReleaseUI(await response.json());
+    } catch (error) {
+        console.warn('Could not fetch the latest Z release:', error);
+        setReleaseUI(null);
     }
-
-    let formattedTag = /^\d/.test(tagName) ? `v${tagName}` : tagName;
-    formattedTag = formattedTag.slice(0,6) // slice for display 
-    const osLabels = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
-    const osLabel = osLabels[os] || 'Windows';
-
-    document.querySelectorAll('.brand-tag').forEach(el => {
-        el.textContent = formattedTag;
-    });
-
-    document.querySelectorAll('.download-version').forEach(el => {
-        el.textContent = `Z VIDEO EDITOR - RELEASE ${formattedTag.toUpperCase()}`;
-    });
-
-    document.querySelectorAll('.btn-download-nav').forEach(el => {
-        el.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download ${formattedTag} for ${osLabel}
-        `;
-        el.href = downloadUrl;
-    });
-
-    document.querySelectorAll('.btn-primary').forEach(el => {
-        el.href = downloadUrl;
-    });
-
-    console.log(`Z Video Editor: OS=${os}, tag=${formattedTag}, url=${downloadUrl}`);
 }
 
-document.addEventListener('DOMContentLoaded', fetchLatestRelease);
+function setupNavigation() {
+    const toggle = document.querySelector('.nav-toggle');
+    const menu = document.querySelector('#nav-menu');
+    toggle?.addEventListener('click', () => {
+        const open = menu.classList.toggle('is-open');
+        toggle.setAttribute('aria-expanded', String(open));
+    });
+    menu?.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
+        menu.classList.remove('is-open');
+        toggle?.setAttribute('aria-expanded', 'false');
+    }));
+}
+
+document.addEventListener('DOMContentLoaded', () => { setupNavigation(); fetchLatestRelease(); });

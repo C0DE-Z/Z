@@ -2,6 +2,9 @@
 #include <cassert>
 #include <iostream>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 void testProjectSerialization() {
     auto& proj = Project::instance();
@@ -13,9 +16,14 @@ void testProjectSerialization() {
 
     ProjectClip c1;
     c1.id = "clip_01";
+    c1.mediaId = "source_01";
     c1.name = "Intro";
     c1.timelineStart = 0.0;
     c1.sourceDuration = 15.0;
+    AppliedEffect effect;
+    effect.pluginId = "pixel_sorter";
+    effect.startOffset = 3.5;
+    c1.effects.push_back(effect);
     t1.clips.push_back(c1);
 
     ProjectTransition tr;
@@ -40,11 +48,60 @@ void testProjectSerialization() {
     assert(proj.getTracks().size() == 1);
     assert(proj.getTracks()[0].clips.size() == 1);
     assert(proj.getTracks()[0].clips[0].id == "clip_01");
+    assert(proj.getTracks()[0].clips[0].mediaId == "source_01");
+    assert(proj.getTracks()[0].clips[0].effects[0].startOffset == 3.5);
+    assert(proj.getTracks()[0].type == TimelineTrackType::Video);
     assert(proj.getTracks()[0].transitions.size() == 1);
     assert(proj.getTracks()[0].transitions[0].pluginId == "cross_dissolve");
 
     QFile::remove(QString::fromStdString(tmpPath));
     std::cout << "[PASS] testProjectSerialization\n";
+}
+
+void testAudioTrackAndLegacyCompatibility() {
+    auto& proj = Project::instance();
+    proj.clear();
+
+    TimelineTrack audioTrack;
+    audioTrack.id = 2;
+    audioTrack.name = "Audio 1";
+    audioTrack.type = TimelineTrackType::Audio;
+    ProjectClip audioClip;
+    audioClip.id = "clip_01_audio";
+    audioClip.mediaId = "source_01";
+    audioClip.sourceDuration = 5.0;
+    audioTrack.clips.push_back(audioClip);
+    proj.getTracks().push_back(audioTrack);
+
+    const std::string typedPath = "test_project_audio_temp.json";
+    assert(proj.save(typedPath));
+    proj.clear();
+    assert(proj.load(typedPath));
+    assert(proj.getTracks().size() == 1);
+    assert(proj.getTracks()[0].type == TimelineTrackType::Audio);
+    assert(proj.getTracks()[0].clips[0].mediaId == "source_01");
+    QFile::remove(QString::fromStdString(typedPath));
+
+    QJsonObject legacyTrack;
+    legacyTrack["id"] = 1;
+    legacyTrack["name"] = "Old Track";
+    legacyTrack["clips"] = QJsonArray();
+    legacyTrack["effects"] = QJsonArray();
+    legacyTrack["transitions"] = QJsonArray();
+    QJsonObject root;
+    root["tracks"] = QJsonArray { legacyTrack };
+    const std::string legacyPath = "test_project_legacy_temp.json";
+    QFile legacyFile(QString::fromStdString(legacyPath));
+    assert(legacyFile.open(QIODevice::WriteOnly));
+    legacyFile.write(QJsonDocument(root).toJson());
+    legacyFile.close();
+
+    proj.clear();
+    assert(proj.load(legacyPath));
+    assert(proj.getTracks().size() == 1);
+    assert(proj.getTracks()[0].type == TimelineTrackType::Video);
+    QFile::remove(QString::fromStdString(legacyPath));
+    std::cout << "[PASS] testAudioTrackAndLegacyCompatibility\n";
 }
 
 void testCutPrecisionMath() {
@@ -126,6 +183,7 @@ void testCutPrecisionMath() {
 int main() {
     std::cout << "=== Running Project Serialization and Cut Precision Unit Tests ===\n";
     testProjectSerialization();
+    testAudioTrackAndLegacyCompatibility();
     testCutPrecisionMath();
     std::cout << "=== All Project Tests Passed ===\n";
     return 0;

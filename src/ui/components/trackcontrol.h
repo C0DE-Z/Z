@@ -7,20 +7,22 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include "core/project.h"
 
 class TrackControl : public QWidget {
     Q_OBJECT
 public:
     explicit TrackControl(QWidget* parent = nullptr);
 
-    void populateTracks(int count);
+    void populateTracks(const std::vector<TimelineTrack>& tracks);
     void selectTrack(int index);
     int getSelectedTrack() const;
 
 signals:
     void trackSelected(int index);
     
-    void newTrackRequested();
+    void newVideoTrackRequested();
+    void newAudioTrackRequested();
     void moveUpRequested();
     void moveDownRequested();
     void deleteTrackRequested();

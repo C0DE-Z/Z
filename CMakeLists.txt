@@ -83,6 +83,7 @@ else()
 endif()
 
 target_include_directories(z PRIVATE src)
+target_compile_definitions(z PRIVATE Z_APP_VERSION="${PROJECT_VERSION}")
 
 # 4. Compiler warnings & options
 include(CompilerOptions)
@@ -91,6 +92,7 @@ target_link_libraries(z PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::Gui
+    Qt6::Network
     Qt6::OpenGL
     Qt6::OpenGLWidgets
     OpenGL::GL

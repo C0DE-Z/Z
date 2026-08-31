@@ -100,6 +100,11 @@ void EffectsBrowser::populateEffects() {
     const auto& plugins = PluginManager::instance().getPlugins();
     std::vector<const ShaderPlugin*> transitionPlugins;
     for (const auto& plugin : plugins) {
+        // Masks are editor-owned CPU/renderer functionality, not effects a
+        // user can add to a stack. Ignore the legacy plugin if it is present.
+        if (plugin.id == "object_mask") {
+            continue;
+        }
         QString cat = QString::fromStdString(plugin.category);
         if (cat.startsWith("Transitions", Qt::CaseInsensitive)) {
             transitionPlugins.push_back(&plugin);

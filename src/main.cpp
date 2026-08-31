@@ -3,10 +3,14 @@
 #include "utils/logging.h"
 #include "ui/mainwindow.h"
 
+#ifndef Z_APP_VERSION
+#define Z_APP_VERSION "1.1.2"
+#endif
+
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Z");
-    app.setApplicationVersion("1.0.0");
+    app.setApplicationVersion(Z_APP_VERSION);
     app.setOrganizationName("Z-Creative");
     app.setOrganizationDomain("codezey.dev");
 

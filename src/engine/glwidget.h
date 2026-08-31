@@ -24,6 +24,14 @@
 class GLWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions {
     Q_OBJECT
 public:
+    enum class GuideOverlay {
+        None,
+        Center,
+        RuleOfThirds,
+        SafeAreas,
+        Grid
+    };
+
     explicit GLWidget(QWidget* parent = nullptr);
     ~GLWidget();
 
@@ -44,6 +52,8 @@ public:
     void setDetections(const std::vector<DetectionBox>& boxes);
     void setShowDetections(bool show);
     bool showDetections() const { return m_showDetections; }
+    void setDetectionShape(DetectionShape shape);
+    void setGuideOverlay(GuideOverlay guide);
 
     void setMaskEnabled(bool enabled);
     bool maskEnabled() const { return m_maskEnabled; }
@@ -93,6 +103,8 @@ private:
     int pendingMaskH = 0;
 
     bool m_showDetections = true;
+    DetectionShape m_detectionShape = DetectionShape::Rectangle;
+    GuideOverlay m_guideOverlay = GuideOverlay::None;
     std::vector<DetectionBox> detections;
 
     QOpenGLFramebufferObject* fboPing = nullptr;

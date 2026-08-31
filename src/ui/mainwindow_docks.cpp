@@ -43,14 +43,17 @@ void MainWindow::createDocks() {
 
     trackControl = new TrackControl(projectTab);
     connect(trackControl, &TrackControl::trackSelected, this, [this](int row) { selectTrackIndex(row); });
-    connect(trackControl, &TrackControl::newTrackRequested, this, [this]() {
+    auto addTrack = [this](TimelineTrackType type) {
         TimelineTrack track;
         track.id = static_cast<int>(Project::instance().getTracks().size()) + 1;
-        track.name = "Track " + std::to_string(track.id);
+        track.name = (type == TimelineTrackType::Audio ? "Audio " : "Video ") + std::to_string(track.id);
+        track.type = type;
         Project::instance().getTracks().push_back(track);
         refreshTrackList();
         selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
-    });
+    };
+    connect(trackControl, &TrackControl::newVideoTrackRequested, this, [addTrack]() { addTrack(TimelineTrackType::Video); });
+    connect(trackControl, &TrackControl::newAudioTrackRequested, this, [addTrack]() { addTrack(TimelineTrackType::Audio); });
     connect(trackControl, &TrackControl::moveUpRequested, this, [this]() { moveSelectedTrack(-1); });
     connect(trackControl, &TrackControl::moveDownRequested, this, [this]() { moveSelectedTrack(1); });
     connect(trackControl, &TrackControl::deleteTrackRequested, this, [this]() { deleteSelectedTrack(); });
@@ -108,6 +111,11 @@ void MainWindow::createDocks() {
     modelLayout->addWidget(modelButton);
     detectLayout->addLayout(modelLayout);
 
+    QPushButton* downloadModelButton = new QPushButton("Download Recommended YOLO11n Model", detectTab);
+    downloadModelButton->setToolTip("Downloads the official compact COCO object detector and loads it automatically.");
+    connect(downloadModelButton, &QPushButton::clicked, this, &MainWindow::downloadRecommendedYoloModel);
+    detectLayout->addWidget(downloadModelButton);
+
     openClCheck = new QCheckBox("Prefer OpenCL acceleration", detectTab);
     openClCheck->setChecked(true);
     connect(openClCheck, &QCheckBox::toggled, this, [](bool on) { Detector::instance().setPreferOpenCL(on); });
@@ -139,13 +147,24 @@ void MainWindow::createDocks() {
     });
     detectLayout->addWidget(showBoxesCheck);
 
+    detectionShapeCombo = new QComboBox(detectTab);
+    detectionShapeCombo->addItem("Rectangle mask / box", static_cast<int>(DetectionShape::Rectangle));
+    detectionShapeCombo->addItem("Ellipse mask / box", static_cast<int>(DetectionShape::Ellipse));
+    detectionShapeCombo->addItem("Outline mask / box", static_cast<int>(DetectionShape::Outline));
+    detectionShapeCombo->setToolTip("Choose the CPU-generated detection mask and preview outline shape.");
+    connect(detectionShapeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (glWidget) {
+            glWidget->setDetectionShape(static_cast<DetectionShape>(detectionShapeCombo->currentData().toInt()));
+        }
+        if (!currentDetections.empty()) runDetectionOnCurrentFrame();
+    });
+    detectLayout->addWidget(detectionShapeCombo);
+
     applyMaskCheck = new QCheckBox("Mask all active effects", detectTab);
     applyMaskCheck->setStyleSheet("color: #b0b0c0;");
     connect(applyMaskCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (glWidget) glWidget->setMaskEnabled(on);
         if (on) {
-            // Ensure Object Mask effect is on the clip so the mask is visible in the stack
-            onEffectSelected("object_mask");
             onDetectionSettingsChanged();
         }
     });
@@ -325,6 +344,8 @@ void MainWindow::createDocks() {
         if (pluginId.isEmpty()) return;
 
         if (isTransition) {
+            const auto& tracks = Project::instance().getTracks();
+            if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size()) || tracks[trackIndex].type == TimelineTrackType::Audio) return;
             if (addTransitionAtCut(trackIndex, dropTime, pluginId)) {
                 refreshActiveEffectsList();
                 syncEffectStackToRenderer();
@@ -333,6 +354,7 @@ void MainWindow::createDocks() {
             auto& tracks = Project::instance().getTracks();
             if (trackIndex < 0 || trackIndex >= static_cast<int>(tracks.size())) return;
             auto& track = tracks[trackIndex];
+            if (track.type == TimelineTrackType::Audio) return;
             ProjectClip* targetClip = nullptr;
             for (auto& c : track.clips) {
                 if (dropTime >= c.timelineStart && dropTime < c.timelineStart + c.sourceDuration) {
@@ -373,12 +395,7 @@ void MainWindow::createDocks() {
 
         auto& clip = track.clips[clipIndex];
         clip.timelineStart = std::max(0.0, newTimelineStart);
-        if (clip.id == activeClipId.toStdString()) {
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(clip.id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, clip.timelineStart, clip.sourceStart, clip.sourceDuration);
-            }
-        }
+        activeAudioClipId.clear();
         timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
         timelinePanel->update();
         onTimelineScrubbed(currentPlayhead);
@@ -391,22 +408,19 @@ void MainWindow::createDocks() {
         if (toTrack == static_cast<int>(tracks.size())) {
             TimelineTrack newT;
             newT.id = tracks.size() + 1;
-            newT.name = "Track " + std::to_string(newT.id);
+            newT.type = tracks[fromTrack].type;
+            newT.name = newT.type == TimelineTrackType::Audio ? "Audio " + std::to_string(newT.id) : "Video " + std::to_string(newT.id);
             tracks.push_back(newT);
         }
         auto& srcTrack = tracks[fromTrack];
         if (fromClip < 0 || fromClip >= static_cast<int>(srcTrack.clips.size())) return;
+        if (tracks[toTrack].type != srcTrack.type) return;
         auto clipCopy = srcTrack.clips[fromClip];
         clipCopy.timelineStart = std::max(0.0, newTimelineStart);
         srcTrack.clips.erase(srcTrack.clips.begin() + fromClip);
         auto& dstTrack = tracks[toTrack];
         dstTrack.clips.push_back(clipCopy);
-        if (clipCopy.id == activeClipId.toStdString()) {
-            std::vector<float> audioSamples;
-            if (VideoEngine::instance().getAudioSamples(clipCopy.id, audioSamples)) {
-                AudioEngine::instance().loadClipSamples(audioSamples, clipCopy.timelineStart, clipCopy.sourceStart, clipCopy.sourceDuration);
-            }
-        }
+        activeAudioClipId.clear();
         sortTrackClips(srcTrack);
         sortTrackClips(dstTrack);
         int newClipIndex = -1;

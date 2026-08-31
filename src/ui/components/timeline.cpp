@@ -208,6 +208,9 @@ void Timeline::paintEvent(QPaintEvent* event) {
         QString title = (i < static_cast<int>(tracks.size()))
             ? QString::fromStdString(tracks[i].name)
             : QString("Track %1").arg(i + 1);
+        if (i < static_cast<int>(tracks.size())) {
+            title = (tracks[i].type == TimelineTrackType::Audio ? "A  " : "V  ") + title;
+        }
         QString uppercaseTitle = title.toUpper();
         painter.setFont(QFont("JetBrains Mono", 9));
         painter.drawText(10, y + 20, uppercaseTitle);
@@ -247,6 +250,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
     }
 
     for (const auto& track : tracks) {
+        if (track.type == TimelineTrackType::Audio) continue;
         for (const auto& trans : track.transitions) {
             int cutX = timeToX(trans.cutTime);
             int startX = timeToX(trans.cutTime - trans.duration / 2.0);
@@ -313,12 +317,13 @@ void Timeline::paintEvent(QPaintEvent* event) {
             int startX = timeToX(clip.timelineStart);
             int endX = timeToX(clip.timelineStart + clip.sourceDuration);
             QRect clipRect(startX, y + 3, endX - startX, trackHeight - 14);
-            painter.fillRect(clipRect, QColor(48, 16, 58, 200));
+            const bool isAudioTrack = tracks[tIdx].type == TimelineTrackType::Audio;
+            painter.fillRect(clipRect, isAudioTrack ? QColor(16, 51, 58, 200) : QColor(48, 16, 58, 200));
             
             if (static_cast<int>(tIdx) == selectedTrackIndex && cIdx == selectedClipIndex) {
                 painter.setPen(QPen(QColor(245, 158, 248), 2.0));
             } else {
-                painter.setPen(QPen(QColor(192, 38, 211), 1.0));
+                painter.setPen(QPen(isAudioTrack ? QColor(45, 190, 191) : QColor(192, 38, 211), 1.0));
             }
             painter.drawRect(clipRect);
             
@@ -326,7 +331,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
             QString clipName = QString::fromStdString(clip.name);
             painter.drawText(clipRect.adjusted(5, 0, -30, 0), Qt::AlignLeft | Qt::AlignVCenter, clipName);
 
-            if (!clip.effects.empty() || clip.useClipEffects) {
+            if (!isAudioTrack && (!clip.effects.empty() || clip.useClipEffects)) {
                 painter.setPen(QColor(245, 158, 248));
                 painter.drawText(clipRect.adjusted(0, 0, -5, 0), Qt::AlignRight | Qt::AlignVCenter, "[FX]");
             }
@@ -342,7 +347,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                 }
             }
 
-            if (nextClip) {
+            if (!isAudioTrack && nextClip) {
                 const int bx = timeToX(nextClip->timelineStart);
                 const int by = y + 10;
                 painter.setPen(QPen(QColor(217, 70, 239), 1.5));
@@ -353,6 +358,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                 painter.drawText(QRect(bx - 5, by - 6, 10, 12), Qt::AlignCenter, "+");
             }
         }
+        if (tracks[tIdx].type == TimelineTrackType::Audio) continue;
         const int laneY = y + trackHeight - 9;
         const int laneH = 6;
         const int kHandleW = 5;
@@ -492,6 +498,7 @@ bool Timeline::hitTestTransition(const QPoint& pos, int& trackIndex, int& transI
 
     int tIdx = (pos.y() - yOffset) / trackHeight;
     if (tIdx < 0 || tIdx >= (int)tracks.size()) return false;
+    if (tracks[tIdx].type == TimelineTrackType::Audio) return false;
 
     for (int i = 0; i < (int)tracks[tIdx].transitions.size(); ++i) {
         const auto& trans = tracks[tIdx].transitions[i];
@@ -530,6 +537,7 @@ bool Timeline::hitTestCutEdge(const QPoint& pos, int& trackIndex, double& cutTim
     if (tIdx < 0 || tIdx >= static_cast<int>(tracks.size())) return false;
 
     const auto& track = tracks[tIdx];
+    if (track.type == TimelineTrackType::Audio) return false;
     if (track.clips.size() < 2) return false;
 
     const int snapPx = 14;
@@ -570,6 +578,7 @@ bool Timeline::hitTestTransitionButton(const QPoint& pos, int& trackIndex, doubl
     if (tIdx < 0 || tIdx >= static_cast<int>(tracks.size())) return false;
 
     const auto& track = tracks[tIdx];
+    if (track.type == TimelineTrackType::Audio) return false;
     const int buttonR = 7;
 
     for (const auto& clip : track.clips) {
@@ -729,9 +738,12 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             update();
 
             QMenu contextMenu(this);
-            QMenu* addTransitionMenu = contextMenu.addMenu("Add Transition");
-            QMap<QAction*, QString> addActions = addTransitionActions(addTransitionMenu);
-            contextMenu.addSeparator();
+            QMap<QAction*, QString> addActions;
+            if (Project::instance().getTracks()[trackIndex].type == TimelineTrackType::Video) {
+                QMenu* addTransitionMenu = contextMenu.addMenu("Add Transition");
+                addActions = addTransitionActions(addTransitionMenu);
+                contextMenu.addSeparator();
+            }
             QAction* renameAction = contextMenu.addAction("Rename Clip");
             QAction* deleteAction = contextMenu.addAction("Delete Clip");
             
@@ -849,7 +861,11 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
         }
 
         if (targetTrackIndex != dragTrackIndex) {
-            emit clipTrackChangeRequested(dragTrackIndex, dragClipIndex, targetTrackIndex, targetStart);
+            const auto& tracks = Project::instance().getTracks();
+            const bool createsSameTypeTrack = targetTrackIndex == static_cast<int>(tracks.size());
+            if (createsSameTypeTrack || tracks[targetTrackIndex].type == tracks[dragTrackIndex].type) {
+                emit clipTrackChangeRequested(dragTrackIndex, dragClipIndex, targetTrackIndex, targetStart);
+            }
         } else {
             emit clipMoveRequested(dragTrackIndex, dragClipIndex, targetStart);
         }

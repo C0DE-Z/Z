@@ -7,6 +7,35 @@ inline uint8_t clampByte(int value) {
     return static_cast<uint8_t>(std::clamp(value, 0, 255));
 }
 
+void datamoshWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double iFrameDrop, double pFrameDuplicate, double pFrameDrop) {
+    if (current.size() != previous.size() || current.empty()) {
+        return;
+    }
+
+    const double intensity = std::clamp(std::max({iFrameDrop, pFrameDuplicate, pFrameDrop}), 0.0, 1.0);
+    if (intensity <= 0.0) {
+        return;
+    }
+
+    // Corrupt small RGB blocks with prior-frame data. This produces a stable,
+    // visible P-frame-style smear without feeding invalid duplicate packets to
+    // the codec, which can otherwise stall after a cut or seek.
+    constexpr size_t kBlockBytes = 3 * 96;
+    for (size_t offset = 0; offset < current.size(); offset += kBlockBytes) {
+        uint32_t hash = static_cast<uint32_t>(offset / kBlockBytes) * 747796405u + 2891336453u;
+        hash = (hash >> ((hash >> 28) + 4)) ^ hash;
+        const double sample = static_cast<double>(hash & 0xffffu) / 65535.0;
+        if (sample > intensity) continue;
+
+        const size_t count = std::min(kBlockBytes, current.size() - offset);
+        const double mix = std::clamp(0.35 + intensity * 0.60, 0.0, 1.0);
+        for (size_t i = 0; i < count; ++i) {
+            current[offset + i] = clampByte(static_cast<int>(
+                current[offset + i] * (1.0 - mix) + previous[offset + i] * mix));
+        }
+    }
+}
+
 void blendWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double strength, double smearStrength, double bleedStrength, double lumaStrength) {
     if (current.size() != previous.size() || current.empty() || strength <= 0.0) {
         return;

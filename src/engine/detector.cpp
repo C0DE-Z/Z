@@ -232,7 +232,13 @@ std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) 
 std::vector<DetectionBox> Detector::detectYolo(const DecodedVideoFrame& frame) {
     static const std::vector<std::string> labels = {
         "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
-        "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow"
+        "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+        "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+        "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+        "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+        "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
+        "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+        "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
     };
     try {
         cv::dnn::Net& net = m_yoloNet;
@@ -283,7 +289,9 @@ std::vector<uint8_t> Detector::buildMaskFromBoxes(
     int width,
     int height,
     const std::vector<DetectionBox>& boxes,
-    float featherPx) {
+    float featherPx,
+    DetectionShape shape,
+    float outlineWidthPx) {
     std::vector<uint8_t> mask(static_cast<size_t>(std::max(0, width) * std::max(0, height)), 0);
     if (width <= 0 || height <= 0 || boxes.empty()) return mask;
 
@@ -293,15 +301,38 @@ std::vector<uint8_t> Detector::buildMaskFromBoxes(
         const int y0 = std::clamp(static_cast<int>(box.y * height), 0, height - 1);
         const int x1 = std::clamp(static_cast<int>((box.x + box.w) * width), 0, width);
         const int y1 = std::clamp(static_cast<int>((box.y + box.h) * height), 0, height);
+        const float centerX = (x0 + x1 - 1) * 0.5f;
+        const float centerY = (y0 + y1 - 1) * 0.5f;
+        const float radiusX = std::max(0.5f, (x1 - x0) * 0.5f);
+        const float radiusY = std::max(0.5f, (y1 - y0) * 0.5f);
 
         for (int y = y0; y < y1; ++y) {
             for (int x = x0; x < x1; ++x) {
                 float alpha = 1.0f;
+                if (shape == DetectionShape::Ellipse) {
+                    const float dx = (x - centerX) / radiusX;
+                    const float dy = (y - centerY) / radiusY;
+                    const float distance = std::sqrt(dx * dx + dy * dy);
+                    if (distance > 1.0f) continue;
+                    if (feather > 0.0f) {
+                        const float featherNorm = feather / std::min(radiusX, radiusY);
+                        alpha = std::clamp((1.0f - distance) / std::max(0.0001f, featherNorm), 0.0f, 1.0f);
+                    }
+                }
                 if (feather > 0.0f) {
                     const float dx = std::min(static_cast<float>(x - x0), static_cast<float>(x1 - 1 - x));
                     const float dy = std::min(static_cast<float>(y - y0), static_cast<float>(y1 - 1 - y));
                     const float d = std::min(dx, dy);
-                    alpha = std::clamp(d / feather, 0.0f, 1.0f);
+                    alpha = std::min(alpha, std::clamp(d / feather, 0.0f, 1.0f));
+                }
+                if (shape == DetectionShape::Outline) {
+                    const float edgeDistance = std::min(
+                        std::min(static_cast<float>(x - x0), static_cast<float>(x1 - 1 - x)),
+                        std::min(static_cast<float>(y - y0), static_cast<float>(y1 - 1 - y)));
+                    const float outerFeather = feather > 0.0f ? std::clamp(edgeDistance / feather, 0.0f, 1.0f) : 1.0f;
+                    const float innerEdge = std::max(0.0f, edgeDistance - outlineWidthPx);
+                    const float innerFeather = feather > 0.0f ? std::clamp(1.0f - innerEdge / feather, 0.0f, 1.0f) : (edgeDistance <= outlineWidthPx ? 1.0f : 0.0f);
+                    alpha = std::min(outerFeather, innerFeather);
                 }
                 const size_t idx = static_cast<size_t>(y * width + x);
                 mask[idx] = static_cast<uint8_t>(std::max<int>(mask[idx], static_cast<int>(alpha * 255.0f)));

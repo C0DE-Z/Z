@@ -45,14 +45,14 @@ jobs:
             qt6-base-dev qt6-declarative-dev libgl1-mesa-dev \
             libavformat-dev libavcodec-dev libavutil-dev \
             libswscale-dev libswresample-dev portaudio19-dev \
-            libsqlite3-dev pkg-config zip tar
+            libsqlite3-dev libopencv-dev pkg-config zip tar
 
       # --- macOS Setup ---
       - name: Install macOS Dependencies
         if: matrix.platform == 'macos'
         run: |
           brew update
-          brew install qt6 ffmpeg portaudio sqlite3 pkg-config ninja cmake
+          brew install qt6 ffmpeg opencv portaudio sqlite3 pkg-config ninja cmake
 
       # --- Windows Setup ---
       - name: Setup MSYS2 MinGW-64 on Windows
@@ -68,6 +68,7 @@ jobs:
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-tools
             mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-opencv
             mingw-w64-x86_64-portaudio
             mingw-w64-x86_64-sqlite3
             zip
@@ -151,6 +152,20 @@ jobs:
           # --- Zip ---
           cd release_pkg && zip -r ../Z-VideoEditor-Windows-x64.zip .
 
+      - name: Install Inno Setup
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build Windows Installer
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(z VERSION ([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $version) { throw 'Could not determine the Z version from CMakeLists.txt.' }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer\Z.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 
       - name: Package Linux Binary
         if: matrix.platform == 'linux'
@@ -176,6 +191,13 @@ jobs:
         with:
           name: ${{ matrix.platform }}-package
           path: ${{ matrix.artifact_name }}
+
+      - name: Upload Windows Installer
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: Z-VideoEditor-Setup-Windows-x64.exe
 
   release:
     name: Create & Publish GitHub Release
@@ -225,25 +247,27 @@ jobs:
             fi
           fi
           echo "Using tag: $TAG_NAME"
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: Z Video Editor ${{ env.TAG_NAME }}
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: Z Video Editor ${{ steps.tag.outputs.tag_name }}
           body: |
-            ## Z Video Editor Release ${{ env.TAG_NAME }}
+            ## Z Video Editor Release ${{ steps.tag.outputs.tag_name }}
             Realtime GPU GLSL Shader & Datamosh Video Editor.
             
             ### Included Assets:
             - **Windows (x64)**: `Z-VideoEditor-Windows-x64.zip`
+            - **Windows installer (x64)**: `Z-VideoEditor-Setup-Windows-x64.exe`
             - **Linux (x64)**: `Z-VideoEditor-Linux-x64.tar.gz`
             - **macOS**: `Z-VideoEditor-macOS.zip`
           draft: false
           prerelease: false
           files: |
             release_assets/Z-VideoEditor-Windows-x64.zip
+            release_assets/Z-VideoEditor-Setup-Windows-x64.exe
             release_assets/Z-VideoEditor-Linux-x64.tar.gz
             release_assets/Z-VideoEditor-macOS.zip
         env:

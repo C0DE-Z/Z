@@ -3,147 +3,51 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Z Video Editor - Experimental Video Editor</title>
+    <meta name="description" content="Z is an experimental, GPU-accelerated non-linear video editor for real-time shader effects, masking, and creative video work.">
+    <meta name="theme-color" content="#0b0b0f">
+    <title>Z — Experimental Video Editor</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Consolas&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-
-    <!-- Nav Bar -->
-    <nav>
-        <a href="index.html" class="nav-brand">
-            <span class="brand-name">Z</span>
-            <span class="brand-tag">Latest</span>
-        </a>
-
-        <ul class="nav-links">
-            <li><a href="#features">Features</a></li>
-            <li><a href="#demo">Demo</a></li>
-            <li><a href="docs/shader_plugin_guide.html">Shader Manual</a></li>
-            <li><a href="https://github.com/C0DE-Z/Z" target="_blank">GitHub</a></li>
+    <nav aria-label="Main navigation">
+        <a href="#top" class="nav-brand" aria-label="Z home"><span class="brand-name">Z</span><span class="brand-tag">Loading release…</span></a>
+        <button class="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-menu"><span></span><span></span><span></span></button>
+        <ul class="nav-links" id="nav-menu">
+            <li><a href="#features">Features</a></li><li><a href="#demo">Demo</a></li><li><a href="docs/shader_plugin_guide.html">Shader Manual</a></li><li><a href="https://github.com/C0DE-Z/Z" target="_blank" rel="noopener noreferrer">GitHub</a></li>
         </ul>
-
-        <div class="nav-actions">
-            <a href="https://github.com/C0DE-Z/Z/releases/latest" class="btn-download-nav">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download Latest
-            </a>
-        </div>
+        <div class="nav-actions"><a href="#download" class="btn-download-nav">Download</a></div>
     </nav>
-
-    <!-- Hero -->
-    <header class="hero-section">
-        <h1 class="hero-title">Experimental Video Editor</h1>
-        <p class="hero-desc">Non-linear video editor made with C++, Qt6, and FFMEPG.</p>
-
-        <div class="hero-buttons">
-            <a href="https://github.com/C0DE-Z/Z/releases/latest" class="btn-primary">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download
-            </a>
-            <a href="docs/shader_plugin_guide.html" class="btn-secondary">
-                Read Shader Developer Guide
-            </a>
-        </div>
-
-        <!-- Main -->
-        <div class="showcase-container">
-            <div class="showcase-header">
-             </div>
-            <img src="media/image.png" alt="Z Video Editor Main Interface" class="showcase-img">
-        </div>
-    </header>
-
-    <!-- Features -->
-    <section id="features" class="features-section">
-        <h2 class="section-heading">Features</h2>
-        <p class="section-sub">Hardware accelerated GPU fragment shaders and non-linear timeline editing.</p>
-
-        <div class="grid-3">
-            <div class="feature-card">
-                <h3 class="feature-title">GPU Acceleration</h3>
-                <p class="feature-desc">Use the power of your GPU for real-time video processing and effects.</p>
+    <main id="top">
+        <header class="hero-section">
+            <h1 class="hero-title">Fuck up your videos.</h1>
+            <p class="hero-desc">A fast, non-linear video editor for artists who want real-time GLSL effects and compositing tools.</p>
+            <div class="hero-buttons"><a href="#download" class="btn-primary">Get Z</a><a href="docs/shader_plugin_guide.html" class="btn-secondary">Build a shader plugin</a></div>
+            <div class="showcase-container">
+                <div class="showcase-header"><div class="showcase-title">Z VIDEO EDITOR</div></div>
+                <img src="media/image.png" alt="The dark Z Video Editor interface with media pool, preview, inspector, and timeline" class="showcase-img">
             </div>
-
-            <div class="feature-card">
-                <h3 class="feature-title">Custom Plugins</h3>
-                <p class="feature-desc">Create your own custom plugins to extend the functionality of the video editor.</p>
+        </header>
+        <section id="features" class="features-section" aria-labelledby="features-title">
+            <p class="eyebrow">THE TOOLKIT</p><h2 id="features-title" class="section-heading">Made for the happy accidents.</h2><p class="section-sub">A focused editing environment for bending footage, building looks, and getting back to the timeline.</p>
+            <div class="grid-3">
+                <article class="feature-card"><h3 class="feature-title">GPU-native effects</h3><p class="feature-desc">Stack real-time fragment shaders without interrupting your edit.</p></article>
+                <article class="feature-card"><h3 class="feature-title">Plugin playground</h3><p class="feature-desc">Write a GLSL plugin, expose its controls, and reload it while you work.</p></article>
+                <article class="feature-card"><h3 class="feature-title">Multi-track timeline</h3><p class="feature-desc">Cut, layer, keyframe, and shape your footage in a responsive timeline.</p></article>
+                <article class="feature-card"><h3 class="feature-title">Smart masks</h3><p class="feature-desc">Use motion regions or YOLO object detection to target the parts that matter.</p></article>
+                <article class="feature-card"><h3 class="feature-title">Composition guides</h3><p class="feature-desc">Frame precisely with centre, thirds, safe-area, and grid overlays—never exported.</p></article>
+                <article class="feature-card"><h3 class="feature-title">Yours to extend</h3><p class="feature-desc">Open source and available for Windows, Linux, and macOS.</p></article>
             </div>
-
-            <div class="feature-card">
-                <h3 class="feature-title">Open Source</h3>
-                <p class="feature-desc">Z Video Editor is completely open source</p>
-            </div>
-
-            <div class="feature-card">
-                <h3 class="feature-title">Masking and YOLO Models</h3>
-                <p class="feature-desc">Use masking and YOLO models for advanced object detection and tracking.</p>
-            </div>
-
-            <div class="feature-card">
-                <h3 class="feature-title">Cross-Platform</h3>
-                <p class="feature-desc">Z Video Editor is available for Windows, Linux, and MacOS.</p>
-            </div>
-            
-            <div class="feature-card">
-                <h3 class="feature-title">Optimized for Performance</h3>
-                <p class="feature-desc">Taking up as little ram as possible while maintaining high performance.</p>
-            </div>
-
-
-        </div>
-
-
-
-    </section>
-
-    <!-- Demo  -->
-    <section id="demo" class="screens-section">
-        <h2 class="section-heading">Demo</h2>
-        <p class="section-sub">Video contains strobe effects and flashing lights.</p>
-
-        <div class="grid-2">
-            <div class="screen-card">
-                <video controls>
-                    <source src="media/Example.mp4" type="video/mp4">
-                    Your browser does not support the video tag.
-                </video>
-            </div>
-        </div>
-    </section>
-
-    <!-- Download -->
-    <section id="download" class="download-section">
-        <div class="download-box">
-            <div class="download-version">Z VIDEO EDITOR - LATEST RELEASE</div>
-            <h2 class="download-title">Download Z Video Editor for Windows</h2>
-            <p style="margin-bottom: 20px; color: var(--text-main);">Includes 50+ built-in shader plugins.</p>
-
-            <div style="display: flex; justify-content: center; gap: 14px;">
-                <a href="https://github.com/C0DE-Z/Z/releases/latest" class="btn-primary">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    Download Latest Release
-                </a>
-            </div>
-
-            <div class="sys-reqs">
-                <strong>Requirements:</strong> OpenGL 3.3+ Compatible GPU | 4GB RAM | Windows 10/11 Or Linux / MacOS
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer>
-        <p>Made with ❤️ by CodeZ</p>
-        <p style="margin-top: 6px;">
-            <a href="index.html">Home</a> |
-            <a href="docs/shader_plugin_guide.html">Shader Plugin Guide</a> |
-            <a href="https://github.com/C0DE-Z/Z" target="_blank">GitHub Repository</a>
-        </p>
-    </footer>
-
+        </section>
+        <section id="demo" class="screens-section" aria-labelledby="demo-title">
+            <p class="eyebrow">SEE IT MOVE</p><h2 id="demo-title" class="section-heading">Made to be pushed.</h2><p class="section-sub">This demo contains strobe effects and flashing lights.</p>
+            <div class="screen-card"><video controls preload="metadata" playsinline aria-label="Z Video Editor demo video"><source src="media/Example.mp4" type="video/mp4">Your browser does not support HTML video. <a href="media/Example.mp4">Download the demo video</a>.</video></div>
+        </section>
+        <section id="download" class="download-section" aria-labelledby="download-title"><div class="download-box"><div class="download-version">FETCHING LATEST RELEASE…</div><h2 id="download-title" class="download-title">Make the edit your own.</h2><p class="download-desc">Download Z for your platform. Windows releases include a guided installer as well as a portable archive.</p><a href="https://github.com/C0DE-Z/Z/releases/latest" class="btn-primary btn-download-main">Download latest release</a><p class="download-note">Windows 10/11 · macOS · Linux · OpenGL 3.3+ recommended</p></div></section>
+    </main>
+    <footer><a href="#top" class="footer-brand"><span>Z</span> VIDEO EDITOR</a><p>Made with love from Code</p><div class="footer-links"><a href="docs/shader_plugin_guide.html">Shader Plugin Guide</a><a href="https://github.com/C0DE-Z/Z" target="_blank" rel="noopener noreferrer">GitHub Repository</a><a href="https://github.com/C0DE-Z/Z/issues" target="_blank" rel="noopener noreferrer">Report an issue</a></div></footer>
     <script src="js/app.js"></script>
 </body>
 </html>

@@ -71,6 +71,11 @@ copy /Y "%MINGW%\libgcc_s_seh-1.dll" "%OUT%\" >nul 2>&1
 copy /Y "%MINGW%\libstdc++-6.dll" "%OUT%\" >nul 2>&1
 copy /Y "%MINGW%\libwinpthread-1.dll" "%OUT%\" >nul 2>&1
 
+echo Collecting additional native runtime dependencies...
+for /f "tokens=3" %%d in ('ldd "%OUT%\z.exe" ^| findstr /i /c:"/mingw64/"') do (
+    if exist "%%d" copy /Y "%%d" "%OUT%\" >nul 2>&1
+)
+
 echo.
 echo === Done! Fresh distributable build is in: %OUT%\ ===
 echo Launching %OUT%\z.exe...

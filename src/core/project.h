@@ -10,12 +10,18 @@
 #include <QJsonArray>
 
 struct AppliedEffect {
-    std::string pluginId; 
-    std::vector<ShaderParameter> parameters; 
+    std::string pluginId;
+    // Seconds from the start of the owning clip. Effects added at the
+    // playhead affect the rest of that clip only.
+    double startOffset = 0.0;
+    std::vector<ShaderParameter> parameters;
 };
 
 struct ProjectClip {
     std::string id;
+    // The decoder/cache key. Audio and video clips can share one media source
+    // while remaining independently movable on their own timeline lanes.
+    std::string mediaId;
     std::string name;
     std::string filePath;
     double sourceStart; 
@@ -23,6 +29,11 @@ struct ProjectClip {
     double timelineStart; 
     bool useClipEffects = false;
     std::vector<AppliedEffect> effects; 
+};
+
+enum class TimelineTrackType {
+    Video,
+    Audio
 };
 
 struct ProjectTransition {
@@ -39,6 +50,7 @@ struct ProjectTransition {
 struct TimelineTrack {
     int id;
     std::string name;
+    TimelineTrackType type = TimelineTrackType::Video;
     std::vector<ProjectClip> clips;
     std::vector<AppliedEffect> effects;
     std::vector<ProjectTransition> transitions;

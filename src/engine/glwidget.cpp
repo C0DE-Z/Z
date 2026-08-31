@@ -362,6 +362,16 @@ void GLWidget::setShowDetections(bool show) {
     update();
 }
 
+void GLWidget::setDetectionShape(DetectionShape shape) {
+    m_detectionShape = shape;
+    update();
+}
+
+void GLWidget::setGuideOverlay(GuideOverlay guide) {
+    m_guideOverlay = guide;
+    update();
+}
+
 void GLWidget::setMaskEnabled(bool enabled) {
     m_maskEnabled = enabled;
     update();
@@ -405,10 +415,36 @@ void GLWidget::uploadMaskIfNeeded() {
 void GLWidget::paintEvent(QPaintEvent* event) {
     QOpenGLWidget::paintEvent(event);
 
-    if (!m_showDetections || detections.empty()) return;
+    if (m_guideOverlay == GuideOverlay::None && (!m_showDetections || detections.empty())) return;
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // Editor-only overlays are painted after OpenGL presentation. Export reads
+    // renderedTexture directly, so guides and detection labels never render to
+    // the output video.
+    const QColor guideColor(110, 231, 183, 185);
+    QPen guidePen(guideColor, 1.0, Qt::DashLine);
+    painter.setPen(guidePen);
+    if (m_guideOverlay == GuideOverlay::Center) {
+        painter.drawLine(width() / 2, 0, width() / 2, height());
+        painter.drawLine(0, height() / 2, width(), height() / 2);
+    } else if (m_guideOverlay == GuideOverlay::RuleOfThirds) {
+        for (int i : {1, 2}) {
+            painter.drawLine(width() * i / 3, 0, width() * i / 3, height());
+            painter.drawLine(0, height() * i / 3, width(), height() * i / 3);
+        }
+    } else if (m_guideOverlay == GuideOverlay::SafeAreas) {
+        painter.drawRect(QRectF(width() * 0.05, height() * 0.05, width() * 0.90, height() * 0.90));
+        painter.drawRect(QRectF(width() * 0.10, height() * 0.10, width() * 0.80, height() * 0.80));
+    } else if (m_guideOverlay == GuideOverlay::Grid) {
+        for (int i = 1; i < 8; ++i) {
+            painter.drawLine(width() * i / 8, 0, width() * i / 8, height());
+            painter.drawLine(0, height() * i / 8, width(), height() * i / 8);
+        }
+    }
+
+    if (!m_showDetections || detections.empty()) return;
 
     const QColor colors[] = {
         QColor(245, 158, 248),
@@ -429,9 +465,16 @@ void GLWidget::paintEvent(QPaintEvent* event) {
         );
 
         QPen pen(color, 2.0);
+        if (m_detectionShape == DetectionShape::Outline) {
+            pen.setStyle(Qt::DashLine);
+        }
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
-        painter.drawRect(rect);
+        if (m_detectionShape == DetectionShape::Ellipse) {
+            painter.drawEllipse(rect);
+        } else {
+            painter.drawRect(rect);
+        }
 
         const QString label = QString("%1  %2%")
             .arg(QString::fromStdString(box.label))
@@ -708,7 +751,7 @@ void GLWidget::paintGL() {
                 currentTex = fboPong->texture();
                 std::swap(fboPing, fboPong);
 
-                if (m_maskEnabled && hasMaskTexture && eff.pluginId != "object_mask" &&
+                if (m_maskEnabled && hasMaskTexture &&
                     maskCompositeShader && maskCompositeShader->isLinked()) {
                     fboPong->bind();
                     glViewport(0, 0, w, h);

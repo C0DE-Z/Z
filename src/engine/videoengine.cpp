@@ -51,6 +51,11 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
 }
 
 bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
+    {
+        std::lock_guard<std::mutex> lock(engineMutex);
+        const auto it = decoders.find(clipId);
+        if (it != decoders.end() && it->second->hasActiveCpuEffects()) return false;
+    }
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
         if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.020) {
@@ -62,6 +67,11 @@ bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp,
 }
 
 bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds) {
+    {
+        std::lock_guard<std::mutex> lock(engineMutex);
+        const auto it = decoders.find(clipId);
+        if (it != decoders.end() && it->second->hasActiveCpuEffects()) return false;
+    }
     std::lock_guard<std::mutex> lock(cacheMutex);
 
     const CacheEntry* bestEntry = nullptr;
@@ -109,10 +119,6 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
 }
 
 bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
-    if (getFromCache(clipId, timestamp, outFrame)) {
-        return true;
-    }
-
     std::shared_ptr<VideoDecoder> decoder;
     {
         std::lock_guard<std::mutex> lock(engineMutex);
@@ -121,6 +127,9 @@ bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedV
             return false;
         }
         decoder = it->second;
+    }
+    if (!decoder->hasActiveCpuEffects() && getFromCache(clipId, timestamp, outFrame)) {
+        return true;
     }
 
     auto framePtr = std::make_shared<DecodedVideoFrame>();
@@ -157,6 +166,8 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
     if (it != decoders.end()) {
         it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
 }
 
 void VideoEngine::setOpticalSmear(const std::string& clipId, bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {
@@ -165,6 +176,8 @@ void VideoEngine::setOpticalSmear(const std::string& clipId, bool smearEnabled, 
     if (it != decoders.end()) {
         it->second->setOpticalSmear(smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setOpticalSmear(smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
 }
 
 void VideoEngine::setCpuXor(const std::string& clipId, bool xorEnabled, double xorValue, double intensity) {
@@ -173,6 +186,8 @@ void VideoEngine::setCpuXor(const std::string& clipId, bool xorEnabled, double x
     if (it != decoders.end()) {
         it->second->setCpuXor(xorEnabled, xorValue, intensity);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuXor(xorEnabled, xorValue, intensity);
 }
 
 void VideoEngine::setCpuOr(const std::string& clipId, bool orEnabled, double orValue, double intensity) {
@@ -181,6 +196,8 @@ void VideoEngine::setCpuOr(const std::string& clipId, bool orEnabled, double orV
     if (it != decoders.end()) {
         it->second->setCpuOr(orEnabled, orValue, intensity);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuOr(orEnabled, orValue, intensity);
 }
 
 void VideoEngine::setCpuAnd(const std::string& clipId, bool andEnabled, double andValue, double intensity) {
@@ -189,6 +206,8 @@ void VideoEngine::setCpuAnd(const std::string& clipId, bool andEnabled, double a
     if (it != decoders.end()) {
         it->second->setCpuAnd(andEnabled, andValue, intensity);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuAnd(andEnabled, andValue, intensity);
 }
 
 void VideoEngine::setCpuXnor(const std::string& clipId, bool xnorEnabled, double xnorValue, double intensity) {
@@ -197,6 +216,8 @@ void VideoEngine::setCpuXnor(const std::string& clipId, bool xnorEnabled, double
     if (it != decoders.end()) {
         it->second->setCpuXnor(xnorEnabled, xnorValue, intensity);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuXnor(xnorEnabled, xnorValue, intensity);
 }
 
 void VideoEngine::setCpuNand(const std::string& clipId, bool nandEnabled, double nandValue, double intensity) {
@@ -205,6 +226,8 @@ void VideoEngine::setCpuNand(const std::string& clipId, bool nandEnabled, double
     if (it != decoders.end()) {
         it->second->setCpuNand(nandEnabled, nandValue, intensity);
     }
+    const auto asyncIt = asyncDecoders.find(clipId);
+    if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuNand(nandEnabled, nandValue, intensity);
 }
 
 void VideoEngine::setPlaybackQuality(int downscaleFactor) {
@@ -227,6 +250,12 @@ bool VideoEngine::getAudioSamples(const std::string& clipId, std::vector<float>&
     return false;
 }
 
+bool VideoEngine::wasAudioPreloadSkipped(const std::string& clipId) {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    const auto it = decoders.find(clipId);
+    return it != decoders.end() && it->second->wasAudioPreloadSkipped();
+}
+
 void VideoEngine::clear() {
     {
         std::lock_guard<std::mutex> lock(workerMutex);
@@ -244,10 +273,20 @@ void VideoEngine::clear() {
 
 void VideoEngine::addToCache(const std::string& clipId, double timestamp, std::shared_ptr<DecodedVideoFrame> frame) {
     std::lock_guard<std::mutex> lock(cacheMutex);
-    if (frameCache.size() >= MAX_CACHE_SIZE) {
+    const size_t incomingBytes = frameByteSize(*frame);
+    size_t cachedBytes = 0;
+    for (const auto& entry : frameCache) {
+        cachedBytes += frameByteSize(*entry.frame);
+    }
+    while (!frameCache.empty() && (frameCache.size() >= MAX_CACHE_SIZE || cachedBytes + incomingBytes > MAX_CACHE_BYTES)) {
+        cachedBytes -= frameByteSize(*frameCache.front().frame);
         frameCache.erase(frameCache.begin());
     }
     frameCache.push_back({ clipId, timestamp, std::move(frame) });
+}
+
+size_t VideoEngine::frameByteSize(const DecodedVideoFrame& frame) {
+    return frame.rgbData.size() + frame.alphaData.size();
 }
 
 bool VideoEngine::getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {

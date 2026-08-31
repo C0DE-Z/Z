@@ -28,6 +28,7 @@ public:
     int getHeight() const { return height; }
     double getFps() const { return fps; }
     const std::vector<float>& getAudioSamples() const { return audioSamples; }
+    bool wasAudioPreloadSkipped() const { return audioPreloadSkipped; }
 
     void setDatamoshing(bool datamoshEnabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb);
     void setOpticalSmear(bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias);
@@ -37,6 +38,7 @@ public:
     void setCpuXnor(bool xnorEnabled, double xnorValue, double intensity);
     void setCpuNand(bool nandEnabled, double nandValue, double intensity);
     void setPlaybackQuality(int downscaleFactor);
+    bool hasActiveCpuEffects() const;
 
 private:
     AVFormatContext* formatCtx = nullptr;
@@ -53,6 +55,7 @@ private:
     int audioStreamIndex = -1;
     SwrContext* swrCtx = nullptr;
     std::vector<float> audioSamples; 
+    bool audioPreloadSkipped = false;
 
     double duration = 0.0;
     int width = 0;

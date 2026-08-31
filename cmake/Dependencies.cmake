@@ -1,6 +1,6 @@
 # Dependencies.cmake - Find third-party libraries and runtime frameworks
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui OpenGL OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui Network OpenGL OpenGLWidgets)
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
 

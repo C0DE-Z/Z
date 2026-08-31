@@ -31,12 +31,15 @@ void Project::fromJson(const QJsonObject& root) {
         TimelineTrack track;
         track.id = trackObj.value("id").toInt();
         track.name = trackObj.value("name").toString().toStdString();
+        track.type = trackObj.value("type").toString().compare("audio", Qt::CaseInsensitive) == 0
+            ? TimelineTrackType::Audio : TimelineTrackType::Video;
 
         QJsonArray clipsArray = trackObj.value("clips").toArray();
         for (int j = 0; j < clipsArray.size(); ++j) {
             QJsonObject clipObj = clipsArray[j].toObject();
             ProjectClip clip;
             clip.id = clipObj.value("id").toString().toStdString();
+            clip.mediaId = clipObj.value("mediaId").toString(QString::fromStdString(clip.id)).toStdString();
             clip.name = clipObj.value("name").toString(clipObj.value("id").toString()).toStdString();
             clip.filePath = clipObj.value("filePath").toString().toStdString();
             clip.sourceStart = clipObj.value("sourceStart").toDouble();
@@ -49,6 +52,7 @@ void Project::fromJson(const QJsonObject& root) {
                 QJsonObject effectObj = clipEffectsArray[e].toObject();
                 AppliedEffect effect;
                 effect.pluginId = effectObj.value("pluginId").toString().toStdString();
+                effect.startOffset = std::max(0.0, effectObj.value("startOffset").toDouble(0.0));
 
                 QJsonArray paramsArray = effectObj.value("parameters").toArray();
                 for (int k = 0; k < paramsArray.size(); ++k) {
@@ -112,6 +116,7 @@ void Project::fromJson(const QJsonObject& root) {
             QJsonObject effectObj = effectsArray[j].toObject();
             AppliedEffect effect;
             effect.pluginId = effectObj.value("pluginId").toString().toStdString();
+            effect.startOffset = std::max(0.0, effectObj.value("startOffset").toDouble(0.0));
 
             QJsonArray paramsArray = effectObj.value("parameters").toArray();
             for (int k = 0; k < paramsArray.size(); ++k) {
@@ -279,11 +284,13 @@ QJsonObject Project::toJson() const {
         QJsonObject trackObj;
         trackObj["id"] = track.id;
         trackObj["name"] = QString::fromStdString(track.name);
+        trackObj["type"] = track.type == TimelineTrackType::Audio ? "audio" : "video";
 
         QJsonArray clipsArray;
         for (const auto& clip : track.clips) {
             QJsonObject clipObj;
             clipObj["id"] = QString::fromStdString(clip.id);
+            clipObj["mediaId"] = QString::fromStdString(clip.mediaId.empty() ? clip.id : clip.mediaId);
             clipObj["name"] = QString::fromStdString(clip.name);
             clipObj["filePath"] = QString::fromStdString(clip.filePath);
             clipObj["sourceStart"] = clip.sourceStart;
@@ -295,6 +302,7 @@ QJsonObject Project::toJson() const {
             for (const auto& effect : clip.effects) {
                 QJsonObject effectObj;
                 effectObj["pluginId"] = QString::fromStdString(effect.pluginId);
+                effectObj["startOffset"] = effect.startOffset;
 
                 QJsonArray paramsArray;
                 for (const auto& param : effect.parameters) {
@@ -334,6 +342,7 @@ QJsonObject Project::toJson() const {
         for (const auto& effect : track.effects) {
             QJsonObject effectObj;
             effectObj["pluginId"] = QString::fromStdString(effect.pluginId);
+            effectObj["startOffset"] = effect.startOffset;
 
             QJsonArray paramsArray;
             for (const auto& param : effect.parameters) {

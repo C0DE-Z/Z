@@ -21,31 +21,35 @@ TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     toolbarLayout->setContentsMargins(0, 0, 0, 0);
     toolbarLayout->setSpacing(4);
 
-    QPushButton* newTrackButton = new QPushButton("+ Track", toolbar);
+    QPushButton* newVideoTrackButton = new QPushButton("+ Video", toolbar);
+    QPushButton* newAudioTrackButton = new QPushButton("+ Audio", toolbar);
     QPushButton* upTrackButton = new QPushButton("Move Up", toolbar);
     QPushButton* downTrackButton = new QPushButton("Move Down", toolbar);
     QPushButton* deleteTrackButton = new QPushButton("Del Track", toolbar);
     QPushButton* cutClipButton = new QPushButton("Cut Clip", toolbar);
     QPushButton* deleteClipButton = new QPushButton("Del Clip", toolbar);
 
-    newTrackButton->setToolTip("Add new track");
+    newVideoTrackButton->setToolTip("Add a video track");
+    newAudioTrackButton->setToolTip("Add an audio track");
     upTrackButton->setToolTip("Move selected track up");
     downTrackButton->setToolTip("Move selected track down");
     deleteTrackButton->setToolTip("Delete selected track");
     cutClipButton->setToolTip("Cut clip at playhead (C)");
     deleteClipButton->setToolTip("Delete selected clip (Del)");
 
-    toolbarLayout->addWidget(newTrackButton, 0, 0);
-    toolbarLayout->addWidget(upTrackButton, 0, 1);
-    toolbarLayout->addWidget(downTrackButton, 0, 2);
-    toolbarLayout->addWidget(deleteTrackButton, 0, 3);
+    toolbarLayout->addWidget(newVideoTrackButton, 0, 0);
+    toolbarLayout->addWidget(newAudioTrackButton, 0, 1);
+    toolbarLayout->addWidget(upTrackButton, 0, 2);
+    toolbarLayout->addWidget(downTrackButton, 0, 3);
+    toolbarLayout->addWidget(deleteTrackButton, 0, 4);
     toolbarLayout->addWidget(cutClipButton, 1, 0, 1, 2);
     toolbarLayout->addWidget(deleteClipButton, 1, 2, 1, 2);
 
     layout->addWidget(toolbar);
 
     connect(trackList, &QListWidget::currentRowChanged, this, &TrackControl::trackSelected);
-    connect(newTrackButton, &QPushButton::clicked, this, &TrackControl::newTrackRequested);
+    connect(newVideoTrackButton, &QPushButton::clicked, this, &TrackControl::newVideoTrackRequested);
+    connect(newAudioTrackButton, &QPushButton::clicked, this, &TrackControl::newAudioTrackRequested);
     connect(upTrackButton, &QPushButton::clicked, this, &TrackControl::moveUpRequested);
     connect(downTrackButton, &QPushButton::clicked, this, &TrackControl::moveDownRequested);
     connect(deleteTrackButton, &QPushButton::clicked, this, &TrackControl::deleteTrackRequested);
@@ -53,12 +57,19 @@ TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     connect(deleteClipButton, &QPushButton::clicked, this, &TrackControl::deleteClipRequested);
 }
 
-void TrackControl::populateTracks(int count) {
+void TrackControl::populateTracks(const std::vector<TimelineTrack>& tracks) {
     bool oldState = trackList->signalsBlocked();
     trackList->blockSignals(true);
     trackList->clear();
-    for (int i = 0; i < count; ++i) {
-        trackList->addItem("Track " + QString::number(i + 1));
+    int videoNumber = 0;
+    int audioNumber = 0;
+    for (const auto& track : tracks) {
+        const bool isAudio = track.type == TimelineTrackType::Audio;
+        const int number = isAudio ? ++audioNumber : ++videoNumber;
+        const QString prefix = isAudio ? "A" : "V";
+        const QString fallback = isAudio ? "Audio" : "Video";
+        const QString name = track.name.empty() ? fallback : QString::fromStdString(track.name);
+        trackList->addItem(QString("%1%2  %3").arg(prefix).arg(number).arg(name));
     }
     trackList->blockSignals(oldState);
 }

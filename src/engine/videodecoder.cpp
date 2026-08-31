@@ -2,6 +2,7 @@
 #include "cpueffects.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <QDebug>
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -20,6 +21,14 @@ extern "C" {
 #define AV_CH_LAYOUT_STEREO 0x0000000000000003ULL
 #endif
 
+namespace {
+constexpr int kMaxDecodedDimension = 8192;
+constexpr size_t kMaxDecodedPixels = 33'177'600; // 8K UHD; reject corrupt dimensions before allocation.
+constexpr size_t kMaxPreloadedAudioBytes = 128 * 1024 * 1024;
+constexpr size_t kMaxPreloadedAudioSamples = kMaxPreloadedAudioBytes / sizeof(float);
+constexpr int kMaxResampleFrameSamples = 262'144;
+}
+
 VideoDecoder::VideoDecoder() {
     packet = av_packet_alloc();
     frame = av_frame_alloc();
@@ -28,11 +37,26 @@ VideoDecoder::VideoDecoder() {
 
 void VideoDecoder::setDatamoshing(bool enabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb) {
     std::lock_guard<std::mutex> lock(decodeMutex);
+    const int duplicateCount = std::max(1, pDupCount);
+    const bool changed = datamoshEnabled != enabled || iFrameDropProb != iDropProb ||
+        pFrameDuplicateProb != pDupProb || pFrameDuplicateCount != duplicateCount || pFrameDropProb != pDropProb;
     datamoshEnabled = enabled;
     iFrameDropProb = iDropProb;
     pFrameDuplicateProb = pDupProb;
-    pFrameDuplicateCount = std::max(1, pDupCount);
+    pFrameDuplicateCount = duplicateCount;
     pFrameDropProb = pDropProb;
+    if (changed) {
+        hasReferenceFrame = false;
+        referenceFrameRgb.clear();
+        referenceFrameAlpha.clear();
+        referenceFrameHasAlpha = false;
+    }
+}
+
+bool VideoDecoder::hasActiveCpuEffects() const {
+    std::lock_guard<std::mutex> lock(decodeMutex);
+    return datamoshEnabled || opticalSmearEnabled || cpuXorEnabled || cpuOrEnabled ||
+        cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled;
 }
 
 void VideoDecoder::setOpticalSmear(bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {
@@ -134,6 +158,7 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
     referenceFrameAlpha.clear();
     referenceFrameHasAlpha = false;
     audioSamples.clear();
+    audioPreloadSkipped = false;
 
     if (avformat_open_input(&formatCtx, filePath.c_str(), nullptr, nullptr) != 0) {
         qWarning() << "FFmpeg: Failed to open video file:" << QString::fromStdString(filePath);
@@ -255,6 +280,12 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
 
         width = codecCtx->width;
         height = codecCtx->height;
+        if (width < 2 || height < 2 || width > kMaxDecodedDimension || height > kMaxDecodedDimension ||
+            static_cast<size_t>(width) > kMaxDecodedPixels / static_cast<size_t>(height)) {
+            qWarning() << "FFmpeg: Video dimensions are unsupported or unsafe:" << width << "x" << height;
+            close();
+            return false;
+        }
         lastDecodedTime = -999.0;
         lastPacketTime = -999.0;
         timeBase = av_q2d(stream->time_base);
@@ -319,7 +350,14 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
     }
 
     if (preloadAudio && audioStreamIndex != -1) {
-        preDecodeAudio(filePath);
+        const double maximumPreloadSeconds = static_cast<double>(kMaxPreloadedAudioSamples) / (44100.0 * 2.0);
+        if (duration > maximumPreloadSeconds) {
+            audioPreloadSkipped = true;
+            qWarning() << "Audio preload skipped for" << QString::fromStdString(filePath)
+                       << "to keep memory bounded for a long clip.";
+        } else {
+            preDecodeAudio(filePath);
+        }
     }
 
     return true;
@@ -383,24 +421,37 @@ void VideoDecoder::preDecodeAudio(const std::string& filePath) {
         return;
     }
 
-    while (av_read_frame(aFormatCtx, guard.audioPacket) >= 0) {
+    while (!audioPreloadSkipped && av_read_frame(aFormatCtx, guard.audioPacket) >= 0) {
         if (guard.audioPacket->stream_index == aStreamIndex) {
             if (avcodec_send_packet(guard.aCodecCtx, guard.audioPacket) == 0) {
                 while (avcodec_receive_frame(guard.aCodecCtx, guard.audioFrame) == 0) {
                     int maxOutSamples = swr_get_out_samples(guard.swrCtx, guard.audioFrame->nb_samples);
-                    if (maxOutSamples > 0) {
-                        std::vector<float> resampled(maxOutSamples * 2);
+                    if (maxOutSamples > 0 && maxOutSamples <= kMaxResampleFrameSamples) {
+                        const size_t availableSamples = kMaxPreloadedAudioSamples - audioSamples.size();
+                        const int outputCapacity = static_cast<int>(std::min<size_t>(maxOutSamples, availableSamples / 2));
+                        if (outputCapacity <= 0) {
+                            audioPreloadSkipped = true;
+                            audioSamples.clear();
+                            qWarning() << "Audio preload reached its memory limit; audio was skipped.";
+                            break;
+                        }
+                        std::vector<float> resampled(static_cast<size_t>(outputCapacity) * 2);
                         uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(resampled.data()) };
 
                         int converted = swr_convert(
-                            guard.swrCtx, 
-                            outData, maxOutSamples, 
+                            guard.swrCtx,
+                            outData, outputCapacity,
                             (const uint8_t**)guard.audioFrame->data, guard.audioFrame->nb_samples
                         );
 
                         if (converted > 0) {
                             audioSamples.insert(audioSamples.end(), resampled.begin(), resampled.begin() + converted * 2);
                         }
+                    } else if (maxOutSamples > kMaxResampleFrameSamples) {
+                        audioPreloadSkipped = true;
+                        audioSamples.clear();
+                        qWarning() << "Audio frame is too large to preload safely; audio was skipped.";
+                        break;
                     }
                 }
             }
@@ -434,6 +485,7 @@ void VideoDecoder::close() {
     }
     audioStreamIndex = -1;
     audioSamples.clear();
+    audioPreloadSkipped = false;
 
     if (swsCtx) {
         sws_freeContext(swsCtx);
@@ -544,29 +596,11 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 lastPacketTime = packet->dts * timeBase - streamStartTime;
             }
 
-            bool isIFrame = (packet->flags & AV_PKT_FLAG_KEY);
-            int sendCount = 1;
-            if (isIFrame) {
-                if (datamoshEnabled && hasReferenceFrame) {
-                    double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-                    if (r < iFrameDropProb) {
-                        sendCount = 0;
-                    }
-                }
-                hasReferenceFrame = true;
-            } else if (hasReferenceFrame && datamoshEnabled) {
-                double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-                if (r < pFrameDuplicateProb) {
-                    sendCount = pFrameDuplicateCount;
-                } else if (r < pFrameDuplicateProb + pFrameDropProb) {
-                    sendCount = 0;
-                }
-            }
-
-            for (int i = 0; i < sendCount; ++i) {
-                int sendRes = avcodec_send_packet(codecCtx, packet);
-                if (sendRes == AVERROR(EAGAIN) || sendRes < 0) break;
-            }
+            // Decode every packet normally. Earlier versions dropped or
+            // duplicated compressed packets here, which could leave FFmpeg
+            // waiting for frames after a timeline cut. Datamoshing is applied
+            // safely to the decoded RGB frame below instead.
+            avcodec_send_packet(codecCtx, packet);
             av_packet_unref(packet);
         } else {
             av_packet_unref(packet);
@@ -616,6 +650,10 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
 
             int outWidth = std::max(2, ((width / playbackQualityScale) / 2) * 2);
             int outHeight = std::max(2, ((height / playbackQualityScale) / 2) * 2);
+            if (static_cast<size_t>(outWidth) > kMaxDecodedPixels / static_cast<size_t>(outHeight)) {
+                qWarning() << "FFmpeg: Scaled frame is too large to decode safely.";
+                return false;
+            }
 
             // Ask FFmpeg's descriptor instead of maintaining a partial list of
             // formats. This covers new packed, planar, and high-bit-depth YUVA
@@ -680,6 +718,10 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 outFrame.hasAlpha = false;
             }
 
+            if (datamoshEnabled && !referenceFrameRgb.empty()) {
+                CpuEffects::datamoshWithPreviousFrame(outFrame.rgbData, referenceFrameRgb,
+                    iFrameDropProb, pFrameDuplicateProb, pFrameDropProb);
+            }
             if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
                 CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
             }
