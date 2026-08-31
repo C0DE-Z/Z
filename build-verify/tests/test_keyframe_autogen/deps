@@ -1,0 +1,6 @@
+test_keyframe_autogen/timestamp: \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/keyframe.cpp \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/keyframe.h \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/unit/test_keyframe.cpp \
+	C:/msys64/mingw64/bin/cmake.exe

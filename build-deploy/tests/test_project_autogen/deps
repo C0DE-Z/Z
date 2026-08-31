@@ -1,0 +1,10 @@
+test_project_autogen/timestamp: \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/keyframe.cpp \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/keyframe.h \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/project.cpp \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/core/project.h \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/engine/pluginmanager.cpp \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/src/engine/pluginmanager.h \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt \
+	C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/unit/test_project.cpp \
+	C:/msys64/mingw64/bin/cmake.exe
