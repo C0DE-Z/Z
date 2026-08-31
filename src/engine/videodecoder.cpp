@@ -27,10 +27,22 @@ constexpr size_t kMaxDecodedPixels = 33'177'600; // 8K UHD; reject corrupt dimen
 constexpr size_t kMaxPreloadedAudioBytes = 128 * 1024 * 1024;
 constexpr size_t kMaxPreloadedAudioSamples = kMaxPreloadedAudioBytes / sizeof(float);
 constexpr int kMaxResampleFrameSamples = 262'144;
+
+double datamoshPacketSample(const AVPacket* packet, uint64_t salt) {
+    const uint64_t timestamp = static_cast<uint64_t>(packet->dts != AV_NOPTS_VALUE ? packet->dts : packet->pts);
+    uint64_t value = timestamp ^ (static_cast<uint64_t>(packet->size) << 32) ^ salt;
+    value ^= value >> 30;
+    value *= 0xbf58476d1ce4e5b9ULL;
+    value ^= value >> 27;
+    value *= 0x94d049bb133111ebULL;
+    value ^= value >> 31;
+    return static_cast<double>(value & 0x00ffffffULL) / static_cast<double>(0x01000000ULL);
+}
 }
 
 VideoDecoder::VideoDecoder() {
     packet = av_packet_alloc();
+    datamoshRepeatPacket = av_packet_alloc();
     frame = av_frame_alloc();
     swFrame = av_frame_alloc();
 }
@@ -46,6 +58,9 @@ void VideoDecoder::setDatamoshing(bool enabled, double iDropProb, double pDupPro
     pFrameDuplicateCount = duplicateCount;
     pFrameDropProb = pDropProb;
     if (changed) {
+        datamoshBaseKeyframeSeen = false;
+        datamoshRepeatPacketsRemaining = 0;
+        if (datamoshRepeatPacket) av_packet_unref(datamoshRepeatPacket);
         hasReferenceFrame = false;
         referenceFrameRgb.clear();
         referenceFrameAlpha.clear();
@@ -122,15 +137,19 @@ void VideoDecoder::setPlaybackQuality(int downscaleFactor) {
 VideoDecoder::~VideoDecoder() {
     close();
     av_packet_free(&packet);
+    av_packet_free(&datamoshRepeatPacket);
     av_frame_free(&frame);
     av_frame_free(&swFrame);
 }
 
-bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
+bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio, bool allowHardwareAcceleration) {
     close();
 
     if (!packet) {
         packet = av_packet_alloc();
+    }
+    if (!datamoshRepeatPacket) {
+        datamoshRepeatPacket = av_packet_alloc();
     }
     if (!frame) {
         frame = av_frame_alloc();
@@ -139,7 +158,7 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
         swFrame = av_frame_alloc();
     }
 
-    if (!packet || !frame || !swFrame) {
+    if (!packet || !datamoshRepeatPacket || !frame || !swFrame) {
         qWarning() << "FFmpeg: Failed to allocate decoder working frames/buffers";
         return false;
     }
@@ -153,6 +172,9 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
     streamStartTime = 0.0;
     lastDecodedTime = -999.0;
     lastPacketTime = -999.0;
+    datamoshBaseKeyframeSeen = false;
+    datamoshRepeatPacketsRemaining = 0;
+    av_packet_unref(datamoshRepeatPacket);
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
     referenceFrameAlpha.clear();
@@ -264,9 +286,11 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio) {
         };
 
         bool hwEnabled = false;
-        hwEnabled = tryEnableHwAccel(av_hwdevice_find_type_by_name("d3d11va"));
-        if (!hwEnabled && codecSupportsHwAccel(codec->id)) {
-            hwEnabled = tryEnableHwAccel(av_hwdevice_find_type_by_name("cuda"));
+        if (allowHardwareAcceleration) {
+            hwEnabled = tryEnableHwAccel(av_hwdevice_find_type_by_name("d3d11va"));
+            if (!hwEnabled && codecSupportsHwAccel(codec->id)) {
+                hwEnabled = tryEnableHwAccel(av_hwdevice_find_type_by_name("cuda"));
+            }
         }
 
         if (!hwEnabled) {
@@ -479,6 +503,10 @@ void VideoDecoder::close() {
         av_packet_free(&packet);
         packet = nullptr;
     }
+    if (datamoshRepeatPacket) {
+        av_packet_free(&datamoshRepeatPacket);
+        datamoshRepeatPacket = nullptr;
+    }
     if (audioCodecCtx) {
         avcodec_free_context(&audioCodecCtx);
         audioCodecCtx = nullptr;
@@ -517,6 +545,8 @@ void VideoDecoder::close() {
     streamStartTime = 0.0;
     lastDecodedTime = -999.0;
     lastPacketTime = -999.0;
+    datamoshBaseKeyframeSeen = false;
+    datamoshRepeatPacketsRemaining = 0;
     hasReferenceFrame = false;
     referenceFrameRgb.clear();
     referenceFrameAlpha.clear();
@@ -538,6 +568,9 @@ bool VideoDecoder::seekTo(double timestamp) {
 
     avcodec_flush_buffers(codecCtx);
     lastPacketTime = -999.0;
+    datamoshBaseKeyframeSeen = false;
+    datamoshRepeatPacketsRemaining = 0;
+    if (datamoshRepeatPacket) av_packet_unref(datamoshRepeatPacket);
     return true;
 }
 
@@ -573,7 +606,15 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
     bool needSeek = (lastDecodedTime < 0.0) || (timestamp < lastDecodedTime - 0.0005) || (timestamp >= lastDecodedTime + 0.5);
 
     if (needSeek) {
-        if (!seekTo(timestamp)) {
+        // A normal seek begins at the closest keyframe. For an I-frame mosh
+        // that keyframe must be *dropped* against an earlier decoded GOP, not
+        // used as a clean bootstrap, otherwise the visual break is delayed
+        // until the following GOP. Two seconds safely crosses our one-second
+        // proxy GOP at common 24/30/60 fps rates.
+        const double seekTimestamp = datamoshEnabled && iFrameDropProb >= 0.5
+            ? std::max(0.0, timestamp - 2.0)
+            : timestamp;
+        if (!seekTo(seekTimestamp)) {
             return false;
         }
         lastDecodedTime = -999.0;
@@ -586,7 +627,21 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
 
     int maxPackets = 20000;
     while (maxPackets-- > 0) {
-        int readRet = av_read_frame(formatCtx, packet);
+        bool isRepeatedDatamoshPacket = false;
+        int readRet = 0;
+        if (datamoshEnabled && datamoshRepeatPacketsRemaining > 0 && datamoshRepeatPacket && datamoshRepeatPacket->buf) {
+            av_packet_unref(packet);
+            if (av_packet_ref(packet, datamoshRepeatPacket) < 0) {
+                datamoshRepeatPacketsRemaining = 0;
+                av_packet_unref(datamoshRepeatPacket);
+                continue;
+            }
+            --datamoshRepeatPacketsRemaining;
+            isRepeatedDatamoshPacket = true;
+            if (datamoshRepeatPacketsRemaining == 0) av_packet_unref(datamoshRepeatPacket);
+        } else {
+            readRet = av_read_frame(formatCtx, packet);
+        }
         if (readRet < 0) {
             avcodec_send_packet(codecCtx, nullptr);
         } else if (packet->stream_index == videoStreamIndex) {
@@ -596,11 +651,35 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 lastPacketTime = packet->dts * timeBase - streamStartTime;
             }
 
-            // Decode every packet normally. Earlier versions dropped or
-            // duplicated compressed packets here, which could leave FFmpeg
-            // waiting for frames after a timeline cut. Datamoshing is applied
-            // safely to the decoded RGB frame below instead.
-            avcodec_send_packet(codecCtx, packet);
+            const bool isKeyframe = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            bool dropPacket = false;
+            if (datamoshEnabled && !isRepeatedDatamoshPacket) {
+                if (isKeyframe) {
+                    // Always keep the first keyframe after a seek. It is the
+                    // decoder's reference canvas; subsequent I-frame removal
+                    // is what makes later P-frame motion leak across GOPs.
+                    if (datamoshBaseKeyframeSeen) {
+                        dropPacket = iFrameDropProb >= 0.5;
+                    } else {
+                        datamoshBaseKeyframeSeen = true;
+                    }
+                } else {
+                    dropPacket = pFrameDropProb > 0.0 &&
+                        datamoshPacketSample(packet, 0x50ULL) < pFrameDropProb;
+                    if (!dropPacket && pFrameDuplicateProb > 0.0 &&
+                        datamoshPacketSample(packet, 0xD00DULL) < pFrameDuplicateProb &&
+                        pFrameDuplicateCount > 1 && datamoshRepeatPacket) {
+                        av_packet_unref(datamoshRepeatPacket);
+                        if (av_packet_ref(datamoshRepeatPacket, packet) >= 0) {
+                            datamoshRepeatPacketsRemaining = pFrameDuplicateCount - 1;
+                        }
+                    }
+                }
+            }
+
+            if (!dropPacket) {
+                avcodec_send_packet(codecCtx, packet);
+            }
             av_packet_unref(packet);
         } else {
             av_packet_unref(packet);
@@ -718,10 +797,6 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 outFrame.hasAlpha = false;
             }
 
-            if (datamoshEnabled && !referenceFrameRgb.empty()) {
-                CpuEffects::datamoshWithPreviousFrame(outFrame.rgbData, referenceFrameRgb,
-                    iFrameDropProb, pFrameDuplicateProb, pFrameDropProb);
-            }
             if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
                 CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
             }
@@ -744,7 +819,7 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
             // Keeping a second RGB copy costs ~24 MB per 4K frame. It is only
             // needed by temporal/CPU effects; ordinary playback relies on the
             // engine cache instead.
-            const bool needsReferenceFrame = datamoshEnabled || opticalSmearEnabled ||
+            const bool needsReferenceFrame = opticalSmearEnabled ||
                 cpuXorEnabled || cpuOrEnabled || cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled;
             if (needsReferenceFrame) {
                 referenceFrameRgb = outFrame.rgbData;

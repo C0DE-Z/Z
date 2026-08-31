@@ -4,7 +4,6 @@
 #include <cstdint>
 
 namespace CpuEffects {
-    void datamoshWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double iFrameDrop, double pFrameDuplicate, double pFrameDrop);
     void blendWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double strength, double smearStrength, double bleedStrength, double lumaStrength);
     void cpuXorWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double xorValue, double intensity);
     void cpuOrWithPreviousFrame(std::vector<uint8_t>& current, const std::vector<uint8_t>& previous, double orValue, double intensity);

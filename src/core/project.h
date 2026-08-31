@@ -24,6 +24,9 @@ struct ProjectClip {
     std::string mediaId;
     std::string name;
     std::string filePath;
+    // Cached H.264 P-frame proxy used by the native Datamosh effect. It is
+    // intentionally separate from filePath so normal/alpha editing remains lossless.
+    std::string datamoshProxyPath;
     double sourceStart; 
     double sourceDuration;
     double timelineStart; 

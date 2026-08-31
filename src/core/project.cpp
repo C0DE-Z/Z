@@ -42,6 +42,7 @@ void Project::fromJson(const QJsonObject& root) {
             clip.mediaId = clipObj.value("mediaId").toString(QString::fromStdString(clip.id)).toStdString();
             clip.name = clipObj.value("name").toString(clipObj.value("id").toString()).toStdString();
             clip.filePath = clipObj.value("filePath").toString().toStdString();
+            clip.datamoshProxyPath = clipObj.value("datamoshProxyPath").toString().toStdString();
             clip.sourceStart = clipObj.value("sourceStart").toDouble();
             clip.sourceDuration = clipObj.value("sourceDuration").toDouble();
             clip.timelineStart = clipObj.value("timelineStart").toDouble();
@@ -293,6 +294,7 @@ QJsonObject Project::toJson() const {
             clipObj["mediaId"] = QString::fromStdString(clip.mediaId.empty() ? clip.id : clip.mediaId);
             clipObj["name"] = QString::fromStdString(clip.name);
             clipObj["filePath"] = QString::fromStdString(clip.filePath);
+            clipObj["datamoshProxyPath"] = QString::fromStdString(clip.datamoshProxyPath);
             clipObj["sourceStart"] = clip.sourceStart;
             clipObj["sourceDuration"] = clip.sourceDuration;
             clipObj["timelineStart"] = clip.timelineStart;

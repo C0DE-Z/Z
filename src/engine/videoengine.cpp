@@ -53,8 +53,8 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
 bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     {
         std::lock_guard<std::mutex> lock(engineMutex);
-        const auto it = decoders.find(clipId);
-        if (it != decoders.end() && it->second->hasActiveCpuEffects()) return false;
+        const auto decoder = decoderForClipLocked(clipId, false);
+        if (decoder && decoder->hasActiveCpuEffects()) return false;
     }
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
@@ -69,8 +69,8 @@ bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp,
 bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds) {
     {
         std::lock_guard<std::mutex> lock(engineMutex);
-        const auto it = decoders.find(clipId);
-        if (it != decoders.end() && it->second->hasActiveCpuEffects()) return false;
+        const auto decoder = decoderForClipLocked(clipId, false);
+        if (decoder && decoder->hasActiveCpuEffects()) return false;
     }
     std::lock_guard<std::mutex> lock(cacheMutex);
 
@@ -101,7 +101,7 @@ bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double tim
     return false;
 }
 
-bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePath) {
+bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePath, const std::string& datamoshProxyPath) {
     std::lock_guard<std::mutex> lock(engineMutex);
 
     auto decoder = std::make_shared<VideoDecoder>();
@@ -113,6 +113,25 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
         } else {
             asyncDecoders.erase(clipId);
         }
+
+        datamoshDecoders.erase(clipId);
+        asyncDatamoshDecoders.erase(clipId);
+        datamoshActive[clipId] = false;
+        if (!datamoshProxyPath.empty()) {
+            // Software decoding is deliberate: hardware decoders commonly
+            // conceal dropped reference packets, erasing the very artifacts
+            // this effect creates.
+            auto datamoshDecoder = std::make_shared<VideoDecoder>();
+            if (datamoshDecoder->openFile(datamoshProxyPath, false, false)) {
+                datamoshDecoders[clipId] = std::move(datamoshDecoder);
+                auto asyncDatamoshDecoder = std::make_shared<VideoDecoder>();
+                if (asyncDatamoshDecoder->openFile(datamoshProxyPath, false, false)) {
+                    asyncDatamoshDecoders[clipId] = std::move(asyncDatamoshDecoder);
+                }
+            } else {
+                qWarning() << "Datamosh proxy could not be opened for" << QString::fromStdString(clipId);
+            }
+        }
         return true;
     }
     return false;
@@ -122,11 +141,10 @@ bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedV
     std::shared_ptr<VideoDecoder> decoder;
     {
         std::lock_guard<std::mutex> lock(engineMutex);
-        auto it = decoders.find(clipId);
-        if (it == decoders.end()) {
+        decoder = decoderForClipLocked(clipId, false);
+        if (!decoder) {
             return false;
         }
-        decoder = it->second;
     }
     if (!decoder->hasActiveCpuEffects() && getFromCache(clipId, timestamp, outFrame)) {
         return true;
@@ -162,12 +180,29 @@ double VideoEngine::getFps(const std::string& clipId) {
 
 void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb) {
     std::lock_guard<std::mutex> lock(engineMutex);
-    auto it = decoders.find(clipId);
-    if (it != decoders.end()) {
+    const bool proxyAvailable = datamoshDecoders.contains(clipId);
+    const bool isActive = datamoshEnabled && proxyAvailable;
+    const bool changedSource = !datamoshActive.contains(clipId) || datamoshActive[clipId] != isActive;
+    datamoshActive[clipId] = isActive;
+    if (auto it = decoders.find(clipId); it != decoders.end()) {
+        // The normal decoder must never use the old decoded-pixel fallback.
+        it->second->setDatamoshing(false, 0.0, 0.0, 1, 0.0);
+    }
+    if (auto it = asyncDecoders.find(clipId); it != asyncDecoders.end()) {
+        it->second->setDatamoshing(false, 0.0, 0.0, 1, 0.0);
+    }
+    if (auto it = datamoshDecoders.find(clipId); it != datamoshDecoders.end()) {
         it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
     }
-    const auto asyncIt = asyncDecoders.find(clipId);
-    if (asyncIt != asyncDecoders.end()) asyncIt->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
+    if (auto it = asyncDatamoshDecoders.find(clipId); it != asyncDatamoshDecoders.end()) {
+        it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
+    }
+    if (changedSource) {
+        std::lock_guard<std::mutex> workerLock(workerMutex);
+        ++workerGeneration;
+        workerHasRequest = false;
+        workerPrefetchUntil = -1.0;
+    }
 }
 
 void VideoEngine::setOpticalSmear(const std::string& clipId, bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {
@@ -178,6 +213,10 @@ void VideoEngine::setOpticalSmear(const std::string& clipId, bool smearEnabled, 
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setOpticalSmear(smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setOpticalSmear(smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setOpticalSmear(smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
 }
 
 void VideoEngine::setCpuXor(const std::string& clipId, bool xorEnabled, double xorValue, double intensity) {
@@ -188,6 +227,10 @@ void VideoEngine::setCpuXor(const std::string& clipId, bool xorEnabled, double x
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuXor(xorEnabled, xorValue, intensity);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setCpuXor(xorEnabled, xorValue, intensity);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setCpuXor(xorEnabled, xorValue, intensity);
 }
 
 void VideoEngine::setCpuOr(const std::string& clipId, bool orEnabled, double orValue, double intensity) {
@@ -198,6 +241,10 @@ void VideoEngine::setCpuOr(const std::string& clipId, bool orEnabled, double orV
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuOr(orEnabled, orValue, intensity);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setCpuOr(orEnabled, orValue, intensity);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setCpuOr(orEnabled, orValue, intensity);
 }
 
 void VideoEngine::setCpuAnd(const std::string& clipId, bool andEnabled, double andValue, double intensity) {
@@ -208,6 +255,10 @@ void VideoEngine::setCpuAnd(const std::string& clipId, bool andEnabled, double a
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuAnd(andEnabled, andValue, intensity);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setCpuAnd(andEnabled, andValue, intensity);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setCpuAnd(andEnabled, andValue, intensity);
 }
 
 void VideoEngine::setCpuXnor(const std::string& clipId, bool xnorEnabled, double xnorValue, double intensity) {
@@ -218,6 +269,10 @@ void VideoEngine::setCpuXnor(const std::string& clipId, bool xnorEnabled, double
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuXnor(xnorEnabled, xnorValue, intensity);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setCpuXnor(xnorEnabled, xnorValue, intensity);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setCpuXnor(xnorEnabled, xnorValue, intensity);
 }
 
 void VideoEngine::setCpuNand(const std::string& clipId, bool nandEnabled, double nandValue, double intensity) {
@@ -228,6 +283,10 @@ void VideoEngine::setCpuNand(const std::string& clipId, bool nandEnabled, double
     }
     const auto asyncIt = asyncDecoders.find(clipId);
     if (asyncIt != asyncDecoders.end()) asyncIt->second->setCpuNand(nandEnabled, nandValue, intensity);
+    const auto datamoshIt = datamoshDecoders.find(clipId);
+    if (datamoshIt != datamoshDecoders.end()) datamoshIt->second->setCpuNand(nandEnabled, nandValue, intensity);
+    const auto asyncDatamoshIt = asyncDatamoshDecoders.find(clipId);
+    if (asyncDatamoshIt != asyncDatamoshDecoders.end()) asyncDatamoshIt->second->setCpuNand(nandEnabled, nandValue, intensity);
 }
 
 void VideoEngine::setPlaybackQuality(int downscaleFactor) {
@@ -236,6 +295,12 @@ void VideoEngine::setPlaybackQuality(int downscaleFactor) {
         pair.second->setPlaybackQuality(downscaleFactor);
     }
     for (auto& pair : asyncDecoders) {
+        pair.second->setPlaybackQuality(downscaleFactor);
+    }
+    for (auto& pair : datamoshDecoders) {
+        pair.second->setPlaybackQuality(downscaleFactor);
+    }
+    for (auto& pair : asyncDatamoshDecoders) {
         pair.second->setPlaybackQuality(downscaleFactor);
     }
 }
@@ -265,10 +330,28 @@ void VideoEngine::clear() {
     std::lock_guard<std::mutex> lock(engineMutex);
     decoders.clear();
     asyncDecoders.clear();
+    datamoshDecoders.clear();
+    asyncDatamoshDecoders.clear();
+    datamoshActive.clear();
     {
         std::lock_guard<std::mutex> cacheLock(cacheMutex);
         frameCache.clear();
     }
+}
+
+std::shared_ptr<VideoDecoder> VideoEngine::decoderForClipLocked(const std::string& clipId, bool asynchronous) const {
+    const bool useDatamosh = datamoshActive.contains(clipId) && datamoshActive.at(clipId);
+    const auto& preferred = asynchronous ? asyncDatamoshDecoders : datamoshDecoders;
+    const auto& fallback = asynchronous ? asyncDecoders : decoders;
+    if (useDatamosh) {
+        if (const auto it = preferred.find(clipId); it != preferred.end()) {
+            return it->second;
+        }
+    }
+    if (const auto it = fallback.find(clipId); it != fallback.end()) {
+        return it->second;
+    }
+    return {};
 }
 
 void VideoEngine::addToCache(const std::string& clipId, double timestamp, std::shared_ptr<DecodedVideoFrame> frame) {
@@ -329,10 +412,7 @@ void VideoEngine::workerLoop() {
         std::shared_ptr<VideoDecoder> decoder;
         {
             std::lock_guard<std::mutex> lock(engineMutex);
-            auto it = asyncDecoders.find(clipId);
-            if (it != asyncDecoders.end()) {
-                decoder = it->second;
-            }
+            decoder = decoderForClipLocked(clipId, true);
         }
 
         if (!decoder) {
@@ -359,8 +439,8 @@ void VideoEngine::workerLoop() {
                 break;
             }
 
-            bool alreadyCached = false;
-            {
+            bool alreadyCached = !decoder->hasActiveCpuEffects();
+            if (alreadyCached) {
                 std::lock_guard<std::mutex> lock(cacheMutex);
                 for (const auto& entry : frameCache) {
                     if (entry.clipId == clipId && std::abs(entry.timestamp - targetTime) < 0.01) {

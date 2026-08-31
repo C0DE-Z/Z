@@ -89,7 +89,7 @@ void EffectsBrowser::populateEffects() {
         return current;
     };
 
-    addItem(builtinFolder, "Datamoshing", "datamosh", "P-frame motion vector glitch and temporal frame corruption");
+    addItem(builtinFolder, "Datamoshing", "datamosh", "Real H.264 packet datamosh: remove I-frames and repeat or drop P-frame packets");
     addItem(builtinFolder, "Optical Smear", "optical_smear", "Temporal chromatic smearing based on optical velocity vectors");
     addItem(builtinFolder, "Legacy CPU XOR", "cpu_xor", "Bitwise XOR video blender with vintage binary artifacts");
     addItem(builtinFolder, "Legacy CPU OR", "cpu_or", "Bitwise OR video channel combiner");

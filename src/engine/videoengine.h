@@ -20,7 +20,7 @@ public:
 
     ~VideoEngine();
 
-    bool loadVideo(const std::string& clipId, const std::string& filePath);
+    bool loadVideo(const std::string& clipId, const std::string& filePath, const std::string& datamoshProxyPath = {});
     bool getFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     void requestFrameAsync(const std::string& clipId, double timestamp);
     bool tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
@@ -47,9 +47,15 @@ public:
 private:
     VideoEngine() = default;
     std::map<std::string, std::shared_ptr<VideoDecoder>> decoders;
+    // Datamosh reads a separate H.264 stream that intentionally contains
+    // P-frame dependencies. The regular decoder remains pristine for normal
+    // editing and alpha-capable media.
+    std::map<std::string, std::shared_ptr<VideoDecoder>> datamoshDecoders;
     // The worker owns separate FFmpeg contexts so prefetch seeks can never
     // contend with UI-thread decode state.
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDecoders;
+    std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDatamoshDecoders;
+    std::map<std::string, bool> datamoshActive;
     std::mutex engineMutex;
     std::mutex cacheMutex;
 
@@ -75,6 +81,7 @@ private:
     std::vector<CacheEntry> frameCache;
 
     static size_t frameByteSize(const DecodedVideoFrame& frame);
+    std::shared_ptr<VideoDecoder> decoderForClipLocked(const std::string& clipId, bool asynchronous) const;
     void addToCache(const std::string& clipId, double timestamp, std::shared_ptr<DecodedVideoFrame> frame);
     bool getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     void workerLoop();

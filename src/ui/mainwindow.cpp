@@ -28,6 +28,7 @@
 #include <QImage>
 #include <QDebug>
 #include <QProgressDialog>
+#include <QMetaObject>
 #include <QProcess>
 #include <QDir>
 #include <QLineEdit>
@@ -45,6 +46,7 @@
 #include <algorithm>
 #include <array>
 #include <set>
+#include <thread>
 #include <limits>
 #include <cmath>
 #include <future>
@@ -193,6 +195,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    if (importThread.joinable()) {
+        importThread.join();
+    }
     AudioEngine::instance().shutdown();
 }
 
@@ -870,114 +875,132 @@ void MainWindow::importVideo() {
 }
 
 void MainWindow::importMediaFile(const QString& filePath, int targetTrack, double targetTime) {
-    if (filePath.isEmpty() || !QFile::exists(filePath)) return;
+    if (filePath.isEmpty() || !QFile::exists(filePath) || importInProgress) return;
 
     const bool wasPlaying = isPlaying;
     if (wasPlaying) {
         togglePlayback();
     }
+    importInProgress = true;
 
-    QString standardizedPath = runWithLoader(this, "Transcoding media for editing...", [filePath]() {
-        return MediaImporter::transcodeToStandardMov(filePath);
-    });
-    if (standardizedPath.isEmpty()) {
-        standardizedPath = filePath;
-    }
+    auto* loaderDialog = new QProgressDialog("Preparing media for editing...", QString(), 0, 0, this);
+    loaderDialog->setWindowTitle("Importing Media");
+    loaderDialog->setWindowModality(Qt::WindowModal);
+    loaderDialog->setCancelButton(nullptr);
+    loaderDialog->setMinimumDuration(0);
+    loaderDialog->setAutoClose(false);
+    loaderDialog->setAutoReset(false);
+    loaderDialog->show();
 
-    QString clipId = QFileInfo(filePath).baseName();
-    bool loaded = runWithLoader(this, "Loading imported media...", [clipId, standardizedPath]() {
-        return VideoEngine::instance().loadVideo(clipId.toStdString(), standardizedPath.toStdString());
-    });
+    const QPointer<MainWindow> window(this);
+    const QPointer<QProgressDialog> loader(loaderDialog);
+    if (importThread.joinable()) importThread.join();
+    importThread = std::thread([window, loader, filePath, targetTrack, targetTime, wasPlaying]() {
+        auto updateLoader = [window, loader](const QString& text) {
+            if (!window) return;
+            QMetaObject::invokeMethod(window.data(), [window, loader, text] {
+                if (window && loader) loader->setLabelText(text);
+            }, Qt::QueuedConnection);
+        };
 
-    if (loaded) {
-        AppState::instance().pushUndoState();
-        if (mediaPool) mediaPool->addMedia(clipId);
+        updateLoader("Transcoding media for editing...");
+        QString standardizedPath = MediaImporter::transcodeToStandardMov(filePath);
+        if (standardizedPath.isEmpty()) standardizedPath = filePath;
 
-        ProjectClip videoClip;
-        videoClip.id = clipId.toStdString();
-        videoClip.mediaId = videoClip.id;
-        videoClip.name = videoClip.id;
-        videoClip.filePath = standardizedPath.toStdString();
-        videoClip.sourceStart = 0.0;
-        DecodedVideoFrame dummy;
-        VideoEngine::instance().getFrame(videoClip.id, 0.0, dummy);
-        videoClip.sourceDuration = VideoEngine::instance().getDuration(videoClip.id);
-        if (videoClip.sourceDuration <= 0.0) videoClip.sourceDuration = 30.0;
+        const QString clipId = QFileInfo(filePath).baseName();
+        updateLoader("Creating H.264 P-frame datamosh proxy...");
+        const QString datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(standardizedPath);
+        updateLoader("Loading video and audio streams...");
+        const bool loaded = VideoEngine::instance().loadVideo(
+            clipId.toStdString(), standardizedPath.toStdString(), datamoshProxyPath.toStdString());
 
-        auto& tracks = Project::instance().getTracks();
-        int trackIdx = targetTrack;
-        const bool droppingOnExistingTrack = trackIdx >= 0 && trackIdx < static_cast<int>(tracks.size());
-        if (!droppingOnExistingTrack) {
-            TimelineTrack videoTrack;
-            videoTrack.id = static_cast<int>(tracks.size()) + 1;
-            videoTrack.name = "Video " + std::to_string(videoTrack.id);
-            videoTrack.type = TimelineTrackType::Video;
-            tracks.push_back(videoTrack);
-            trackIdx = static_cast<int>(tracks.size()) - 1;
-        }
+        if (!window) return;
+        QMetaObject::invokeMethod(window.data(), [window, loader, filePath, targetTrack, targetTime, wasPlaying, standardizedPath, datamoshProxyPath, clipId, loaded] {
+            if (!window) return;
+            window->importInProgress = false;
+            if (loader) loader->deleteLater();
 
-        videoClip.timelineStart = (targetTime >= 0.0) ? targetTime : Project::instance().getDuration();
-        if (tracks[trackIdx].type == TimelineTrackType::Video) {
-            tracks[trackIdx].clips.push_back(videoClip);
-        }
-        sortTrackClips(tracks[trackIdx]);
+            if (!loaded) {
+                QMessageBox::warning(window, "Import Failed", QString("Could not decode '%1'. Unsupported codec or file error.").arg(QFileInfo(filePath).fileName()));
+                if (wasPlaying) window->togglePlayback();
+                return;
+            }
 
-        // A normal import creates a separately movable audio clip directly
-        // below the video. Both refer to the same decoder/media cache.
-        if (!droppingOnExistingTrack || tracks[trackIdx].type == TimelineTrackType::Audio) {
-            int audioTrackIndex = trackIdx;
+            AppState::instance().pushUndoState();
+            if (window->mediaPool) window->mediaPool->addMedia(clipId);
+
+            ProjectClip videoClip;
+            videoClip.id = clipId.toStdString();
+            videoClip.mediaId = videoClip.id;
+            videoClip.name = videoClip.id;
+            videoClip.filePath = standardizedPath.toStdString();
+            videoClip.datamoshProxyPath = datamoshProxyPath.toStdString();
+            videoClip.sourceStart = 0.0;
+            videoClip.sourceDuration = VideoEngine::instance().getDuration(videoClip.mediaId);
+            if (videoClip.sourceDuration <= 0.0) videoClip.sourceDuration = 30.0;
+
+            auto& tracks = Project::instance().getTracks();
+            int trackIdx = targetTrack;
+            const bool droppingOnExistingTrack = trackIdx >= 0 && trackIdx < static_cast<int>(tracks.size());
             if (!droppingOnExistingTrack) {
-                TimelineTrack audioTrack;
-                audioTrack.id = static_cast<int>(tracks.size()) + 1;
-                audioTrack.name = "Audio " + std::to_string(audioTrack.id);
-                audioTrack.type = TimelineTrackType::Audio;
-                tracks.push_back(audioTrack);
-                audioTrackIndex = static_cast<int>(tracks.size()) - 1;
+                TimelineTrack videoTrack;
+                videoTrack.id = static_cast<int>(tracks.size()) + 1;
+                videoTrack.name = "Video " + std::to_string(videoTrack.id);
+                videoTrack.type = TimelineTrackType::Video;
+                tracks.push_back(videoTrack);
+                trackIdx = static_cast<int>(tracks.size()) - 1;
             }
-            ProjectClip audioClip = videoClip;
-            audioClip.id += "_audio";
-            audioClip.name += " (Audio)";
-            tracks[audioTrackIndex].clips.push_back(audioClip);
-            sortTrackClips(tracks[audioTrackIndex]);
-        }
 
-        std::vector<float> audioSamples;
-        if (VideoEngine::instance().getAudioSamples(clipId.toStdString(), audioSamples)) {
-            AudioEngine::instance().loadClipSamples(audioSamples, videoClip.timelineStart, videoClip.sourceStart, videoClip.sourceDuration);
-        } else {
-            AudioEngine::instance().clearClipSamples();
-        }
-
-        refreshTrackList();
-        selectTrackIndex(trackIdx);
-
-        activeClipId = videoClip.id.empty() ? QString() : clipId;
-        selectedClipId = activeClipId;
-        activeFilePath = standardizedPath;
-
-        if (timelinePanel) {
-            timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
-            timelinePanel->update();
-        }
-        onTimelineScrubbed(videoClip.timelineStart);
-
-        if (statusBar()) {
-            QString message = QString("Imported: %1 (%2s)").arg(QFileInfo(filePath).fileName()).arg(videoClip.sourceDuration, 0, 'f', 1);
-            if (VideoEngine::instance().wasAudioPreloadSkipped(videoClip.id)) {
-                message += " — audio preload skipped for this long clip to keep Z stable";
+            videoClip.timelineStart = targetTime >= 0.0 ? targetTime : Project::instance().getDuration();
+            if (tracks[trackIdx].type == TimelineTrackType::Video) {
+                tracks[trackIdx].clips.push_back(videoClip);
+                window->sortTrackClips(tracks[trackIdx]);
             }
-            statusBar()->showMessage(message, 7000);
-        }
-        updateStatusBar();
-        refreshActiveEffectsList();
-        syncEffectStackToRenderer();
-    } else {
-        QMessageBox::warning(this, "Import Failed", QString("Could not decode '%1'. Unsupported codec or file error.").arg(QFileInfo(filePath).fileName()));
-    }
 
-    if (wasPlaying) {
-        togglePlayback();
-    }
+            // A normal import creates a separately movable audio clip directly
+            // below the video. Both refer to the same decoder/media cache.
+            if (!droppingOnExistingTrack || tracks[trackIdx].type == TimelineTrackType::Audio) {
+                int audioTrackIndex = trackIdx;
+                if (!droppingOnExistingTrack) {
+                    TimelineTrack audioTrack;
+                    audioTrack.id = static_cast<int>(tracks.size()) + 1;
+                    audioTrack.name = "Audio " + std::to_string(audioTrack.id);
+                    audioTrack.type = TimelineTrackType::Audio;
+                    tracks.push_back(audioTrack);
+                    audioTrackIndex = static_cast<int>(tracks.size()) - 1;
+                }
+                ProjectClip audioClip = videoClip;
+                audioClip.id += "_audio";
+                audioClip.name += " (Audio)";
+                tracks[audioTrackIndex].clips.push_back(audioClip);
+                window->sortTrackClips(tracks[audioTrackIndex]);
+            }
+
+            window->refreshTrackList();
+            window->selectTrackIndex(trackIdx);
+            window->activeClipId = clipId;
+            window->selectedClipId = clipId;
+            window->activeFilePath = standardizedPath;
+
+            if (window->timelinePanel) {
+                window->timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
+                window->timelinePanel->update();
+            }
+            window->onTimelineScrubbed(videoClip.timelineStart);
+
+            if (window->statusBar()) {
+                QString message = QString("Imported: %1 (%2s)").arg(QFileInfo(filePath).fileName()).arg(videoClip.sourceDuration, 0, 'f', 1);
+                if (VideoEngine::instance().wasAudioPreloadSkipped(videoClip.mediaId)) {
+                    message += " — audio preload skipped for this long clip to keep Z stable";
+                }
+                window->statusBar()->showMessage(message, 7000);
+            }
+            window->updateStatusBar();
+            window->refreshActiveEffectsList();
+            window->syncEffectStackToRenderer();
+            if (wasPlaying) window->togglePlayback();
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::openProject() {
@@ -1005,7 +1028,16 @@ void MainWindow::openProject() {
                     const int currentIndex = ++idx;
                     QString label = QString("Loading project media (%1/%2)...").arg(currentIndex).arg(std::max(1, mediaCount));
                     runWithLoader(this, label, [mediaId, clip]() {
-                        VideoEngine::instance().loadVideo(mediaId, clip.filePath);
+                        QString datamoshProxyPath = QString::fromStdString(clip.datamoshProxyPath);
+                        if (datamoshProxyPath.isEmpty() || !QFileInfo::exists(datamoshProxyPath)) {
+                            // Projects saved before the proxy field existed
+                            // are upgraded lazily into the deterministic media
+                            // cache rather than silently falling back to a
+                            // decoded-pixel imitation of Datamosh.
+                            datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(
+                                QString::fromStdString(clip.filePath));
+                        }
+                        VideoEngine::instance().loadVideo(mediaId, clip.filePath, datamoshProxyPath.toStdString());
                     });
                 }
             }
@@ -1834,10 +1866,10 @@ AppliedEffect MainWindow::createEffectTemplate(const QString& effectId) const {
             return ShaderParameter{name, label, minV, maxV, defV, defV, isBool, AnimationCurve(defV)};
         };
         effect.parameters = {
-            make("iDrop", "I-Frame Drop Toggle", 0.0, 1.0, 0.0, true),
-            make("pDup", "P-Frame Bloom Duplicate", 0.0, 1.0, 0.35),
-            make("pDupCount", "P-Frame Duplicate Count", 1.0, 20.0, 4.0),
-            make("pDrop", "P-Frame Stutter Drop", 0.0, 1.0, 0.0)
+            make("iDrop", "Remove I-Frames", 0.0, 1.0, 1.0, true),
+            make("pDup", "P-Frame Repeat Chance", 0.0, 1.0, 0.0),
+            make("pDupCount", "P-Frame Repeat Count", 1.0, 20.0, 2.0),
+            make("pDrop", "P-Frame Drop Chance", 0.0, 1.0, 0.0)
         };
     } else if (effectId == "optical_smear") {
         auto make = [](const std::string& name, const std::string& label, double minV, double maxV, double defV, bool isBool = false) {

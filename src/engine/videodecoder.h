@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <cstdint>
 #include "videoframe.h"
 
 struct AVFormatContext;
@@ -18,7 +19,7 @@ public:
     VideoDecoder();
     ~VideoDecoder();
 
-    bool openFile(const std::string& filePath, bool preloadAudio = true);
+    bool openFile(const std::string& filePath, bool preloadAudio = true, bool allowHardwareAcceleration = true);
     void close();
 
     bool decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame);
@@ -47,6 +48,7 @@ private:
     AVFrame* frame = nullptr;
     AVFrame* swFrame = nullptr; 
     AVPacket* packet = nullptr;
+    AVPacket* datamoshRepeatPacket = nullptr;
     SwsContext* swsCtx = nullptr;
     AVBufferRef* hwDeviceCtx = nullptr;
     int hwPixFmt = -1; 
@@ -71,6 +73,8 @@ private:
     double pFrameDuplicateProb = 0.0;
     int pFrameDuplicateCount = 1;
     double pFrameDropProb = 0.0;
+    bool datamoshBaseKeyframeSeen = false;
+    int datamoshRepeatPacketsRemaining = 0;
 
     bool opticalSmearEnabled = false;
     double mergeStrength = 0.0;

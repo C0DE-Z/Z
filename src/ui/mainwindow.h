@@ -24,6 +24,8 @@
 #include <QComboBox>
 #include <QElapsedTimer>
 #include <QNetworkAccessManager>
+#include <QPointer>
+#include <thread>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -58,8 +60,10 @@ private slots:
 
 private:
     QTimer* playbackTimer = nullptr;
+    std::thread importThread;
     double currentPlayhead = 0.0;
     bool isPlaying = false;
+    bool importInProgress = false;
     bool loopPlayback = true;
     double markIn = -1.0;
     double markOut = -1.0;

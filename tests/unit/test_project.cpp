@@ -18,6 +18,7 @@ void testProjectSerialization() {
     c1.id = "clip_01";
     c1.mediaId = "source_01";
     c1.name = "Intro";
+    c1.datamoshProxyPath = "C:/cache/intro_datamosh.mp4";
     c1.timelineStart = 0.0;
     c1.sourceDuration = 15.0;
     AppliedEffect effect;
@@ -49,6 +50,7 @@ void testProjectSerialization() {
     assert(proj.getTracks()[0].clips.size() == 1);
     assert(proj.getTracks()[0].clips[0].id == "clip_01");
     assert(proj.getTracks()[0].clips[0].mediaId == "source_01");
+    assert(proj.getTracks()[0].clips[0].datamoshProxyPath == "C:/cache/intro_datamosh.mp4");
     assert(proj.getTracks()[0].clips[0].effects[0].startOffset == 3.5);
     assert(proj.getTracks()[0].type == TimelineTrackType::Video);
     assert(proj.getTracks()[0].transitions.size() == 1);
