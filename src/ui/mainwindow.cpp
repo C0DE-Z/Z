@@ -905,7 +905,25 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
 
         updateLoader("Transcoding media for editing...");
         QString standardizedPath = MediaImporter::transcodeToStandardMov(filePath);
-        if (standardizedPath.isEmpty()) standardizedPath = filePath;
+        if (standardizedPath.isEmpty()) {
+            // Keep the previous valid-source fallback for a failed conversion,
+            // but never hand FFmpeg a source we already know is truncated.
+            if (!MediaImporter::isUsableVideoFile(filePath)) {
+                if (window) {
+                    QMetaObject::invokeMethod(window.data(), [window, loader, filePath, wasPlaying] {
+                        if (!window) return;
+                        window->importInProgress = false;
+                        if (loader) loader->deleteLater();
+                        QMessageBox::warning(window, "Import Failed",
+                            QString("'%1' is incomplete or unreadable. If this is a previous Z cache file, re-import the original source media instead.")
+                                .arg(QFileInfo(filePath).fileName()));
+                        if (wasPlaying) window->togglePlayback();
+                    }, Qt::QueuedConnection);
+                }
+                return;
+            }
+            standardizedPath = filePath;
+        }
 
         const QString clipId = QFileInfo(filePath).baseName();
         updateLoader("Creating H.264 P-frame datamosh proxy...");
@@ -1021,13 +1039,17 @@ void MainWindow::openProject() {
             }
             const int mediaCount = static_cast<int>(mediaIds.size());
             int idx = 0;
+            QStringList failedMedia;
             for (const auto& track : Project::instance().getTracks()) {
                 for (const auto& clip : track.clips) {
                     const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
                     if (!mediaIds.erase(mediaId)) continue;
                     const int currentIndex = ++idx;
                     QString label = QString("Loading project media (%1/%2)...").arg(currentIndex).arg(std::max(1, mediaCount));
-                    runWithLoader(this, label, [mediaId, clip]() {
+                    const bool loaded = runWithLoader(this, label, [mediaId, clip]() {
+                        if (!MediaImporter::isUsableVideoFile(QString::fromStdString(clip.filePath))) {
+                            return false;
+                        }
                         QString datamoshProxyPath = QString::fromStdString(clip.datamoshProxyPath);
                         if (datamoshProxyPath.isEmpty() || !QFileInfo::exists(datamoshProxyPath)) {
                             // Projects saved before the proxy field existed
@@ -1037,9 +1059,18 @@ void MainWindow::openProject() {
                             datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(
                                 QString::fromStdString(clip.filePath));
                         }
-                        VideoEngine::instance().loadVideo(mediaId, clip.filePath, datamoshProxyPath.toStdString());
+                        return VideoEngine::instance().loadVideo(mediaId, clip.filePath, datamoshProxyPath.toStdString());
                     });
+                    if (!loaded) {
+                        failedMedia.append(QString::fromStdString(clip.filePath));
+                    }
                 }
+            }
+            if (!failedMedia.isEmpty()) {
+                QMessageBox::warning(this, "Media Needs Re-importing",
+                    "Z could not read the following media file(s):\n\n" + failedMedia.join("\n") +
+                    "\n\nA generated MOV cache may have been interrupted before its final moov atom was written. "
+                    "Please remove the affected clip and re-import the original source file. Future imports now validate and atomically finalize cache files.");
             }
             refreshTrackList();
             const auto& tracks = Project::instance().getTracks();

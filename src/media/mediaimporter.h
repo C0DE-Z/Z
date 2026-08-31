@@ -8,6 +8,7 @@ public:
     static QString transcodeToStandardMov(const QString& sourcePath);
     static QString standardizedImportDir();
     static QString standardizedImportPathForSource(const QString& sourcePath);
+    static bool isUsableVideoFile(const QString& path);
     // A separate interframe proxy used only by Datamosh. Editing continues to
     // use the alpha-safe ProRes source produced by transcodeToStandardMov().
     static QString datamoshProxyPathForSource(const QString& sourcePath);

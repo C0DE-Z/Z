@@ -15,7 +15,7 @@ add_executable(test_mediaimporter
     ../src/media/mediaimporter.cpp
 )
 target_include_directories(test_mediaimporter PRIVATE ../src)
-target_link_libraries(test_mediaimporter PRIVATE Qt6::Core Qt6::Widgets)
+target_link_libraries(test_mediaimporter PRIVATE Qt6::Core Qt6::Widgets PkgConfig::AVFORMAT)
 add_test(NAME MediaImporterTests COMMAND test_mediaimporter)
 
 add_executable(test_appstate

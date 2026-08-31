@@ -61,6 +61,7 @@ if errorlevel 1 (
 )
 
 echo Copying FFmpeg DLLs...
+copy /Y "%MINGW%\ffmpeg.exe" "%OUT%\" >nul 2>&1
 for %%f in ("%MINGW%\avcodec*.dll" "%MINGW%\avformat*.dll" "%MINGW%\avutil*.dll" "%MINGW%\swscale*.dll" "%MINGW%\swresample*.dll" "%MINGW%\avdevice*.dll" "%MINGW%\avfilter*.dll") do (
     copy /Y "%%~f" "%OUT%\" >nul 2>&1
 )

@@ -1,5 +1,6 @@
 #include "media/mediaimporter.h"
 #include <QFileInfo>
+#include <QTemporaryFile>
 #include <cassert>
 #include <iostream>
 
@@ -15,6 +16,12 @@ int main() {
     assert(datamoshPath.endsWith("_datamosh.mp4", Qt::CaseInsensitive));
     assert(datamoshPath.contains("transparent_clip"));
     assert(datamoshPath != path);
+
+    QTemporaryFile incompleteMedia;
+    assert(incompleteMedia.open());
+    assert(incompleteMedia.write("not a media container") > 0);
+    incompleteMedia.flush();
+    assert(!MediaImporter::isUsableVideoFile(incompleteMedia.fileName()));
 
     std::cout << "[PASS] test_mediaimporter_standardized_mov_output\n";
     return 0;
