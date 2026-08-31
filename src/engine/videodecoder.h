@@ -40,6 +40,7 @@ public:
     void setCpuNand(bool nandEnabled, double nandValue, double intensity);
     void setPlaybackQuality(int downscaleFactor);
     bool hasActiveCpuEffects() const;
+    bool canUseAsyncFrameCache() const;
 
 private:
     AVFormatContext* formatCtx = nullptr;

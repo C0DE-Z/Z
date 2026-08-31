@@ -56,6 +56,16 @@ private:
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDecoders;
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDatamoshDecoders;
     std::map<std::string, bool> datamoshActive;
+    struct DatamoshSettings {
+        bool active = false;
+        double iDropProb = 0.0;
+        double pDupProb = 0.0;
+        int pDupCount = 1;
+        double pDropProb = 0.0;
+
+        bool operator==(const DatamoshSettings&) const = default;
+    };
+    std::map<std::string, DatamoshSettings> datamoshSettings;
     std::mutex engineMutex;
     std::mutex cacheMutex;
 
@@ -84,6 +94,7 @@ private:
     std::shared_ptr<VideoDecoder> decoderForClipLocked(const std::string& clipId, bool asynchronous) const;
     void addToCache(const std::string& clipId, double timestamp, std::shared_ptr<DecodedVideoFrame> frame);
     bool getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
+    void invalidateCacheForClip(const std::string& clipId);
     void workerLoop();
 };
 

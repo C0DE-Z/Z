@@ -74,6 +74,15 @@ bool VideoDecoder::hasActiveCpuEffects() const {
         cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled;
 }
 
+bool VideoDecoder::canUseAsyncFrameCache() const {
+    std::lock_guard<std::mutex> lock(decodeMutex);
+    // Packet Datamosh is deterministic for a given proxy and settings, so its
+    // decoded output can safely travel from the worker to the preview cache.
+    // The legacy temporal RGB effects still depend on decoder-local history.
+    return !opticalSmearEnabled && !cpuXorEnabled && !cpuOrEnabled &&
+        !cpuAndEnabled && !cpuXnorEnabled && !cpuNandEnabled;
+}
+
 void VideoDecoder::setOpticalSmear(bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {
     std::lock_guard<std::mutex> lock(decodeMutex);
     opticalSmearEnabled = smearEnabled;

@@ -896,38 +896,75 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
     const QPointer<QProgressDialog> loader(loaderDialog);
     if (importThread.joinable()) importThread.join();
     importThread = std::thread([window, loader, filePath, targetTrack, targetTime, wasPlaying]() {
-        auto updateLoader = [window, loader](const QString& text) {
+        auto updateLoader = [window, loader](const QString& text, int percent = -1) {
             if (!window) return;
-            QMetaObject::invokeMethod(window.data(), [window, loader, text] {
-                if (window && loader) loader->setLabelText(text);
+            QMetaObject::invokeMethod(window.data(), [window, loader, text, percent] {
+                if (!window || !loader) return;
+                loader->setLabelText(text);
+                if (percent < 0) {
+                    loader->setRange(0, 0);
+                } else {
+                    loader->setRange(0, 100);
+                    loader->setValue(percent);
+                }
             }, Qt::QueuedConnection);
         };
 
-        updateLoader("Transcoding media for editing...");
-        QString standardizedPath = MediaImporter::transcodeToStandardMov(filePath);
-        if (standardizedPath.isEmpty()) {
-            // Keep the previous valid-source fallback for a failed conversion,
-            // but never hand FFmpeg a source we already know is truncated.
-            if (!MediaImporter::isUsableVideoFile(filePath)) {
-                if (window) {
-                    QMetaObject::invokeMethod(window.data(), [window, loader, filePath, wasPlaying] {
-                        if (!window) return;
-                        window->importInProgress = false;
-                        if (loader) loader->deleteLater();
-                        QMessageBox::warning(window, "Import Failed",
-                            QString("'%1' is incomplete or unreadable. If this is a previous Z cache file, re-import the original source media instead.")
-                                .arg(QFileInfo(filePath).fileName()));
-                        if (wasPlaying) window->togglePlayback();
-                    }, Qt::QueuedConnection);
+        auto makeProgressReporter = [updateLoader](const QString& stage) {
+            const qint64 startedAt = QDateTime::currentMSecsSinceEpoch();
+            return [updateLoader, stage, startedAt](double progress) {
+                const int percent = std::clamp(static_cast<int>(std::round(progress * 100.0)), 0, 100);
+                QString label = QString("%1 %2%").arg(stage).arg(percent);
+                const qint64 elapsedSeconds = (QDateTime::currentMSecsSinceEpoch() - startedAt) / 1000;
+                if (progress >= 0.01 && elapsedSeconds > 0) {
+                    const qint64 remainingSeconds = static_cast<qint64>(
+                        (static_cast<double>(elapsedSeconds) * (1.0 - progress)) / progress);
+                    label += QString(" — about %1:%2 remaining")
+                        .arg(remainingSeconds / 60)
+                        .arg(remainingSeconds % 60, 2, 10, QChar('0'));
                 }
-                return;
-            }
+                updateLoader(label, percent);
+            };
+        };
+
+        auto failImport = [window, loader, wasPlaying](const QString& message) {
+            if (!window) return;
+            QMetaObject::invokeMethod(window.data(), [window, loader, wasPlaying, message] {
+                if (!window) return;
+                window->importInProgress = false;
+                // A deferred delete alone leaves this modal dialog visible
+                // while QMessageBox starts its own nested event loop.
+                if (loader) {
+                    loader->hide();
+                    loader->close();
+                    loader->deleteLater();
+                }
+                QMessageBox::warning(window, "Import Failed", message);
+                if (wasPlaying) window->togglePlayback();
+            }, Qt::QueuedConnection);
+        };
+
+        updateLoader("Checking media file...");
+        if (!MediaImporter::isUsableVideoFile(filePath)) {
+            failImport(
+                QString("'%1' is incomplete or unreadable. If this is a previous Z cache file, re-import the original source media instead.")
+                    .arg(QFileInfo(filePath).fileName()));
+            return;
+        }
+
+        updateLoader("Opening source media...");
+        QString standardizedPath = MediaImporter::transcodeToStandardMov(
+            filePath);
+        if (standardizedPath.isEmpty()) {
+            // The source has already passed validation. Preserve direct
+            // decoding as a fallback if optional proxy conversion fails.
             standardizedPath = filePath;
         }
 
         const QString clipId = QFileInfo(filePath).baseName();
         updateLoader("Creating H.264 P-frame datamosh proxy...");
-        const QString datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(standardizedPath);
+        const QString datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(
+            standardizedPath, makeProgressReporter("Creating H.264 P-frame datamosh proxy..."));
         updateLoader("Loading video and audio streams...");
         const bool loaded = VideoEngine::instance().loadVideo(
             clipId.toStdString(), standardizedPath.toStdString(), datamoshProxyPath.toStdString());
@@ -936,7 +973,11 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
         QMetaObject::invokeMethod(window.data(), [window, loader, filePath, targetTrack, targetTime, wasPlaying, standardizedPath, datamoshProxyPath, clipId, loaded] {
             if (!window) return;
             window->importInProgress = false;
-            if (loader) loader->deleteLater();
+            if (loader) {
+                loader->hide();
+                loader->close();
+                loader->deleteLater();
+            }
 
             if (!loaded) {
                 QMessageBox::warning(window, "Import Failed", QString("Could not decode '%1'. Unsupported codec or file error.").arg(QFileInfo(filePath).fileName()));

@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QCoreApplication>
 #include <QDebug>
+#include <algorithm>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -69,6 +70,76 @@ bool probeVideoFile(const QString& path) {
     return hasVideoStream;
 }
 
+double videoDurationSeconds(const QString& path) {
+    AVFormatContext* formatContext = nullptr;
+    const QByteArray encodedPath = path.toUtf8();
+    if (avformat_open_input(&formatContext, encodedPath.constData(), nullptr, nullptr) < 0) {
+        return 0.0;
+    }
+
+    double duration = 0.0;
+    if (avformat_find_stream_info(formatContext, nullptr) >= 0 &&
+        formatContext->duration != AV_NOPTS_VALUE) {
+        duration = static_cast<double>(formatContext->duration) / AV_TIME_BASE;
+    }
+    avformat_close_input(&formatContext);
+    return std::max(0.0, duration);
+}
+
+bool waitForTranscode(QProcess& process, double inputDurationSeconds,
+                      const MediaImporter::ProgressCallback& progressCallback,
+                      const QString& operation) {
+    if (!process.waitForStarted()) {
+        qWarning() << operation << "Failed to start FFmpeg.";
+        return false;
+    }
+
+    QByteArray progressBuffer;
+    double lastReportedProgress = -1.0;
+    auto consumeProgress = [&] {
+        progressBuffer.append(process.readAllStandardOutput());
+        qsizetype newlineIndex = 0;
+        while ((newlineIndex = progressBuffer.indexOf('\n')) >= 0) {
+            const QByteArray line = progressBuffer.left(newlineIndex).trimmed();
+            progressBuffer.remove(0, newlineIndex + 1);
+            if (!progressCallback) continue;
+
+            if (line.startsWith("out_time_us=") && inputDurationSeconds > 0.0) {
+                bool parsed = false;
+                const qint64 outputMicroseconds = line.mid(12).toLongLong(&parsed);
+                if (!parsed) continue;
+                const double progress = std::clamp(
+                    static_cast<double>(outputMicroseconds) / (inputDurationSeconds * AV_TIME_BASE),
+                    0.0, 1.0);
+                if (progress >= 1.0 || progress - lastReportedProgress >= 0.002) {
+                    lastReportedProgress = progress;
+                    progressCallback(progress);
+                }
+            } else if (line == "progress=end" && lastReportedProgress < 1.0) {
+                lastReportedProgress = 1.0;
+                progressCallback(1.0);
+            }
+        }
+    };
+
+    const qint64 startTime = QDateTime::currentMSecsSinceEpoch();
+    constexpr qint64 maximumConversionMilliseconds = 30LL * 60LL * 1000LL;
+    while (process.state() != QProcess::NotRunning) {
+        consumeProgress();
+        if (!process.waitForFinished(100)) {
+            if (QDateTime::currentMSecsSinceEpoch() - startTime > maximumConversionMilliseconds) {
+                process.kill();
+                process.waitForFinished();
+                qWarning() << operation << "Media conversion timed out after 30 minutes.";
+                return false;
+            }
+            continue;
+        }
+    }
+    consumeProgress();
+    return true;
+}
+
 bool promoteCompletedCacheFile(const QString& temporaryPath, const QString& outputPath, const QString& operation) {
     if (!probeVideoFile(temporaryPath)) {
         QFile::remove(temporaryPath);
@@ -116,75 +187,20 @@ QString MediaImporter::datamoshProxyPathForSource(const QString& sourcePath) {
     return standardizedImportDir() + "/" + safeBase + "_" + QString::fromLatin1(hash) + "_datamosh.mp4";
 }
 
-QString MediaImporter::transcodeToStandardMov(const QString& sourcePath) {
-    const QString suffix = QFileInfo(sourcePath).suffix().toLower();
-    if (suffix == "mov") {
-        if (probeVideoFile(sourcePath)) {
-            return sourcePath;
-        }
-        qWarning() << "Import: Source MOV is invalid or incomplete:" << sourcePath;
-        return QString();
+QString MediaImporter::transcodeToStandardMov(const QString& sourcePath, ProgressCallback progressCallback) {
+    Q_UNUSED(progressCallback);
+    // Re-encoding all footage to 4:2:2 alpha-capable ProRes made opaque MP4
+    // imports exceptionally slow and created huge, unnecessary cache files.
+    // libavformat/libavcodec already decode Z's supported formats directly;
+    // this also keeps the source's native alpha only when it actually has it.
+    if (probeVideoFile(sourcePath)) {
+        return sourcePath;
     }
-
-    const QString outputPath = standardizedImportPathForSource(sourcePath);
-    if (probeVideoFile(outputPath)) {
-        return outputPath;
-    }
-    QFile::remove(outputPath);
-    const QString temporaryPath = temporaryCachePath(outputPath);
-    QFile::remove(temporaryPath);
-
-    QProcess proc;
-    proc.setProcessEnvironment(ffmpegEnvironment());
-    // Long transcodes can emit a large amount of progress text. Do not retain
-    // it in QProcess buffers while the conversion is running.
-    proc.setProcessChannelMode(QProcess::ForwardedErrorChannel);
-
-    QStringList args;
-    args << "-y"
-         << "-hide_banner" << "-loglevel" << "error"
-         << "-i" << sourcePath
-         << "-map" << "0:v:0"
-         << "-map" << "0:a?"
-         << "-c:v" << "prores_ks"
-         << "-profile:v" << "hq"
-         << "-pix_fmt" << "yuva422p"
-         << "-c:a" << "aac"
-            << "-movflags" << "+faststart"
-            << temporaryPath;
-
-        proc.start(ffmpegExecutable(), args);
-    if (!proc.waitForStarted()) {
-        qWarning() << "Import: Failed to start FFmpeg for MOV conversion.";
-        return QString();
-    }
-
-    const auto startTime = QDateTime::currentMSecsSinceEpoch();
-    while (proc.state() != QProcess::NotRunning) {
-        if (!proc.waitForFinished(100)) {
-            const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - startTime;
-            if (elapsed > 120000) {
-                proc.kill();
-                proc.waitForFinished();
-                QFile::remove(temporaryPath);
-                qWarning() << "Import: Media conversion timed out after 120s.";
-                return QString();
-            }
-            continue;
-        }
-    }
-
-    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 ||
-        !promoteCompletedCacheFile(temporaryPath, outputPath, "Import:")) {
-        qWarning() << "Import: FFmpeg MOV conversion failed:" << proc.readAllStandardError();
-        QFile::remove(temporaryPath);
-        return QString();
-    }
-
-    return outputPath;
+    qWarning() << "Import: Source media is invalid or incomplete:" << sourcePath;
+    return QString();
 }
 
-QString MediaImporter::transcodeToDatamoshProxy(const QString& sourcePath) {
+QString MediaImporter::transcodeToDatamoshProxy(const QString& sourcePath, ProgressCallback progressCallback) {
     const QString outputPath = datamoshProxyPathForSource(sourcePath);
     if (probeVideoFile(outputPath)) {
         return outputPath;
@@ -192,10 +208,11 @@ QString MediaImporter::transcodeToDatamoshProxy(const QString& sourcePath) {
     QFile::remove(outputPath);
     const QString temporaryPath = temporaryCachePath(outputPath);
     QFile::remove(temporaryPath);
+    const double inputDurationSeconds = videoDurationSeconds(sourcePath);
 
     QProcess proc;
     proc.setProcessEnvironment(ffmpegEnvironment());
-    proc.setProcessChannelMode(QProcess::ForwardedErrorChannel);
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
 
     // Supermosh's core requirement is an H.264 stream made exclusively of an
     // initial/key GOP boundary plus P-frame deltas. Disabling B-frames keeps
@@ -204,6 +221,7 @@ QString MediaImporter::transcodeToDatamoshProxy(const QString& sourcePath) {
     QStringList args;
     args << "-y"
          << "-hide_banner" << "-loglevel" << "error"
+            << "-progress" << "pipe:1" << "-nostats"
          << "-i" << sourcePath
          << "-map" << "0:v:0"
          << "-an"
@@ -219,25 +237,10 @@ QString MediaImporter::transcodeToDatamoshProxy(const QString& sourcePath) {
             << "-movflags" << "+faststart"
             << temporaryPath;
 
-        proc.start(ffmpegExecutable(), args);
-    if (!proc.waitForStarted()) {
-        qWarning() << "Datamosh: Failed to start FFmpeg proxy encoder.";
+    proc.start(ffmpegExecutable(), args);
+    if (!waitForTranscode(proc, inputDurationSeconds, progressCallback, "Datamosh:")) {
+        QFile::remove(temporaryPath);
         return QString();
-    }
-
-    const auto startTime = QDateTime::currentMSecsSinceEpoch();
-    while (proc.state() != QProcess::NotRunning) {
-        if (!proc.waitForFinished(100)) {
-            const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - startTime;
-            if (elapsed > 120000) {
-                proc.kill();
-                proc.waitForFinished();
-                QFile::remove(temporaryPath);
-                qWarning() << "Datamosh: Proxy conversion timed out after 120s.";
-                return QString();
-            }
-            continue;
-        }
     }
 
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 ||

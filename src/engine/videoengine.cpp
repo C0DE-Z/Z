@@ -54,7 +54,7 @@ bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp,
     {
         std::lock_guard<std::mutex> lock(engineMutex);
         const auto decoder = decoderForClipLocked(clipId, false);
-        if (decoder && decoder->hasActiveCpuEffects()) return false;
+        if (decoder && !decoder->canUseAsyncFrameCache()) return false;
     }
     std::lock_guard<std::mutex> lock(cacheMutex);
     for (const auto& entry : frameCache) {
@@ -70,7 +70,7 @@ bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double tim
     {
         std::lock_guard<std::mutex> lock(engineMutex);
         const auto decoder = decoderForClipLocked(clipId, false);
-        if (decoder && decoder->hasActiveCpuEffects()) return false;
+        if (decoder && !decoder->canUseAsyncFrameCache()) return false;
     }
     std::lock_guard<std::mutex> lock(cacheMutex);
 
@@ -117,6 +117,7 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
         datamoshDecoders.erase(clipId);
         asyncDatamoshDecoders.erase(clipId);
         datamoshActive[clipId] = false;
+        datamoshSettings.erase(clipId);
         if (!datamoshProxyPath.empty()) {
             // Software decoding is deliberate: hardware decoders commonly
             // conceal dropped reference packets, erasing the very artifacts
@@ -182,8 +183,14 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
     std::lock_guard<std::mutex> lock(engineMutex);
     const bool proxyAvailable = datamoshDecoders.contains(clipId);
     const bool isActive = datamoshEnabled && proxyAvailable;
-    const bool changedSource = !datamoshActive.contains(clipId) || datamoshActive[clipId] != isActive;
+    const DatamoshSettings newSettings { isActive, iDropProb, pDupProb, pDupCount, pDropProb };
+    const auto oldSettings = datamoshSettings.find(clipId);
+    const bool settingsChanged = oldSettings == datamoshSettings.end() || oldSettings->second != newSettings;
+    datamoshSettings[clipId] = newSettings;
     datamoshActive[clipId] = isActive;
+    if (datamoshEnabled && !proxyAvailable && settingsChanged) {
+        qWarning() << "Datamosh proxy is unavailable for" << QString::fromStdString(clipId);
+    }
     if (auto it = decoders.find(clipId); it != decoders.end()) {
         // The normal decoder must never use the old decoded-pixel fallback.
         it->second->setDatamoshing(false, 0.0, 0.0, 1, 0.0);
@@ -197,7 +204,8 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
     if (auto it = asyncDatamoshDecoders.find(clipId); it != asyncDatamoshDecoders.end()) {
         it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
     }
-    if (changedSource) {
+    if (settingsChanged) {
+        invalidateCacheForClip(clipId);
         std::lock_guard<std::mutex> workerLock(workerMutex);
         ++workerGeneration;
         workerHasRequest = false;
@@ -333,6 +341,7 @@ void VideoEngine::clear() {
     datamoshDecoders.clear();
     asyncDatamoshDecoders.clear();
     datamoshActive.clear();
+    datamoshSettings.clear();
     {
         std::lock_guard<std::mutex> cacheLock(cacheMutex);
         frameCache.clear();
@@ -366,6 +375,13 @@ void VideoEngine::addToCache(const std::string& clipId, double timestamp, std::s
         frameCache.erase(frameCache.begin());
     }
     frameCache.push_back({ clipId, timestamp, std::move(frame) });
+}
+
+void VideoEngine::invalidateCacheForClip(const std::string& clipId) {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    std::erase_if(frameCache, [&clipId](const CacheEntry& entry) {
+        return entry.clipId == clipId;
+    });
 }
 
 size_t VideoEngine::frameByteSize(const DecodedVideoFrame& frame) {
@@ -439,8 +455,8 @@ void VideoEngine::workerLoop() {
                 break;
             }
 
-            bool alreadyCached = !decoder->hasActiveCpuEffects();
-            if (alreadyCached) {
+            bool alreadyCached = false;
+            if (decoder->canUseAsyncFrameCache()) {
                 std::lock_guard<std::mutex> lock(cacheMutex);
                 for (const auto& entry : frameCache) {
                     if (entry.clipId == clipId && std::abs(entry.timestamp - targetTime) < 0.01) {
