@@ -16,6 +16,7 @@ struct ExportSettings {
     double startTime = 0.0;
     double duration = 0.0;
     bool includeAudio = true;
+    bool preserveAlpha = false;
 };
 
 class MediaExporter {

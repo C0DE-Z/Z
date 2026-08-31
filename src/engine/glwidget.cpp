@@ -5,6 +5,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <cmath>
+#include <algorithm>
 #include <QDebug>
 #include <QFile>
 #include <QIODevice>
@@ -67,6 +68,24 @@ GLWidget::~GLWidget() {
 
 void GLWidget::initializeGL() {
     initializeOpenGLFunctions();
+
+    // QOpenGLWidget can recreate its context. Plugin shader program IDs from
+    // the previous context become invalid and must be rebuilt, otherwise
+    // effects silently render as no-op while incurring per-frame GL overhead.
+    for (auto* shader : findChildren<QOpenGLShaderProgram*>()) {
+        delete shader;
+    }
+    passthroughShader = nullptr;
+    transparencyGridShader = nullptr;
+    maskCompositeShader = nullptr;
+    alphaGuardShader = nullptr;
+    uniformLocations.clear();
+    for (auto& plugin : PluginManager::instance().getPlugins()) {
+        plugin.compileAttempted = false;
+        plugin.isCompiled = false;
+        plugin.shaderProgram = 0;
+    }
+
     glClearColor(0.04f, 0.04f, 0.06f, 0.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -269,7 +288,6 @@ void GLWidget::setPlaybackTime(double time) {
 
 void GLWidget::setActiveEffects(const std::vector<AppliedEffect>& effects) {
     activeEffects = effects;
-    update();
 }
 
 void GLWidget::setShowOverlay(bool show) {
@@ -382,7 +400,13 @@ void GLWidget::setMaskData(int width, int height, const std::vector<uint8_t>& ma
     pendingMaskH = height;
     pendingMask = maskR;
     maskDirty = true;
-    hasMaskTexture = (width > 0 && height > 0 && !maskR.empty());
+    const bool hasCoverage = std::any_of(maskR.begin(), maskR.end(), [](uint8_t v) {
+        return v != 0;
+    });
+    // An all-zero mask makes every effect appear "broken" (fully bypassed)
+    // while still paying an extra full-screen composite pass per effect.
+    // Treat it as no mask until detections produce real coverage.
+    hasMaskTexture = (width > 0 && height > 0 && !maskR.empty() && hasCoverage);
     update();
 }
 
@@ -392,7 +416,7 @@ void GLWidget::uploadMaskIfNeeded() {
 
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, maskTexture);
-    if (pendingMaskW <= 0 || pendingMaskH <= 0 || pendingMask.empty()) {
+    if (pendingMaskW <= 0 || pendingMaskH <= 0 || pendingMask.empty() || !hasMaskTexture) {
         unsigned char whitePixel = 255;
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0, GL_RED, GL_UNSIGNED_BYTE, &whitePixel);
         lastMaskWidth = 1;

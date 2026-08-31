@@ -31,6 +31,16 @@ bool VideoEngine::isAsyncDecodeEnabled() const {
 }
 
 void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp) {
+    {
+        std::lock_guard<std::mutex> engineLock(engineMutex);
+        const auto decoder = decoderForClipLocked(clipId, true);
+        // Do not spend a CPU core decoding normal footage twice. The worker is
+        // reserved for effect output which is safe to reuse, chiefly the
+        // packet-level Datamosh path.
+        if (!decoder || !decoder->canUseAsyncFrameCache()) {
+            return;
+        }
+    }
     std::lock_guard<std::mutex> lock(workerMutex);
     if (workerThread.joinable() == false) {
         workerThread = std::thread(&VideoEngine::workerLoop, this);
@@ -44,7 +54,7 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
 
     workerClipId = clipId;
     workerTimestamp = timestamp;
-    workerPrefetchUntil = timestamp + 1.0;
+    workerPrefetchUntil = timestamp + 2.0;
     ++workerGeneration;
     workerHasRequest = true;
     workerCv.notify_one();
@@ -147,7 +157,10 @@ bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedV
             return false;
         }
     }
-    if (!decoder->hasActiveCpuEffects() && getFromCache(clipId, timestamp, outFrame)) {
+    // Packet Datamosh is deterministic for a proxy/settings combination, so
+    // paused preview and export-adjacent scrubbing can reuse frames prepared
+    // by the async worker. Stateful temporal CPU effects remain uncached.
+    if (decoder->canUseAsyncFrameCache() && getFromCache(clipId, timestamp, outFrame)) {
         return true;
     }
 
@@ -439,10 +452,14 @@ void VideoEngine::workerLoop() {
         double frameDuration = 1.0 / fps;
         {
             std::lock_guard<std::mutex> lock(workerMutex);
-            workerPrefetchUntil = startTimestamp + (30.0 * frameDuration);
+            workerPrefetchUntil = startTimestamp + (60.0 * frameDuration);
         }
 
-        for (int i = 0; i < 30; ++i) {
+        // A two-second horizon gives the decoder time to absorb packet-level
+        // Datamosh work before playback reaches a frame. The cache's byte
+        // budget remains authoritative, so high-resolution sources retain a
+        // smaller window instead of causing memory growth.
+        for (int i = 0; i < 60; ++i) {
             {
                 std::lock_guard<std::mutex> lock(workerMutex);
                 if (workerStop || !asyncDecodeEnabled || workerHasRequest || generation != workerGeneration) {

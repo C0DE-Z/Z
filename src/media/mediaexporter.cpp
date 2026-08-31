@@ -24,6 +24,9 @@
 #include <QUrl>
 #include <QElapsedTimer>
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
+#include <future>
 
 namespace {
 class ExportConfigDialog : public QDialog {
@@ -79,6 +82,11 @@ public:
         includeAudioCheck->setChecked(true);
         form->addRow("", includeAudioCheck);
 
+        preserveAlphaCheck = new QCheckBox("Preserve transparency (MOV ProRes 4444; slower)", this);
+        preserveAlphaCheck->setToolTip("Leave this off for ordinary opaque exports. MP4 output cannot preserve alpha.");
+        preserveAlphaCheck->setChecked(false);
+        form->addRow("", preserveAlphaCheck);
+
         mainLayout->addLayout(form);
         mainLayout->addStretch();
 
@@ -103,6 +111,7 @@ public:
         s.fps = fpsCombo->currentData().toDouble();
         s.crf = qualityCombo->currentData().toInt();
         s.includeAudio = includeAudioCheck->isChecked();
+        s.preserveAlpha = preserveAlphaCheck->isChecked();
 
         if (rangeCombo->currentData().toInt() == 1 && markIn >= 0.0 && markOut > markIn) {
             s.startTime = markIn;
@@ -122,6 +131,7 @@ private:
     QComboBox* qualityCombo = nullptr;
     QComboBox* rangeCombo = nullptr;
     QCheckBox* includeAudioCheck = nullptr;
+    QCheckBox* preserveAlphaCheck = nullptr;
 };
 }
 
@@ -210,7 +220,8 @@ void MediaExporter::exportVideo(
     if (exportH % 2 != 0) exportH--;
 
 #ifdef _WIN32
-    QString ffmpegPath = "ffmpeg.exe";
+    QString ffmpegPath = QDir(QCoreApplication::applicationDirPath()).filePath("ffmpeg.exe");
+    if (!QFileInfo(ffmpegPath).isFile()) ffmpegPath = "ffmpeg.exe";
 #else
     QString ffmpegPath = "ffmpeg";
 #endif
@@ -219,7 +230,7 @@ void MediaExporter::exportVideo(
     arguments << "-y"
               << "-f" << "rawvideo"
               << "-pix_fmt" << "rgba"
-              << "-s" << QString("%1x%2").arg(glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW).arg(glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH)
+              << "-s" << QString("%1x%2").arg(exportW).arg(exportH)
               << "-r" << QString::number(settings.fps)
               << "-i" << "pipe:0";
 
@@ -235,29 +246,30 @@ void MediaExporter::exportVideo(
         arguments << "-map" << "0:v:0";
     }
 
-    // Transparent footage must use an alpha-capable codec profile and pixel
-    // format. ProRes HQ does not support alpha, so FFmpeg silently converts a
-    // requested YUVA format to opaque YUV when paired with that profile.
-    // MP4 with H.264 cannot store alpha, so we either need to:
-    //   1. Force MOV for transparent footage, or
-    //   2. Use an alpha-capable codec like HEVC with yuva420p
-    // For now, detect if the video appears to have transparency and recommend MOV.
     const bool isMov = settings.outputPath.toLower().endsWith(".mov");
-    const bool videoLikelyTransparent = true; // TODO: detect actual transparency from first few frames
+    if (settings.preserveAlpha && !isMov) {
+        QMessageBox::information(parentWindow, "Transparency Export",
+            "MP4 does not support the alpha format used by Z. This export will be opaque. "
+            "Choose MOV and enable Preserve transparency when you need an alpha channel.");
+        settings.preserveAlpha = false;
+    }
 
-    if (isMov || videoLikelyTransparent) {
+    if (isMov && settings.preserveAlpha) {
         // ProRes 4444 preserves the source alpha plane in a MOV container.
         arguments << "-c:v" << "prores_ks"
                   << "-profile:v" << "4444"
                   << "-pix_fmt" << "yuva444p10le"
                   << "-alpha_bits" << "16"
+                  << "-threads" << "0"
                   << "-movflags" << "+faststart";
     } else {
-        // H.264 MP4 without alpha channel for opaque video.
+        // Opaque H.264 is much faster and smaller than ProRes 4444. FFmpeg
+        // uses all available encoder workers with the automatic thread count.
         arguments << "-c:v" << "libx264"
                   << "-preset" << "medium"
                   << "-crf" << QString::number(settings.crf)
                   << "-pix_fmt" << "yuv420p"
+                  << "-threads" << "0"
                   << "-movflags" << "+faststart";
     }
     arguments << settings.outputPath;
@@ -284,9 +296,56 @@ void MediaExporter::exportVideo(
     QElapsedTimer timer;
     timer.start();
 
-    int actualW = glWidget->width() > 0 ? (glWidget->width() / 2) * 2 : exportW;
-    int actualH = glWidget->height() > 0 ? (glWidget->height() / 2) * 2 : exportH;
+    const int actualW = exportW;
+    const int actualH = exportH;
     const int rowBytes = actualW * 4;
+
+    // The QOpenGLWidget has one context, so timeline rendering itself must
+    // remain ordered. Overlap the CPU image conversion/scale for frame N with
+    // GPU rendering of frame N + 1; the bounded one-frame queue prevents 4K
+    // renders from consuming unbounded RAM while FFmpeg encodes concurrently.
+    auto prepareFrame = [actualW, actualH](QImage image) {
+        if (image.width() != actualW || image.height() != actualH) {
+            image = image.convertToFormat(QImage::Format_RGBA8888_Premultiplied)
+                        .scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                        .convertToFormat(QImage::Format_RGBA8888);
+        } else if (image.format() != QImage::Format_RGBA8888) {
+            image = image.convertToFormat(QImage::Format_RGBA8888);
+        }
+        return image;
+    };
+
+    auto writeFrame = [&](const QImage& image) {
+        for (int y = 0; y < actualH; ++y) {
+            const char* row = reinterpret_cast<const char*>(image.constScanLine(y));
+            if (proc.write(row, rowBytes) < 0) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::future<QImage> pendingFrame;
+    int pendingFrameIndex = -1;
+    int encodedFrames = 0;
+    auto flushPendingFrame = [&]() -> bool {
+        if (!pendingFrame.valid()) return true;
+        const QImage image = pendingFrame.get();
+        if (image.isNull() || !writeFrame(image)) return false;
+        encodedFrames = pendingFrameIndex + 1;
+        if (encodedFrames % 3 == 0 || encodedFrames == totalFrames) {
+            const double elapsedSec = timer.elapsed() / 1000.0;
+            const double fpsRender = encodedFrames / std::max(0.001, elapsedSec);
+            const double remainingSec = (totalFrames - encodedFrames) / std::max(0.001, fpsRender);
+            progress.setLabelText(QString("Rendering and encoding frame %1 of %2 (%3 fps)\nETA: %4s remaining")
+                .arg(encodedFrames).arg(totalFrames)
+                .arg(fpsRender, 0, 'f', 1)
+                .arg(static_cast<int>(remainingSec)));
+            progress.setValue(encodedFrames);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        }
+        return true;
+    };
 
     for (int i = 0; i < totalFrames; ++i) {
         if (progress.wasCanceled()) {
@@ -317,39 +376,30 @@ void MediaExporter::exportVideo(
             return;
         }
 
-        if (img.width() != actualW || img.height() != actualH) {
-            // Scale premultiplied pixels so transparent RGB cannot bleed into
-            // partially covered edge pixels, then return to straight RGBA for
-            // the raw FFmpeg input.
-            img = img.convertToFormat(QImage::Format_RGBA8888_Premultiplied)
-                     .scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                     .convertToFormat(QImage::Format_RGBA8888);
+        // Submit this frame before waiting for the previous CPU preparation,
+        // allowing the preparation thread to run while OpenGL draws the next
+        // timeline frame.
+        if (!flushPendingFrame()) {
+            proc.kill();
+            proc.waitForFinished();
+            VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
+            AppLogging::setEnabled(logsWereEnabled);
+            if (wasPlaying) togglePlaybackCallback();
+            QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
+            return;
         }
+        pendingFrame = std::async(std::launch::async, prepareFrame, std::move(img));
+        pendingFrameIndex = i;
+    }
 
-        for (int y = 0; y < actualH; ++y) {
-            const char* row = reinterpret_cast<const char*>(img.constScanLine(y));
-            if (proc.write(row, rowBytes) < 0) {
-                proc.kill();
-                proc.waitForFinished();
-                VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-                AppLogging::setEnabled(logsWereEnabled);
-                if (wasPlaying) togglePlaybackCallback();
-                QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
-                return;
-            }
-        }
-
-        if (i % 3 == 0 || i + 1 == totalFrames) {
-            double elapsedSec = timer.elapsed() / 1000.0;
-            double fpsRender = (i + 1) / std::max(0.001, elapsedSec);
-            double remainingSec = (totalFrames - (i + 1)) / std::max(0.001, fpsRender);
-            progress.setLabelText(QString("Rendering frame %1 of %2 (%3 fps)\nETA: %4s remaining")
-                .arg(i + 1).arg(totalFrames)
-                .arg(fpsRender, 0, 'f', 1)
-                .arg(static_cast<int>(remainingSec)));
-            progress.setValue(i + 1);
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-        }
+    if (!flushPendingFrame()) {
+        proc.kill();
+        proc.waitForFinished();
+        VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
+        AppLogging::setEnabled(logsWereEnabled);
+        if (wasPlaying) togglePlaybackCallback();
+        QMessageBox::critical(parentWindow, "Export Error", "Failed sending final frame buffer to video encoder.");
+        return;
     }
 
     proc.closeWriteChannel();

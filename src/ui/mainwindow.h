@@ -26,6 +26,7 @@
 #include <QNetworkAccessManager>
 #include <QPointer>
 #include <thread>
+#include <set>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -61,6 +62,8 @@ private slots:
 private:
     QTimer* playbackTimer = nullptr;
     std::thread importThread;
+    std::thread datamoshProxyThread;
+    std::set<std::string> datamoshProxyInProgress;
     double currentPlayhead = 0.0;
     bool isPlaying = false;
     bool importInProgress = false;
@@ -143,6 +146,7 @@ private:
     void refreshInspectorForSelectedEffect();
     void syncEffectStackToRenderer();
     void applyEffectsToRenderer(double time, const TimelineTrack* activeTrack, const ProjectClip* activeClip);
+    void createDatamoshProxyAsync(const ProjectClip& clip);
     TimelineTrack* currentTrack();
     const TimelineTrack* currentTrack() const;
     ProjectClip* currentClip();

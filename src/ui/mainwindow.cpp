@@ -198,6 +198,9 @@ MainWindow::~MainWindow() {
     if (importThread.joinable()) {
         importThread.join();
     }
+    if (datamoshProxyThread.joinable()) {
+        datamoshProxyThread.join();
+    }
     AudioEngine::instance().shutdown();
 }
 
@@ -962,15 +965,12 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
         }
 
         const QString clipId = QFileInfo(filePath).baseName();
-        updateLoader("Creating H.264 P-frame datamosh proxy...");
-        const QString datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(
-            standardizedPath, makeProgressReporter("Creating H.264 P-frame datamosh proxy..."));
         updateLoader("Loading video and audio streams...");
         const bool loaded = VideoEngine::instance().loadVideo(
-            clipId.toStdString(), standardizedPath.toStdString(), datamoshProxyPath.toStdString());
+            clipId.toStdString(), standardizedPath.toStdString());
 
         if (!window) return;
-        QMetaObject::invokeMethod(window.data(), [window, loader, filePath, targetTrack, targetTime, wasPlaying, standardizedPath, datamoshProxyPath, clipId, loaded] {
+        QMetaObject::invokeMethod(window.data(), [window, loader, filePath, targetTrack, targetTime, wasPlaying, standardizedPath, clipId, loaded] {
             if (!window) return;
             window->importInProgress = false;
             if (loader) {
@@ -993,7 +993,6 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
             videoClip.mediaId = videoClip.id;
             videoClip.name = videoClip.id;
             videoClip.filePath = standardizedPath.toStdString();
-            videoClip.datamoshProxyPath = datamoshProxyPath.toStdString();
             videoClip.sourceStart = 0.0;
             videoClip.sourceDuration = VideoEngine::instance().getDuration(videoClip.mediaId);
             if (videoClip.sourceDuration <= 0.0) videoClip.sourceDuration = 30.0;
@@ -1091,16 +1090,11 @@ void MainWindow::openProject() {
                         if (!MediaImporter::isUsableVideoFile(QString::fromStdString(clip.filePath))) {
                             return false;
                         }
-                        QString datamoshProxyPath = QString::fromStdString(clip.datamoshProxyPath);
-                        if (datamoshProxyPath.isEmpty() || !QFileInfo::exists(datamoshProxyPath)) {
-                            // Projects saved before the proxy field existed
-                            // are upgraded lazily into the deterministic media
-                            // cache rather than silently falling back to a
-                            // decoded-pixel imitation of Datamosh.
-                            datamoshProxyPath = MediaImporter::transcodeToDatamoshProxy(
-                                QString::fromStdString(clip.filePath));
-                        }
-                        return VideoEngine::instance().loadVideo(mediaId, clip.filePath, datamoshProxyPath.toStdString());
+                        // Project opening remains fast. A missing Datamosh
+                        // proxy is generated later, only if the effect is
+                        // actually enabled for this media.
+                        return VideoEngine::instance().loadVideo(
+                            mediaId, clip.filePath, clip.datamoshProxyPath);
                     });
                     if (!loaded) {
                         failedMedia.append(QString::fromStdString(clip.filePath));
@@ -1616,7 +1610,6 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     };
     if (!activeClip) {
         glWidget->setActiveEffects({});
-        glWidget->update();
         return;
     }
 
@@ -1695,6 +1688,16 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     }
 
     VideoEngine::instance().setDatamoshing(mediaId, datamoshEnabled, iDrop >= 0.5 ? 1.0 : 0.0, pDup, pDupCount, pDrop);
+    if (datamoshEnabled && VideoEngine::instance().isAsyncDecodeEnabled()) {
+        // Begin a rolling look-ahead decode immediately, not just after Play
+        // is pressed. Packet manipulation is CPU-intensive; warming the
+        // bounded frame cache while the clip is paused prevents the first
+        // playback seconds from stalling.
+        VideoEngine::instance().requestFrameAsync(mediaId, clipTime);
+    }
+    if (datamoshEnabled && activeClip->datamoshProxyPath.empty()) {
+        createDatamoshProxyAsync(*activeClip);
+    }
     VideoEngine::instance().setOpticalSmear(mediaId, smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
     VideoEngine::instance().setCpuXor(mediaId, xorEnabled, xorValue, xorIntensity);
     VideoEngine::instance().setCpuOr(mediaId, orEnabled, orValue, orIntensity);
@@ -1702,7 +1705,82 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     VideoEngine::instance().setCpuXnor(mediaId, xnorEnabled, xnorValue, xnorIntensity);
     VideoEngine::instance().setCpuNand(mediaId, nandEnabled, nandValue, nandIntensity);
     glWidget->setActiveEffects(shaderEffects);
-    glWidget->update();
+}
+
+void MainWindow::createDatamoshProxyAsync(const ProjectClip& clip) {
+    const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
+    const QString sourcePath = QString::fromStdString(clip.filePath);
+    if (sourcePath.isEmpty() || datamoshProxyInProgress.contains(mediaId)) {
+        return;
+    }
+
+    // Keep a single encoder job running so a second proxy cannot steal CPU
+    // from the current one or make interactive editing unresponsive.
+    if (datamoshProxyThread.joinable()) {
+        return;
+    }
+
+    datamoshProxyInProgress.insert(mediaId);
+    auto* progressDialog = new QProgressDialog(
+        "Preparing H.264 P-frame Datamosh proxy...", QString(), 0, 100, this);
+    progressDialog->setWindowTitle("Preparing Datamosh");
+    progressDialog->setWindowModality(Qt::NonModal);
+    progressDialog->setCancelButton(nullptr);
+    progressDialog->setMinimumDuration(0);
+    progressDialog->setAutoClose(false);
+    progressDialog->setAutoReset(false);
+    progressDialog->setValue(0);
+    progressDialog->show();
+
+    const QPointer<MainWindow> window(this);
+    const QPointer<QProgressDialog> progress(progressDialog);
+    datamoshProxyThread = std::thread([window, progress, mediaId, sourcePath] {
+        const QString proxyPath = MediaImporter::transcodeToDatamoshProxy(sourcePath,
+            [window, progress](double value) {
+                if (!window) return;
+                const int percent = std::clamp(static_cast<int>(std::round(value * 100.0)), 0, 100);
+                QMetaObject::invokeMethod(window.data(), [window, progress, percent] {
+                    if (!window || !progress) return;
+                    progress->setLabelText(QString("Preparing H.264 P-frame Datamosh proxy... %1%").arg(percent));
+                    progress->setValue(percent);
+                }, Qt::QueuedConnection);
+            });
+
+        if (!window) return;
+        QMetaObject::invokeMethod(window.data(), [window, progress, mediaId, sourcePath, proxyPath] {
+            if (!window) return;
+            window->datamoshProxyInProgress.erase(mediaId);
+            if (progress) {
+                progress->hide();
+                progress->close();
+                progress->deleteLater();
+            }
+
+            if (proxyPath.isEmpty() || !VideoEngine::instance().loadVideo(
+                    mediaId, sourcePath.toStdString(), proxyPath.toStdString())) {
+                if (window->statusBar()) {
+                    window->statusBar()->showMessage("Datamosh proxy could not be created; original video is unchanged.", 6000);
+                }
+            } else {
+                for (auto& track : Project::instance().getTracks()) {
+                    for (auto& projectClip : track.clips) {
+                        const std::string projectMediaId = projectClip.mediaId.empty() ? projectClip.id : projectClip.mediaId;
+                        if (projectMediaId == mediaId) {
+                            projectClip.datamoshProxyPath = proxyPath.toStdString();
+                        }
+                    }
+                }
+                if (window->statusBar()) {
+                    window->statusBar()->showMessage("Datamosh proxy ready.", 4000);
+                }
+                window->onTimelineScrubbed(window->currentPlayhead);
+            }
+
+            if (window->datamoshProxyThread.joinable()) {
+                window->datamoshProxyThread.join();
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::onClipSelected(const QString& clipId) {
