@@ -664,7 +664,9 @@ std::vector<DetectionBox> Detector::detectYolo(const DecodedVideoFrame& frame) {
             scores.push_back(score); classIds.push_back(bestClass);
         }
         std::vector<int> kept;
-        cv::dnn::NMSBoxesBatched(rects, scores, classIds, m_yoloConfidence, m_yoloNmsThreshold, kept);
+        // NMSBoxes is present in older Ubuntu-packaged OpenCV DNN headers;
+        // NMSBoxesBatched is not. Class IDs still accompany every candidate.
+        cv::dnn::NMSBoxes(rects, scores, m_yoloConfidence, m_yoloNmsThreshold, kept);
         std::vector<DetectionBox> results;
         for (int i : kept) {
             const cv::Rect r = rects[i] & cv::Rect(0, 0, frame.width, frame.height);
