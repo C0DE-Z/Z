@@ -35,9 +35,7 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
     {
         std::lock_guard<std::mutex> engineLock(engineMutex);
         const auto decoder = decoderForClipLocked(clipId, true);
-        // Do not spend a CPU core decoding normal footage twice. The worker is
-        // reserved for effect output which is safe to reuse, chiefly the
-        // packet-level Datamosh path.
+
         if (!decoder || !decoder->canUseAsyncFrameCache()) {
             return;
         }
@@ -47,8 +45,6 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
         workerThread = std::thread(&VideoEngine::workerLoop, this);
     }
 
-    // Let the worker finish its contiguous decode window. Replacing its request
-    // every UI tick was forcing repeated seeks and collapsing playback FPS.
     if (workerClipId == clipId && timestamp <= workerPrefetchUntil) {
         return;
     }
@@ -175,9 +171,7 @@ bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedV
             return false;
         }
     }
-    // Packet Datamosh is deterministic for a proxy/settings combination, so
-    // paused preview and export-adjacent scrubbing can reuse frames prepared
-    // by the async worker. Stateful temporal CPU effects remain uncached.
+
     if (decoder->canUseAsyncFrameCache() && getFromCache(clipId, timestamp, outFrame)) {
         return true;
     }
@@ -226,13 +220,16 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
     };
     const auto oldSettings = datamoshSettings.find(clipId);
     const bool settingsChanged = oldSettings == datamoshSettings.end() || oldSettings->second != newSettings;
+    if (!settingsChanged) {
+
+        return;
+    }
     datamoshSettings[clipId] = newSettings;
     datamoshActive[clipId] = isActive;
     if (effectIsEffective && !proxyAvailable && settingsChanged) {
         qWarning() << "Datamosh packet source is unavailable for" << QString::fromStdString(clipId);
     }
     if (auto it = decoders.find(clipId); it != decoders.end()) {
-        // The normal decoder must never use the old decoded-pixel fallback.
         it->second->setDatamoshing(false, 0.0, 0.0, 1, 0.0);
     }
     if (auto it = asyncDecoders.find(clipId); it != asyncDecoders.end()) {
@@ -244,13 +241,11 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
     if (auto it = asyncDatamoshDecoders.find(clipId); it != asyncDatamoshDecoders.end()) {
         it->second->setDatamoshing(isActive, iDropProb, pDupProb, duplicateCount, pDropProb);
     }
-    if (settingsChanged) {
-        invalidateCacheForClip(clipId);
-        std::lock_guard<std::mutex> workerLock(workerMutex);
-        ++workerGeneration;
-        workerHasRequest = false;
-        workerPrefetchUntil = -1.0;
-    }
+    invalidateCacheForClip(clipId);
+    std::lock_guard<std::mutex> workerLock(workerMutex);
+    ++workerGeneration;
+    workerHasRequest = false;
+    workerPrefetchUntil = -1.0;
 }
 
 void VideoEngine::setOpticalSmear(const std::string& clipId, bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias) {

@@ -33,9 +33,9 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     overlayLabel = new QLabel(this);
     overlayLabel->setStyleSheet(
         "QLabel {"
-        "  color: #f59ef8;"
-        "  background-color: rgba(14, 10, 18, 200);"
-        "  border: 1px solid #4a1d5e;"
+        "  color: #FFB8D2;"
+        "  background-color: rgba(8, 8, 10, 220);"
+        "  border: 1px solid #80324F;"
         "  font-family: 'JetBrains Mono', Consolas, monospace;"
         "  font-size: 11px;"
         "  font-weight: bold;"

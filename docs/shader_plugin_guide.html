@@ -13,8 +13,15 @@
 
     <aside>
         <div class="sidebar-header">
-            <div class="sidebar-title">Z VIDEO EDITOR</div>
+            <a class="sidebar-title" href="../index.html">Z VIDEO EDITOR</a>
             <div class="sidebar-subtitle">Plugin Developer Manual</div>
+        </div>
+
+        <div class="nav-group">
+            <div class="nav-group-title">Getting Started</div>
+            <ul class="nav-items">
+                <li><a href="#quick-start">Create &amp; reload a plugin</a></li>
+            </ul>
         </div>
 
         <div class="nav-group">
@@ -48,8 +55,20 @@
     <main>
         <div class="header-box">
             <h1>Shader Plugin Developer Guide</h1>
-            <p>Z Video Editor uses a hardware-accelerated OpenGL 3.3 Core GPU engine. Developers can create custom video effects, transitions, color grades, and audio-reactive shaders by dropping annotated <code>.frag</code> GLSL files into the <code>plugins/</code> folder.</p>
+            <p>Z uses a hardware-accelerated OpenGL 3.3 Core rendering engine. Create effects, transitions, color grades, and audio-reactive shaders by adding annotated <code>.frag</code> files under <code>plugins/</code>.</p>
         </div>
+
+        <section id="quick-start" class="section-card">
+            <h2>Create and reload a plugin</h2>
+            <ol>
+                <li>Create a <code>.frag</code> file in any subfolder of <code>plugins/</code>.</li>
+                <li>Add an <code>@name</code> annotation and the uniforms your shader needs.</li>
+                <li>In Z, choose <strong>Effects → Reload Plugins</strong>, then add or re-select the effect.</li>
+            </ol>
+            <div class="info-callout">
+                <p><strong>Reload is manual.</strong> Z scans plugins on launch and when you choose <strong>Effects → Reload Plugins</strong>; it does not watch files for changes automatically.</p>
+            </div>
+        </section>
 
         <!-- Section 1: Overview -->
         <section id="overview" class="section-card">
@@ -57,7 +76,7 @@
             <p>When Z Video Editor launches, the C++ <code>PluginManager</code> scans the <code>plugins/</code> folder and all its subdirectories. It parses top-of-file comment annotations to build GUI controls (sliders, checkboxes, keyframe tracks) and dynamically compiles GLSL shaders on the GPU.</p>
 
             <div class="info-callout">
-                <p><strong>Zero Compilation Overhead:</strong> You do not need to rebuild Z Video Editor C++ source code when adding or editing plugins! Simply edit a <code>.frag</code> file in a text editor and reload or re-select the effect in the timeline.</p>
+                <p><strong>No application rebuild is required.</strong> Edit a <code>.frag</code> file, choose <strong>Effects → Reload Plugins</strong>, then add or re-select the effect.</p>
             </div>
         </section>
 

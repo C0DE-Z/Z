@@ -6,7 +6,6 @@
 #include <QMenuBar>
 #include <QActionGroup>
 #include <QInputDialog>
-#include <QFileDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QTreeWidgetItemIterator>
@@ -105,57 +104,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setAttribute(Qt::WA_TranslucentBackground, false);
     setAttribute(Qt::WA_NoSystemBackground, false);
     setWindowTitle("Z");
-    setStyleSheet(R"(
-        * {
-            font-family: 'Segoe UI', 'JetBrains Mono', 'Consolas', monospace;
-            font-size: 11px;
-            color: #b0b0c0;
-        }
-        QMainWindow {
-            background: #0b0b0e;
-        }
-        QDockWidget {
-            background: #0b0b0e;
-            border: none;
-        }
-        QWidget#mediaContainer, QWidget#effectsContainer, QWidget#activeContainer, QWidget#tracksContainer {
-            background-color: #141418;
-            border: 1px solid #23232b;
-            border-radius: 4px;
-        }
-        QWidget#controlContainer {
-            background-color: #141418;
-            border: 1px solid #23232b;
-            border-radius: 4px;
-            padding: 4px;
-        }
-        QListWidget {
-            background: transparent;
-            border: none;
-        }
-        QListWidget::item {
-            padding: 5px;
-            border-bottom: 1px solid #1a1a20;
-            color: #b0b0c0;
-        }
-        QListWidget::item:selected {
-            background: #2b1230;
-            color: #e855f4;
-            font-weight: bold;
-        }
-        QPushButton {
-            background: #1c1c24;
-            border: 1px solid #2e2e3a;
-            color: #e2e2ea;
-            padding: 4px 8px;
-            border-radius: 3px;
-        }
-        QPushButton:hover {
-            background: #2b1230;
-            border-color: #df42f5;
-            color: #e855f4;
-        }
-    )");
 
     AudioEngine::instance().init();
     QString pluginsPath = QCoreApplication::applicationDirPath() + "/plugins";
@@ -168,7 +116,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QWidget* centerWidget = new QWidget(this);
     centerWidget->setAttribute(Qt::WA_TranslucentBackground, false);
     centerWidget->setAttribute(Qt::WA_NoSystemBackground, false);
-    centerWidget->setStyleSheet("background: #0b0b0e;");
     QVBoxLayout* centerLayout = new QVBoxLayout(centerWidget);
     centerLayout->setContentsMargins(0, 0, 0, 0);
     centerLayout->setSpacing(0);
@@ -228,14 +175,14 @@ void MainWindow::createTransportToolbar() {
     QWidget* transportWidget = new QWidget(this);
     transportWidget->setObjectName("transportBar");
     transportWidget->setFixedHeight(38);
-    transportWidget->setStyleSheet("QWidget#transportBar { background: #0f0d14; border-top: 1px solid #231a2c; border-bottom: 1px solid #231a2c; }");
+    transportWidget->setStyleSheet("QWidget#transportBar { background: #111116; border-top: 1px solid #303036; border-bottom: 1px solid #303036; }");
 
     QHBoxLayout* layout = new QHBoxLayout(transportWidget);
     layout->setContentsMargins(8, 3, 8, 3);
     layout->setSpacing(5);
 
     timecodeLabel = new QLabel("00:00:00.00", transportWidget);
-    timecodeLabel->setStyleSheet("font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: bold; color: #f59ef8; background: #08080c; padding: 3px 8px; border: 1px solid #3b1d4c; border-radius: 3px; min-width: 95px;");
+    timecodeLabel->setStyleSheet("font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: bold; color: #FF72AA; background: #08080A; padding: 3px 8px; border: 1px solid #4E4E58; border-radius: 3px; min-width: 95px;");
     timecodeLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(timecodeLabel);
 
@@ -247,7 +194,7 @@ void MainWindow::createTransportToolbar() {
         btn->setIconSize(QSize(16, 16));
         btn->setToolTip(tooltip);
         btn->setFixedSize(width, 26);
-        btn->setStyleSheet("QPushButton { background: #181520; border: 1px solid #291e34; border-radius: 3px; } QPushButton:hover { background: #2b1c3a; border-color: #c026d3; } QPushButton:pressed { background: #c026d3; }");
+        btn->setStyleSheet("QPushButton { background: #19191F; border: 1px solid #4E4E58; border-radius: 3px; } QPushButton:hover { background: #24242C; border-color: #FF4F91; } QPushButton:pressed { background: #FF4F91; }");
         return btn;
     };
 
@@ -269,7 +216,7 @@ void MainWindow::createTransportToolbar() {
     playPauseBtn->setIconSize(QSize(18, 18));
     playPauseBtn->setToolTip("Play / Pause (Space)");
     playPauseBtn->setFixedSize(44, 26);
-    playPauseBtn->setStyleSheet("QPushButton { background: #3c144c; border: 1px solid #d946ef; border-radius: 3px; } QPushButton:hover { background: #551c6b; }");
+    playPauseBtn->setStyleSheet("QPushButton { background: #FF4F91; border: 1px solid #FF72AA; border-radius: 3px; } QPushButton:hover { background: #FF72AA; }");
     connect(playPauseBtn, &QPushButton::clicked, this, &MainWindow::togglePlayback);
     layout->addWidget(playPauseBtn);
 
@@ -2013,6 +1960,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     activeFilePath = QString::fromStdString(activeClip->filePath);
     const std::string mediaId = activeClip->mediaId.empty() ? activeClip->id : activeClip->mediaId;
     const double clipTime = std::clamp(time - activeClip->timelineStart, 0.0, activeClip->sourceDuration);
+    const double sourceTime = activeClip->sourceStart + clipTime;
     glWidget->setPlaybackTime(clipTime);
 
     bool datamoshEnabled = false;
@@ -2090,7 +2038,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
         // is pressed. Packet manipulation is CPU-intensive; warming the
         // bounded frame cache while the clip is paused prevents the first
         // playback seconds from stalling.
-        VideoEngine::instance().requestFrameAsync(mediaId, clipTime);
+        VideoEngine::instance().requestFrameAsync(mediaId, sourceTime);
     }
     if (datamoshEnabled && !VideoEngine::instance().hasDatamoshPacketSource(mediaId)) {
         createDatamoshProxyAsync(*activeClip);

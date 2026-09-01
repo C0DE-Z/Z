@@ -29,7 +29,6 @@ void MainWindow::createDocks() {
     QTabWidget* sidebarTabs = new QTabWidget(sidebarWidget);
     sidebarTabs->setTabPosition(QTabWidget::North);
 
-    // Tab 1: Project (Media + Tracks)
     QWidget* projectTab = new QWidget(sidebarTabs);
     QVBoxLayout* projectLayout = new QVBoxLayout(projectTab);
     projectLayout->setContentsMargins(4, 4, 4, 4);
@@ -65,31 +64,28 @@ void MainWindow::createDocks() {
 
     sidebarTabs->addTab(projectTab, "Project");
 
-    // Tab 2: Effects Library
     effectsBrowser = new EffectsBrowser(sidebarTabs);
     connect(effectsBrowser, &EffectsBrowser::effectDoubleClicked, this, &MainWindow::onEffectSelected);
     sidebarTabs->addTab(effectsBrowser, "Effects");
 
-    // Tab 3: Active Effects Stack
     QWidget* activeContainer = new QWidget(sidebarTabs);
     activeContainer->setObjectName("activeContainer");
     QVBoxLayout* activeLayout = new QVBoxLayout(activeContainer);
     activeLayout->setContentsMargins(8, 8, 8, 8);
     QLabel* activeTitle = new QLabel("ACTIVE EFFECTS", activeContainer);
-    activeTitle->setStyleSheet("font-weight: bold; color: #c4b5fd; font-size: 11px; letter-spacing: 0.5px;");
+    activeTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
     activeLayout->addWidget(activeTitle);
     activeEffectsList = new QListWidget(activeContainer);
     connect(activeEffectsList, &QListWidget::itemDoubleClicked, this, &MainWindow::onActiveEffectSelected);
     activeLayout->addWidget(activeEffectsList, 1);
 
     QPushButton* removeEffectButton = new QPushButton("Remove Selected Effect", activeContainer);
-    removeEffectButton->setStyleSheet("QPushButton { background: #251020; color: #f59ef8; border: 1px solid #551d45; padding: 6px; font-size: 11px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #45153c; color: white; border-color: #d946ef; }");
+    removeEffectButton->setStyleSheet("QPushButton { background: #32101F; color: #FFB8D2; border: 1px solid #80324F; padding: 6px; font-size: 11px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #5C1E38; color: white; border-color: #FF4F91; }");
     connect(removeEffectButton, &QPushButton::clicked, this, &MainWindow::removeSelectedEffect);
     activeLayout->addWidget(removeEffectButton);
 
     sidebarTabs->addTab(activeContainer, "Active FX");
 
-    // Tab 4: Detect / Mask
     auto* detectScroll = new QScrollArea(sidebarTabs);
     detectScroll->setWidgetResizable(true);
     detectScroll->setFrameShape(QFrame::NoFrame);
@@ -100,7 +96,7 @@ void MainWindow::createDocks() {
 
     const auto addSection = [detectTab, detectLayout](const QString& title) {
         auto* section = new QLabel(title, detectTab);
-        section->setStyleSheet("font-weight: bold; color: #f0abfc; font-size: 10px; letter-spacing: 0.6px; padding-top: 6px;");
+        section->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 10px; letter-spacing: 0.6px; padding-top: 6px;");
         detectLayout->addWidget(section);
     };
     const auto addSlider = [detectTab, detectLayout](const QString& title, int minimum, int maximum,
@@ -108,7 +104,7 @@ void MainWindow::createDocks() {
         auto* row = new QHBoxLayout();
         row->setContentsMargins(0, 0, 0, 0);
         auto* label = new QLabel(title, detectTab);
-        label->setStyleSheet("color: #9a9aaf; font-size: 10px;");
+        label->setStyleSheet("color: #C3BEC3; font-size: 10px;");
         row->addWidget(label);
         auto* slider = new QSlider(Qt::Horizontal, detectTab);
         slider->setRange(minimum, maximum);
@@ -117,7 +113,7 @@ void MainWindow::createDocks() {
         auto* valueLabel = new QLabel(QString::number(initial) + suffix, detectTab);
         valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         valueLabel->setMinimumWidth(34);
-        valueLabel->setStyleSheet("color: #d8b4fe; font-family: 'JetBrains Mono', monospace; font-size: 10px;");
+        valueLabel->setStyleSheet("color: #FFB8D2; font-family: 'JetBrains Mono', monospace; font-size: 10px;");
         row->addWidget(valueLabel);
         connect(slider, &QSlider::valueChanged, detectTab, [valueLabel, suffix](int value) {
             valueLabel->setText(QString::number(value) + suffix);
@@ -129,19 +125,19 @@ void MainWindow::createDocks() {
         auto* row = new QHBoxLayout();
         row->setContentsMargins(0, 0, 0, 0);
         auto* label = new QLabel(title, detectTab);
-        label->setStyleSheet("color: #9a9aaf; font-size: 10px;");
+        label->setStyleSheet("color: #C3BEC3; font-size: 10px;");
         row->addWidget(label);
         row->addWidget(combo, 1);
         detectLayout->addLayout(row);
     };
 
     QLabel* detectTitle = new QLabel("DETECT & MASK", detectTab);
-    detectTitle->setStyleSheet("font-weight: bold; color: #c4b5fd; font-size: 11px; letter-spacing: 0.5px;");
+    detectTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
     detectLayout->addWidget(detectTitle);
 
     QLabel* detectHint = new QLabel("Recommended: the official YOLOv5x6 COCO model (about 282 MB), verified in Z at 640 px with its OpenCV backend. It recognizes 80 COCO classes; choose the classes and reviewed tracks that remain active. All model work, clip scanning, and mask building run outside the UI thread.", detectTab);
     detectHint->setWordWrap(true);
-    detectHint->setStyleSheet("color: #6e6e80; font-size: 10px;");
+    detectHint->setStyleSheet("color: #918B92; font-size: 10px;");
     detectLayout->addWidget(detectHint);
 
     QHBoxLayout* modelLayout = new QHBoxLayout();
@@ -193,25 +189,25 @@ void MainWindow::createDocks() {
 
     detectionStatusLabel = new QLabel("Motion region fallback", detectTab);
     detectionStatusLabel->setWordWrap(true);
-    detectionStatusLabel->setStyleSheet("color: #8a8a9d; font-size: 10px;");
+    detectionStatusLabel->setStyleSheet("color: #918B92; font-size: 10px;");
     detectLayout->addWidget(detectionStatusLabel);
 
     QPushButton* runDetectBtn = new QPushButton("Detect Current Frame", detectTab);
-    runDetectBtn->setStyleSheet("QPushButton { background: #251020; color: #f59ef8; border: 1px solid #551d45; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #45153c; }");
+    runDetectBtn->setStyleSheet("QPushButton { background: #32101F; color: #FFB8D2; border: 1px solid #80324F; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #5C1E38; border-color: #FF4F91; }");
     connect(runDetectBtn, &QPushButton::clicked, this, &MainWindow::runDetectionOnCurrentFrame);
     detectLayout->addWidget(runDetectBtn);
 
     addSection("COCO CLASS FILTER");
     QLabel* classHint = new QLabel("Search and uncheck any classes you do not want. This re-filters completed results immediately; it does not rerun the model.", detectTab);
     classHint->setWordWrap(true);
-    classHint->setStyleSheet("color: #6e6e80; font-size: 10px;");
+    classHint->setStyleSheet("color: #918B92; font-size: 10px;");
     detectLayout->addWidget(classHint);
     detectionClassFilterEdit = new QLineEdit(detectTab);
     detectionClassFilterEdit->setPlaceholderText("Filter classes…");
     detectLayout->addWidget(detectionClassFilterEdit);
     detectionClassList = new QListWidget(detectTab);
     detectionClassList->setMaximumHeight(200);
-    detectionClassList->setStyleSheet("QListWidget { background: #121218; border: 1px solid #2a2a36; } QListWidget::item { padding: 2px 4px; }");
+    detectionClassList->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; } QListWidget::item { padding: 2px 4px; }");
     for (const auto& className : Detector::cocoClassLabels()) {
         auto* item = new QListWidgetItem(QString::fromStdString(className), detectionClassList);
         item->setData(Qt::UserRole, QString::fromStdString(className));
@@ -255,11 +251,11 @@ void MainWindow::createDocks() {
     addSection("WHOLE-CLIP REVIEW");
     QLabel* scanHint = new QLabel("Pre-detect a clip on the background worker, then uncheck a stable track below to remove it from the preview and effect mask.", detectTab);
     scanHint->setWordWrap(true);
-    scanHint->setStyleSheet("color: #6e6e80; font-size: 10px;");
+    scanHint->setStyleSheet("color: #918B92; font-size: 10px;");
     detectLayout->addWidget(scanHint);
     detectionScanIntervalSlider = addSlider("Scan sample interval", 250, 10000, 1000, " ms");
     detectEntireClipButton = new QPushButton("Detect Entire Active Clip", detectTab);
-    detectEntireClipButton->setStyleSheet("QPushButton { background: #251020; color: #f59ef8; border: 1px solid #551d45; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #45153c; }");
+    detectEntireClipButton->setStyleSheet("QPushButton { background: #32101F; color: #FFB8D2; border: 1px solid #80324F; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #5C1E38; border-color: #FF4F91; }");
     connect(detectEntireClipButton, &QPushButton::clicked, this, &MainWindow::detectEntireActiveClip);
     detectLayout->addWidget(detectEntireClipButton);
     cancelDetectionScanButton = new QPushButton("Cancel Whole-Clip Detection", detectTab);
@@ -269,7 +265,7 @@ void MainWindow::createDocks() {
 
     addSection("TRACKING");
     liveDetectCheck = new QCheckBox("Live detection during playback", detectTab);
-    liveDetectCheck->setStyleSheet("color: #b0b0c0;");
+    liveDetectCheck->setStyleSheet("color: #C3BEC3;");
     connect(liveDetectCheck, &QCheckBox::toggled, this, [this](bool on) {
         liveDetectEnabled = on;
         liveDetectionTimer.restart();
@@ -280,7 +276,7 @@ void MainWindow::createDocks() {
     liveDetectionIntervalSlider = addSlider("Detection interval", 250, 2000, 750, " ms");
 
     QLabel* fallbackHint = new QLabel("Fallback motion-region controls", detectTab);
-    fallbackHint->setStyleSheet("color: #6e6e80; font-size: 10px; padding-top: 3px;");
+    fallbackHint->setStyleSheet("color: #918B92; font-size: 10px; padding-top: 3px;");
     detectLayout->addWidget(fallbackHint);
     detectSensitivitySlider = addSlider("Sensitivity", 5, 95, 45, "%");
     connect(detectSensitivitySlider, &QSlider::valueChanged, this, &MainWindow::onDetectionSettingsChanged);
@@ -290,7 +286,7 @@ void MainWindow::createDocks() {
     addSection("OVERLAY & TRACERS");
     showBoxesCheck = new QCheckBox("Show detection overlay", detectTab);
     showBoxesCheck->setChecked(true);
-    showBoxesCheck->setStyleSheet("color: #b0b0c0;");
+    showBoxesCheck->setStyleSheet("color: #C3BEC3;");
     connect(showBoxesCheck, &QCheckBox::toggled, this, [this](bool) {
         applyDetectionOverlayOptions();
     });
@@ -370,7 +366,7 @@ void MainWindow::createDocks() {
     });
 
     applyMaskCheck = new QCheckBox("Mask all active effects", detectTab);
-    applyMaskCheck->setStyleSheet("color: #b0b0c0;");
+    applyMaskCheck->setStyleSheet("color: #C3BEC3;");
     connect(applyMaskCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (on && currentDetections.empty()) runDetectionOnCurrentFrame();
         refreshDetectionMask();
@@ -389,7 +385,7 @@ void MainWindow::createDocks() {
 
     addSection("CURRENT OBJECTS & TRACK REVIEW");
     detectionList = new QListWidget(detectTab);
-    detectionList->setStyleSheet("QListWidget { background: #121218; border: 1px solid #2a2a36; }");
+    detectionList->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; }");
     connect(detectionList, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
         if (!item || detectionSourceClipId.isEmpty()) return;
         bool validTrack = false;
@@ -447,7 +443,7 @@ void MainWindow::createDocks() {
     QVBoxLayout* controlLayout = new QVBoxLayout(controlContainer);
     controlLayout->setContentsMargins(8, 8, 8, 8);
     QLabel* controlTitle = new QLabel("INSPECTOR", controlContainer);
-    controlTitle->setStyleSheet("font-weight: bold; color: #c4b5fd; font-size: 11px; letter-spacing: 0.5px;");
+    controlTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
     controlLayout->addWidget(controlTitle);
 
     inspectorPanel = new Inspector(controlContainer);

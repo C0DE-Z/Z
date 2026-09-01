@@ -18,7 +18,7 @@ EffectsBrowser::EffectsBrowser(QWidget* parent) : QWidget(parent) {
     headerLayout->setContentsMargins(0, 0, 0, 0);
 
     QLabel* title = new QLabel("EFFECTS LIBRARY", this);
-    title->setStyleSheet("font-weight: bold; color: #c4b5fd; letter-spacing: 0.8px; font-size: 10px;");
+    title->setStyleSheet("font-weight: bold; color: #FF72AA; letter-spacing: 0.8px; font-size: 10px;");
     headerLayout->addWidget(title, 1);
 
     layout->addLayout(headerLayout);
@@ -26,7 +26,7 @@ EffectsBrowser::EffectsBrowser(QWidget* parent) : QWidget(parent) {
     searchBar = new QLineEdit(this);
     searchBar->setPlaceholderText("Search effects & transitions...");
     searchBar->setClearButtonEnabled(true);
-    searchBar->setStyleSheet("QLineEdit { background: #0c0b10; color: #ececf4; border: 1px solid #281d33; padding: 4px 8px; border-radius: 4px; } QLineEdit:focus { border-color: #d946ef; background: #130f1a; }");
+    searchBar->setStyleSheet("QLineEdit { background: #08080A; color: #F7F4F6; border: 1px solid #4E4E58; padding: 4px 8px; border-radius: 4px; } QLineEdit:focus { border-color: #FF4F91; background: #111116; }");
     layout->addWidget(searchBar);
 
     effectsTree = new QTreeWidget(this);
@@ -100,8 +100,7 @@ void EffectsBrowser::populateEffects() {
     const auto& plugins = PluginManager::instance().getPlugins();
     std::vector<const ShaderPlugin*> transitionPlugins;
     for (const auto& plugin : plugins) {
-        // Masks are editor-owned CPU/renderer functionality, not effects a
-        // user can add to a stack. Ignore the legacy plugin if it is present.
+        // Object masks are renderer-owned editor functionality, not stack effects.
         if (plugin.id == "object_mask") {
             continue;
         }

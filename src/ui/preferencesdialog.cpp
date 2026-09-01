@@ -21,7 +21,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
     tabWidget = new QTabWidget(this);
 
-    // Tab 1: General
     QWidget* generalTab = new QWidget(tabWidget);
     QFormLayout* generalLayout = new QFormLayout(generalTab);
     generalLayout->setContentsMargins(12, 12, 12, 12);
@@ -36,7 +35,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
     generalLayout->addRow("", promptExitCheck);
     tabWidget->addTab(generalTab, "General");
 
-    // Tab 2: Playback & Engine
     QWidget* playbackTab = new QWidget(tabWidget);
     QFormLayout* playbackLayout = new QFormLayout(playbackTab);
     playbackLayout->setContentsMargins(12, 12, 12, 12);
@@ -59,7 +57,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
     tabWidget->addTab(playbackTab, "Playback & Audio");
 
-    // Tab 3: Timeline & Editing
     QWidget* timelineTab = new QWidget(tabWidget);
     QFormLayout* timelineLayout = new QFormLayout(timelineTab);
     timelineLayout->setContentsMargins(12, 12, 12, 12);
@@ -78,7 +75,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
     tabWidget->addTab(timelineTab, "Timeline & Snapping");
 
-    // Tab 4: Export Defaults
     QWidget* exportTab = new QWidget(tabWidget);
     QFormLayout* exportLayout = new QFormLayout(exportTab);
     exportLayout->setContentsMargins(12, 12, 12, 12);
@@ -99,7 +95,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
     tabWidget->addTab(exportTab, "Export");
 
-    // Tab 5: Keyboard Shortcuts
     QWidget* shortcutsTab = new QWidget(tabWidget);
     QVBoxLayout* shortcutsLayout = new QVBoxLayout(shortcutsTab);
     shortcutsLayout->setContentsMargins(8, 8, 8, 8);
@@ -117,7 +112,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
     shortcutsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     shortcutsTable->verticalHeader()->setVisible(false);
     shortcutsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    shortcutsTable->setStyleSheet("QTableWidget { background: #0c0b10; border: 1px solid #231b2c; gridline-color: #1a1424; } QTableWidget::item { padding: 4px; } QTableWidget::item:selected { background: #3b1548; color: #f59ef8; } QHeaderView::section { background: #14121a; color: #c4b5fd; border: 1px solid #231b2c; font-weight: bold; padding: 4px; }");
+    shortcutsTable->setStyleSheet("QTableWidget { background: #08080A; border: 1px solid #303036; gridline-color: #303036; } QTableWidget::item { padding: 4px; } QTableWidget::item:selected { background: #3D1226; color: #FFB8D2; } QHeaderView::section { background: #19191F; color: #FF72AA; border: 1px solid #303036; font-weight: bold; padding: 4px; }");
     shortcutsLayout->addWidget(shortcutsTable, 1);
 
     QPushButton* resetShortcutsBtn = new QPushButton("Reset All Shortcuts to Defaults", shortcutsTab);
@@ -165,7 +160,7 @@ void PreferencesDialog::populateShortcutsTable() {
         shortcutsTable->setItem(row, 1, catItem);
 
         QKeySequenceEdit* keyEdit = new QKeySequenceEdit(QKeySequence(def.currentKey), shortcutsTable);
-        keyEdit->setStyleSheet("QKeySequenceEdit { background: #14121c; color: #f59ef8; border: 1px solid #362248; border-radius: 3px; padding: 2px 6px; font-weight: bold; } QKeySequenceEdit:focus { border-color: #d946ef; }");
+        keyEdit->setStyleSheet("QKeySequenceEdit { background: #19191F; color: #FFB8D2; border: 1px solid #4E4E58; border-radius: 3px; padding: 2px 6px; font-weight: bold; } QKeySequenceEdit:focus { border-color: #FF4F91; }");
         shortcutsTable->setCellWidget(row, 2, keyEdit);
     }
 }

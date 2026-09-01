@@ -95,7 +95,6 @@ private:
     QListWidget* activeEffectsList = nullptr;
     QTabWidget* bottomTabs = nullptr;
 
-    // Detect / Mask UI
     QListWidget* detectionList = nullptr;
     QSlider* detectSensitivitySlider = nullptr;
     QSlider* detectMinAreaSlider = nullptr;
@@ -183,13 +182,11 @@ private:
     qsizetype modelDownloadBytes = 0;
     bool modelDownloadInProgress = false;
 
-    // Transport Bar UI Elements
     QLabel* timecodeLabel = nullptr;
     QPushButton* playPauseBtn = nullptr;
     QPushButton* loopBtn = nullptr;
     QLabel* projectInfoStatusLabel = nullptr;
 
-    // Actions for Dynamic Shortcut Binding
     QAction* importAct = nullptr;
     QAction* openAct = nullptr;
     QAction* saveAct = nullptr;

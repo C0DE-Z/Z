@@ -194,17 +194,17 @@ void Timeline::paintEvent(QPaintEvent* event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    painter.fillRect(rect(), QColor(10, 10, 14));
+    painter.fillRect(rect(), QColor("#08080A"));
 
-    painter.fillRect(0, 0, 80, height(), QColor(14, 13, 18));
-    painter.setPen(QColor(34, 28, 44));
+    painter.fillRect(0, 0, 80, height(), QColor("#111116"));
+    painter.setPen(QColor("#303036"));
     painter.drawLine(80, 0, 80, height());
 
     for (int i = 0; i < numTracks; ++i) {
         int y = 25 + i * trackHeight;
-        painter.setPen(QColor(26, 22, 34));
+        painter.setPen(QColor("#303036"));
         painter.drawLine(0, y + trackHeight, width(), y + trackHeight);
-        painter.setPen(QColor(180, 170, 195));
+        painter.setPen(QColor("#C3BEC3"));
         QString title = (i < static_cast<int>(tracks.size()))
             ? QString::fromStdString(tracks[i].name)
             : QString("Track %1").arg(i + 1);
@@ -216,11 +216,11 @@ void Timeline::paintEvent(QPaintEvent* event) {
         painter.drawText(10, y + 20, uppercaseTitle);
     }
 
-    painter.fillRect(80, 0, width() - 80, 25, QColor(18, 15, 24));
-    painter.setPen(QColor(34, 28, 44));
+    painter.fillRect(80, 0, width() - 80, 25, QColor("#111116"));
+    painter.setPen(QColor("#303036"));
     painter.drawLine(80, 25, width(), 25);
 
-    painter.setPen(QColor(130, 120, 145));
+    painter.setPen(QColor("#918B92"));
     painter.setFont(QFont("JetBrains Mono", 8));
     double minTickSpacingPx = 80.0;
     double minTickSecs = minTickSpacingPx / pixelsPerSecond;
@@ -257,17 +257,17 @@ void Timeline::paintEvent(QPaintEvent* event) {
             int endX = timeToX(trans.cutTime + trans.duration / 2.0);
 
             QRect spanRect(startX, 19, std::max(2, endX - startX), 5);
-            painter.fillRect(spanRect, QColor(168, 85, 247, 220));
+            painter.fillRect(spanRect, QColor(255, 79, 145, 220));
 
             QPolygon marker;
             marker << QPoint(cutX - 4, 2)
                    << QPoint(cutX + 4, 2)
                    << QPoint(cutX, 8);
-            painter.setBrush(QColor(217, 70, 239));
+            painter.setBrush(QColor("#FF4F91"));
             painter.setPen(Qt::NoPen);
             painter.drawPolygon(marker);
 
-            painter.setPen(QPen(QColor(232, 85, 244, 180), 1));
+            painter.setPen(QPen(QColor(255, 114, 170, 180), 1));
             painter.drawLine(cutX, 8, cutX, 25);
         }
     }
@@ -275,27 +275,27 @@ void Timeline::paintEvent(QPaintEvent* event) {
     if (inPoint >= 0.0 && outPoint > inPoint) {
         int x1 = timeToX(inPoint);
         int x2 = timeToX(outPoint);
-        painter.fillRect(QRect(x1, 25, std::max(2, x2 - x1), height() - 25), QColor(168, 85, 247, 30));
+        painter.fillRect(QRect(x1, 25, std::max(2, x2 - x1), height() - 25), QColor(255, 79, 145, 30));
     }
 
     if (inPoint >= 0.0) {
         int x = timeToX(inPoint);
-        painter.setPen(QPen(QColor(217, 70, 239), 2));
+        painter.setPen(QPen(QColor("#FF4F91"), 2));
         painter.drawLine(x, 0, x, height());
         QPolygon tri;
         tri << QPoint(x - 5, 0) << QPoint(x + 5, 0) << QPoint(x, 7);
-        painter.setBrush(QColor(217, 70, 239));
+        painter.setBrush(QColor("#FF4F91"));
         painter.setPen(Qt::NoPen);
         painter.drawPolygon(tri);
     }
 
     if (outPoint >= 0.0) {
         int x = timeToX(outPoint);
-        painter.setPen(QPen(QColor(168, 85, 247), 2));
+        painter.setPen(QPen(QColor("#FF72AA"), 2));
         painter.drawLine(x, 0, x, height());
         QPolygon tri;
         tri << QPoint(x - 5, 0) << QPoint(x + 5, 0) << QPoint(x, 7);
-        painter.setBrush(QColor(168, 85, 247));
+        painter.setBrush(QColor("#FF72AA"));
         painter.setPen(Qt::NoPen);
         painter.drawPolygon(tri);
     }
@@ -305,7 +305,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
         if (!track.clips.empty()) { hasAnyClips = true; break; }
     }
     if (!hasAnyClips) {
-        painter.setPen(QColor(110, 95, 130));
+        painter.setPen(QColor("#918B92"));
         painter.setFont(QFont("Segoe UI", 11, QFont::DemiBold));
         painter.drawText(QRect(80, 25, width() - 80, height() - 25), Qt::AlignCenter, "Drag video files here or press Ctrl+I to import media");
     }
@@ -318,12 +318,12 @@ void Timeline::paintEvent(QPaintEvent* event) {
             int endX = timeToX(clip.timelineStart + clip.sourceDuration);
             QRect clipRect(startX, y + 3, endX - startX, trackHeight - 14);
             const bool isAudioTrack = tracks[tIdx].type == TimelineTrackType::Audio;
-            painter.fillRect(clipRect, isAudioTrack ? QColor(16, 51, 58, 200) : QColor(48, 16, 58, 200));
+            painter.fillRect(clipRect, isAudioTrack ? QColor(16, 51, 58, 200) : QColor(61, 18, 38, 220));
             
             if (static_cast<int>(tIdx) == selectedTrackIndex && cIdx == selectedClipIndex) {
-                painter.setPen(QPen(QColor(245, 158, 248), 2.0));
+                painter.setPen(QPen(QColor("#FFB8D2"), 2.0));
             } else {
-                painter.setPen(QPen(isAudioTrack ? QColor(45, 190, 191) : QColor(192, 38, 211), 1.0));
+                painter.setPen(QPen(isAudioTrack ? QColor(45, 190, 191) : QColor("#FF4F91"), 1.0));
             }
             painter.drawRect(clipRect);
             
@@ -332,7 +332,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
             painter.drawText(clipRect.adjusted(5, 0, -30, 0), Qt::AlignLeft | Qt::AlignVCenter, clipName);
 
             if (!isAudioTrack && (!clip.effects.empty() || clip.useClipEffects)) {
-                painter.setPen(QColor(245, 158, 248));
+                painter.setPen(QColor("#FFB8D2"));
                 painter.drawText(clipRect.adjusted(0, 0, -5, 0), Qt::AlignRight | Qt::AlignVCenter, "[FX]");
             }
 
@@ -350,10 +350,10 @@ void Timeline::paintEvent(QPaintEvent* event) {
             if (!isAudioTrack && nextClip) {
                 const int bx = timeToX(nextClip->timelineStart);
                 const int by = y + 10;
-                painter.setPen(QPen(QColor(217, 70, 239), 1.5));
-                painter.setBrush(QColor(38, 14, 48, 240));
+                painter.setPen(QPen(QColor("#FF4F91"), 1.5));
+                painter.setBrush(QColor("#32101F"));
                 painter.drawEllipse(QPoint(bx, by), 7, 7);
-                painter.setPen(QColor(245, 158, 248));
+                painter.setPen(QColor("#FFB8D2"));
                 painter.setFont(QFont("JetBrains Mono", 8, QFont::Bold));
                 painter.drawText(QRect(bx - 5, by - 6, 10, 12), Qt::AlignCenter, "+");
             }
@@ -372,9 +372,9 @@ void Timeline::paintEvent(QPaintEvent* event) {
 
             bool isSel = (tIdx == (size_t)selectedTransTrackIndex && tIdx2 == selectedTransIndex);
 
-            painter.fillRect(transRect, QColor(74, 29, 94, 210));
+            painter.fillRect(transRect, QColor(92, 30, 56, 210));
 
-            painter.setPen(QPen(isSel ? Qt::white : QColor(192, 38, 211), isSel ? 2.0 : 1.0));
+            painter.setPen(QPen(isSel ? Qt::white : QColor("#FF4F91"), isSel ? 2.0 : 1.0));
             painter.drawRect(transRect);
 
             if (w > 60) {
@@ -382,7 +382,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                 if (auto* pluginMeta = PluginManager::instance().findPlugin(trans.pluginId)) {
                     plugName = QString::fromStdString(pluginMeta->name);
                 }
-                painter.setPen(QColor(245, 158, 248));
+                painter.setPen(QColor("#FFB8D2"));
                 QFont labelFont("JetBrains Mono", 7);
                 painter.setFont(labelFont);
                 QFontMetrics fm(labelFont);
@@ -392,17 +392,17 @@ void Timeline::paintEvent(QPaintEvent* event) {
             }
 
             QRect lHandle(startX, laneY, kHandleW, laneH);
-            painter.fillRect(lHandle, QColor(147, 51, 234, 220));
-            painter.setPen(QColor(232, 85, 244));
+            painter.fillRect(lHandle, QColor(255, 79, 145, 220));
+            painter.setPen(QColor("#FF72AA"));
             painter.drawRect(lHandle);
 
             QRect rHandle(endX - kHandleW, laneY, kHandleW, laneH);
-            painter.fillRect(rHandle, QColor(147, 51, 234, 220));
-            painter.setPen(QColor(232, 85, 244));
+            painter.fillRect(rHandle, QColor(255, 79, 145, 220));
+            painter.setPen(QColor("#FF72AA"));
             painter.drawRect(rHandle);
 
             int cutX = timeToX(trans.cutTime);
-            painter.setPen(QPen(QColor(245, 158, 248, 90), 1, Qt::DashLine));
+            painter.setPen(QPen(QColor(255, 184, 210, 90), 1, Qt::DashLine));
             painter.drawLine(cutX, y + 2, cutX, y + trackHeight - 2);
         }
     }
@@ -411,11 +411,11 @@ void Timeline::paintEvent(QPaintEvent* event) {
         int kfLaneY = 25 + numTracks * trackHeight + 10;
         int kfLaneH = height() - kfLaneY - 10;
         if (kfLaneH > 15) {
-            painter.fillRect(80, kfLaneY, width() - 80, kfLaneH, QColor(14, 12, 18));
-            painter.setPen(QColor(34, 26, 44));
+            painter.fillRect(80, kfLaneY, width() - 80, kfLaneH, QColor("#111116"));
+            painter.setPen(QColor("#303036"));
             painter.drawRect(80, kfLaneY, width() - 80, kfLaneH);
 
-            painter.setPen(QColor(160, 150, 175));
+            painter.setPen(QColor("#C3BEC3"));
             QString laneLabel = QString("Keyframes: %1 - %2").arg(activeEffectId, activeParamName);
             painter.drawText(90, kfLaneY + 15, laneLabel);
 
@@ -452,7 +452,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
             });
 
             if (kfPoints.size() > 1) {
-                painter.setPen(QPen(QColor(217, 70, 239), 1.0, Qt::DashLine));
+                painter.setPen(QPen(QColor("#FF4F91"), 1.0, Qt::DashLine));
                 for (int i = 0; i < kfPoints.size() - 1; ++i) {
                     painter.drawLine(kfPoints[i], kfPoints[i+1]);
                 }
@@ -466,7 +466,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                         << QPoint(kfX + 4, kfY)
                         << QPoint(kfX, kfY + 4)
                         << QPoint(kfX - 4, kfY);
-                painter.setBrush(QColor(232, 85, 244));
+                painter.setBrush(QColor("#FF72AA"));
                 painter.drawPolygon(diamond);
                 painter.setBrush(Qt::NoBrush);
             }
@@ -475,7 +475,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
 
     int phX = timeToX(playheadTime);
     if (phX >= 80) {
-        painter.setPen(QPen(QColor(245, 158, 248), 1.5));
+        painter.setPen(QPen(QColor("#FFB8D2"), 1.5));
         painter.drawLine(phX, 0, phX, height());
         QPolygon playheadHead;
         playheadHead << QPoint(phX - 6, 0)
@@ -483,7 +483,7 @@ void Timeline::paintEvent(QPaintEvent* event) {
                      << QPoint(phX + 6, 12)
                      << QPoint(phX, 18)
                      << QPoint(phX - 6, 12);
-        painter.setBrush(QColor(217, 70, 239));
+        painter.setBrush(QColor("#FF4F91"));
         painter.drawPolygon(playheadHead);
     }
 }
@@ -622,7 +622,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             return;
         }
 
-        // --- Transition hit test (priority over clips) ---
         int transTrack = -1, transIdx = -1;
         bool isLeftEdge = false;
         if (hitTestTransition(event->pos(), transTrack, transIdx, isLeftEdge)) {
@@ -658,7 +657,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             return;
         }
 
-        // --- Clip hit test ---
         int trackIndex = -1;
         int clipIndex = -1;
         double clipStart = 0.0;
@@ -688,7 +686,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
         emit scrubbed(clickedTime);
 
     } else if (event->button() == Qt::RightButton) {
-        // --- Transition right-click ---
         int transTrack = -1, transIdx = -1;
         bool isLeftEdge = false;
         if (hitTestTransition(event->pos(), transTrack, transIdx, isLeftEdge)) {
@@ -712,7 +709,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             return;
         }
 
-        // --- Clip cut edge right-click ---
         int cutTrack = -1;
         double cutTime = 0.0;
         if (hitTestCutEdge(event->pos(), cutTrack, cutTime)) {
@@ -726,7 +722,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
             return;
         }
 
-        // --- Clip right-click ---
         int trackIndex = -1;
         int clipIndex = -1;
         double clipStart = 0.0;
@@ -771,7 +766,6 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
 }
 
 void Timeline::mouseMoveEvent(QMouseEvent* event) {
-    // --- Transition edge resize ---
     if (draggingTransitionEdge && (event->buttons() & Qt::LeftButton)) {
         auto& tracks = Project::instance().getTracks();
         if (dragTransTrackIndex >= 0 && dragTransTrackIndex < (int)tracks.size()) {

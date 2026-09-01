@@ -17,12 +17,12 @@ MediaPool::MediaPool(QWidget* parent) : QWidget(parent) {
     headerLayout->setContentsMargins(0, 0, 0, 0);
 
     QLabel* title = new QLabel("MEDIA POOL", this);
-    title->setStyleSheet("font-weight: bold; color: #c4b5fd; letter-spacing: 0.8px; font-size: 10px;");
+    title->setStyleSheet("font-weight: bold; color: #FF72AA; letter-spacing: 0.8px; font-size: 10px;");
     headerLayout->addWidget(title, 1);
 
     QPushButton* importBtn = new QPushButton("+ Import", this);
     importBtn->setToolTip("Import video clip (Ctrl+I)");
-    importBtn->setStyleSheet("QPushButton { background: #1c1426; border: 1px solid #362248; color: #f59ef8; padding: 2px 8px; font-size: 10px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #2f1b3e; border-color: #d946ef; color: white; }");
+    importBtn->setStyleSheet("QPushButton { background: #32101F; border: 1px solid #80324F; color: #FFB8D2; padding: 2px 8px; font-size: 10px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #5C1E38; border-color: #FF4F91; color: white; }");
     connect(importBtn, &QPushButton::clicked, this, &MediaPool::importRequested);
     headerLayout->addWidget(importBtn);
 
@@ -34,7 +34,7 @@ MediaPool::MediaPool(QWidget* parent) : QWidget(parent) {
 
     emptyLabel = new QLabel("No media loaded.\nDrop video files here or click + Import", this);
     emptyLabel->setAlignment(Qt::AlignCenter);
-    emptyLabel->setStyleSheet("color: #7c6f92; font-size: 10px; padding: 20px;");
+    emptyLabel->setStyleSheet("color: #918B92; font-size: 10px; padding: 20px;");
     layout->addWidget(emptyLabel);
 
     connect(mediaList, &QListWidget::currentTextChanged, this, &MediaPool::mediaSelected);

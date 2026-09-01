@@ -9,7 +9,7 @@ TrackControl::TrackControl(QWidget* parent) : QWidget(parent) {
     layout->setSpacing(6);
 
     QLabel* title = new QLabel("TRACKS", this);
-    title->setStyleSheet("font-weight: bold; color: #c4b5fd; letter-spacing: 0.8px; font-size: 10px;");
+    title->setStyleSheet("font-weight: bold; color: #FF72AA; letter-spacing: 0.8px; font-size: 10px;");
     layout->addWidget(title);
 
     trackList = new QListWidget(this);

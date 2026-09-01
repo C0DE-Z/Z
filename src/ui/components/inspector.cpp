@@ -59,13 +59,13 @@ protected:
 
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        p.fillRect(rect(), QColor(14, 12, 18));
-        p.setPen(QColor(36, 28, 46));
+        p.fillRect(rect(), QColor("#111116"));
+        p.setPen(QColor("#303036"));
         p.drawRect(rect().adjusted(0, 0, -1, -1));
 
         const auto& keyframes = m_param.curve.getKeyframes();
         if (keyframes.empty()) {
-            p.setPen(QColor(110, 100, 125));
+            p.setPen(QColor("#918B92"));
             p.drawText(rect().adjusted(8, 4, -8, -4), Qt::AlignLeft | Qt::AlignVCenter, "Static value (Click to add keyframe curve)");
         } else {
             double minTime = keyframes.front().time;
@@ -81,7 +81,7 @@ protected:
                 return QPoint(x, y);
             };
 
-            p.setPen(QPen(QColor(217, 70, 239), 1.5));
+            p.setPen(QPen(QColor("#FF4F91"), 1.5));
             QPoint prev;
             bool havePrev = false;
             for (const auto& kf : keyframes) {
@@ -91,7 +91,7 @@ protected:
                 havePrev = true;
             }
 
-            p.setBrush(QColor(232, 85, 244));
+            p.setBrush(QColor("#FF72AA"));
             p.setPen(Qt::NoPen);
             for (const auto& kf : keyframes) {
                 QPoint pt = toPoint(kf.time, kf.value);
@@ -99,7 +99,7 @@ protected:
             }
 
             int x = 8 + static_cast<int>(((m_playheadTime - minTime) / timeSpan) * (width() - 16));
-            p.setPen(QPen(QColor(245, 158, 248), 1.5, Qt::DashLine));
+            p.setPen(QPen(QColor("#FFB8D2"), 1.5, Qt::DashLine));
             p.drawLine(x, 2, x, height() - 2);
         }
     }
@@ -115,7 +115,7 @@ public:
         : QLabel(parent), minVal(minVal), maxVal(maxVal), defaultVal(defaultVal), currentVal(initialVal) {
         setCursor(Qt::SizeHorCursor);
         setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        setStyleSheet("color: #f59ef8; font-family: 'JetBrains Mono', monospace; font-weight: bold; background: #16161c; border: 1px solid #2e2e3a; padding: 2px 6px; border-radius: 3px;");
+        setStyleSheet("color: #FFB8D2; font-family: 'JetBrains Mono', monospace; font-weight: bold; background: #19191F; border: 1px solid #4E4E58; padding: 2px 6px; border-radius: 3px;");
         setMinimumWidth(65);
         setToolTip("Click & Drag to scrub value\nDouble-click to type value\nRight-click to reset to default");
         updateText();
@@ -234,13 +234,13 @@ void Inspector::clearInspector() {
 
     QLabel* noSelLabel = new QLabel("NO EFFECT SELECTED", emptyWidget);
     noSelLabel->setAlignment(Qt::AlignCenter);
-    noSelLabel->setStyleSheet("font-weight: bold; font-size: 11px; letter-spacing: 1px; color: #a0a0b5;");
+    noSelLabel->setStyleSheet("font-weight: bold; font-size: 11px; letter-spacing: 1px; color: #C3BEC3;");
     emptyLayout->addWidget(noSelLabel);
 
     QLabel* hintLabel = new QLabel("Select an active effect from the stack or double-click an effect from the Library to inspect and edit parameters.", emptyWidget);
     hintLabel->setAlignment(Qt::AlignCenter);
     hintLabel->setWordWrap(true);
-    hintLabel->setStyleSheet("color: #68687a; font-size: 10px; line-height: 14px;");
+    hintLabel->setStyleSheet("color: #918B92; font-size: 10px; line-height: 14px;");
     emptyLayout->addWidget(hintLabel);
 
     scrollLayout->addWidget(emptyWidget);
@@ -299,18 +299,18 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
     currentPlayheadTime = currentTime;
 
     QWidget* headerWidget = new QWidget(this);
-    headerWidget->setStyleSheet("background: #1e1e26; border: 1px solid #2e2e3c; border-radius: 4px; padding: 4px;");
+    headerWidget->setStyleSheet("background: #19191F; border: 1px solid #303036; border-radius: 4px; padding: 4px;");
     QHBoxLayout* headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(6, 4, 6, 4);
 
     QLabel* titleLabel = new QLabel(QString("EFFECT: %1").arg(effectId.toUpper()), this);
-    titleLabel->setStyleSheet("font-weight: bold; color: #f59ef8; font-size: 11px; letter-spacing: 0.5px; border: none; background: transparent;");
+    titleLabel->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px; border: none; background: transparent;");
     headerLayout->addWidget(titleLabel, 1);
 
     QPushButton* removeButton = new QPushButton("Remove", this);
     removeButton->setStyleSheet(
-        "QPushButton { background: #341b24; border: 1px solid #6d2a4a; color: #ffb1cb; padding: 3px 8px; border-radius: 3px; font-weight: bold; }"
-        "QPushButton:hover { background: #8f2f54; color: white; }"
+        "QPushButton { background: #32101F; border: 1px solid #80324F; color: #FFB8D2; padding: 3px 8px; border-radius: 3px; font-weight: bold; }"
+        "QPushButton:hover { background: #5C1E38; color: white; }"
     );
     connect(removeButton, &QPushButton::clicked, this, [this, effectId]() {
         emit removeEffectRequested(effectId);
@@ -328,7 +328,7 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
 
         QPushButton* labelButton = new QPushButton(QString::fromStdString(param.label), this);
         labelButton->setFlat(true);
-        labelButton->setStyleSheet("text-align: left; color: #dcdcdc; padding: 2px; font-weight: 600; font-size: 11px;");
+        labelButton->setStyleSheet("text-align: left; color: #F7F4F6; padding: 2px; font-weight: 600; font-size: 11px;");
         labelButton->setToolTip("Click to select parameter for Timeline keyframe editing");
         QString paramName = QString::fromStdString(param.name);
         connect(labelButton, &QPushButton::clicked, this, [this, effectId, paramName]() {
@@ -349,14 +349,14 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
                 "QCheckBox::indicator {"
                 "  width: 16px;"
                 "  height: 16px;"
-                "  border: 1px solid #b06ac8;"
+                "  border: 1px solid #80324F;"
                 "  border-radius: 3px;"
-                "  background: #151515;"
+                "  background: #08080A;"
                 "}"
-                "QCheckBox::indicator:hover { border-color: #df42f5; background: #202020; }"
+                "QCheckBox::indicator:hover { border-color: #FF4F91; background: #19191F; }"
                 "QCheckBox::indicator:checked {"
-                "  border: 1px solid #e855f4;"
-                "  background: #5a1a63;"
+                "  border: 1px solid #FF72AA;"
+                "  background: #FF4F91;"
                 "}"
             );
             inputWidget = checkBox;
@@ -364,7 +364,7 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
             valLabel = new QLabel(checkBox->isChecked() ? "ON" : "OFF", this);
             valLabel->setMinimumWidth(35);
             valLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            valLabel->setStyleSheet("color: #888888; font-family: monospace;");
+            valLabel->setStyleSheet("color: #918B92; font-family: monospace;");
             rowLayout->addWidget(valLabel);
             connect(checkBox, &QCheckBox::toggled, this, [this, effectId, paramName, valLabel, pIdx](bool checked) {
                 valLabel->setText(checked ? "ON" : "OFF");
@@ -400,7 +400,7 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
         prevKfButton->setIconSize(QSize(14, 14));
         prevKfButton->setFixedWidth(22);
         prevKfButton->setToolTip("Jump to previous keyframe");
-        prevKfButton->setStyleSheet("QPushButton { background: #16141e; border: 1px solid #282034; border-radius: 2px; } QPushButton:hover { background: #261c30; border-color: #d946ef; }");
+        prevKfButton->setStyleSheet("QPushButton { background: #19191F; border: 1px solid #4E4E58; border-radius: 2px; } QPushButton:hover { background: #24242C; border-color: #FF4F91; }");
         
         QPushButton* kfButton = new QPushButton(this);
         QColor kfColor = hasKfAtPlayhead ? QColor(245, 158, 248) : QColor(110, 100, 125);
@@ -409,8 +409,8 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
         kfButton->setFixedWidth(24);
         kfButton->setToolTip(hasKfAtPlayhead ? "Remove keyframe at playhead" : "Add keyframe at playhead");
         QString kfStyle = hasKfAtPlayhead ? 
-            "QPushButton { background: #3b1548; border: 1px solid #d946ef; border-radius: 2px; }" : 
-            "QPushButton { background: #16141e; border: 1px solid #282034; border-radius: 2px; } QPushButton:hover { border-color: #d946ef; }";
+            "QPushButton { background: #3D1226; border: 1px solid #FF4F91; border-radius: 2px; }" : 
+            "QPushButton { background: #19191F; border: 1px solid #4E4E58; border-radius: 2px; } QPushButton:hover { border-color: #FF4F91; }";
         kfButton->setStyleSheet(kfStyle);
 
         QPushButton* nextKfButton = new QPushButton(this);
@@ -418,7 +418,7 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
         nextKfButton->setIconSize(QSize(14, 14));
         nextKfButton->setFixedWidth(22);
         nextKfButton->setToolTip("Jump to next keyframe");
-        nextKfButton->setStyleSheet("QPushButton { background: #16141e; border: 1px solid #282034; border-radius: 2px; } QPushButton:hover { background: #261c30; border-color: #d946ef; }");
+        nextKfButton->setStyleSheet("QPushButton { background: #19191F; border: 1px solid #4E4E58; border-radius: 2px; } QPushButton:hover { background: #24242C; border-color: #FF4F91; }");
 
         connect(prevKfButton, &QPushButton::clicked, this, [this, pIdx]() {
             if (pIdx >= currentParameters.size()) return;
@@ -524,8 +524,8 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
             curvePreview->setPlayheadTime(t);
 
             QString kfStyle = hasKf ? 
-                "QPushButton { background: #3b1548; border: 1px solid #d946ef; border-radius: 2px; }" : 
-                "QPushButton { background: #16141e; border: 1px solid #282034; border-radius: 2px; } QPushButton:hover { border-color: #d946ef; }";
+                "QPushButton { background: #3D1226; border: 1px solid #FF4F91; border-radius: 2px; }" : 
+                "QPushButton { background: #19191F; border: 1px solid #4E4E58; border-radius: 2px; } QPushButton:hover { border-color: #FF4F91; }";
             kfButton->setStyleSheet(kfStyle);
             kfButton->setIcon(VectorIcon::create(VectorIcon::Type::Keyframe, hasKf ? QColor(245, 158, 248) : QColor(110, 100, 125), QSize(14, 14)));
             kfButton->setToolTip(hasKf ? "Remove keyframe at playhead" : "Add keyframe at playhead");
