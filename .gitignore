@@ -9,7 +9,6 @@ bin/
 *.dylib
 *.a
 *.lib
-tests/
 build-*/
 dist/
 
