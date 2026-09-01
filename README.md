@@ -9,42 +9,38 @@
 
 ---
 
-## Codebase Architecture
-
-The repository is organized following clean architectural boundaries and strict dependency hierarchy:
-
+## Codebase
 ```
 Z/
-├── cmake/                      # Modular build configurations
-│   ├── CompilerOptions.cmake   # Warning levels, optimization & standard flags
-│   ├── Dependencies.cmake      # Package discovery (Qt6, FFmpeg, PortAudio, SQLite3)
+├── cmake/                      #  build configurations
+│   ├── CompilerOptions.cmake
+│   ├── Dependencies.cmake      # Package discovery
 │   └── Platform.cmake          # Windows (MSYS2/MSVC), macOS, and Linux toolchains
-├── docs/                       # Engineering & plugin documentation
+├── docs/                       # Docs
 │   ├── architecture/           # System design diagrams and execution pipelines
 │   ├── building/               # Platform-specific compile guides
-│   └── plugins/                # Shader manifest specifications and uniform reference
-├── plugins/                    # First-party GLSL effects, datamoshers & transitions
-├── src/                        # First-party C++20 source tree
-│   ├── app/                    # Application lifecycle, styling & main entrypoint
+├── plugins/                    # Plugins (Navtive to the platform)
+├── src/                        # Source Files
+│   ├── app/                    # Application main entry
 │   ├── core/                   # Foundation types, keyframes, curves & undo/redo state
-│   ├── project/                # Tracks, clips, transitions & JSON project serialization
-│   ├── media/                  # Transcoding pipelines and multi-threaded media exporter
-│   ├── engine/                 # Real-time audio, video decoding, rendering & effects
-│   │   ├── audio/              # PortAudio driver, sample loading & frequency meters
-│   │   ├── video/              # FFmpeg demuxer/decoder, frame cache & prefetching
+│   ├── project/                # Tracks, clips and transitions.
+│   ├── media/                  # Transcoding pipelines and media exporter
+│   ├── engine/                 # decoding, encoding, effects etc
+│   │   ├── audio/              # PortAudio driver
+│   │   ├── video/              # FFmpeg demuxer/decoder.
 │   │   ├── rendering/          # OpenGL context, FBO feedback loop & shaders
 │   │   └── effects/            # CPU bitwise blenders (XOR, AND, OR, XNOR, NAND)
 │   ├── plugins/                # Plugin discovery, manifest loader & parameter reflection
-│   └── ui/                     # Qt6 modern dark-theme user interface
+│   └── ui/                     # Qt6
 │       ├── components/         # Timeline, Inspector, Media Pool, Track Manager
 │       └── dialogs/            # Preferences dialog and export configurations
-└── tests/                      # Automated CTest unit testing suite
-    └── unit/                   # Keyframe math, project serialization & app state tests
+└── tests/                      # Unit Tests
+    └── unit/                   #
 ```
 
 ---
 
-## Building from Source
+## Building
 
 ### Prerequisites
 - C++20 compliant compiler (GCC 13+, Clang 16+, or MSVC 2022)
@@ -68,9 +64,8 @@ ctest --test-dir build --output-on-failure
 ---
 
 ## Documentation
-- [System Architecture](docs/architecture/ARCHITECTURE.md)
-- [Build Instructions](docs/building/BUILDING.md)
-- [Shader Plugin Specification](docs/plugins/PLUGIN_SPEC.md)
+- [Architecture](docs/architecture/ARCHITECTURE.md)
+- [Build](docs/building/BUILDING.md)
 
 ---
 

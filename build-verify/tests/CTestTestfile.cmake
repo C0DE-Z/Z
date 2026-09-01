@@ -12,3 +12,5 @@ add_test([=[AppStateTests]=] "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/b
 set_tests_properties([=[AppStateTests]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;30;add_test;C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;0;")
 add_test([=[ProjectTests]=] "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/build-verify/tests/test_project.exe")
 set_tests_properties([=[ProjectTests]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;40;add_test;C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;0;")
+add_test([=[DetectorTests]=] "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/build-verify/tests/test_detector.exe")
+set_tests_properties([=[DetectorTests]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;53;add_test;C:/Users/melon/OneDrive/Desktop/stuff/Projects/Z/tests/CMakeLists.txt;0;")

@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QStringList>
 #include <algorithm>
 
 extern "C" {
@@ -185,6 +186,49 @@ QString MediaImporter::datamoshProxyPathForSource(const QString& sourcePath) {
     const QByteArray hash = QCryptographicHash::hash(fingerprint, QCryptographicHash::Sha1).toHex().left(12);
     const QString safeBase = info.completeBaseName().isEmpty() ? QStringLiteral("clip") : info.completeBaseName();
     return standardizedImportDir() + "/" + safeBase + "_" + QString::fromLatin1(hash) + "_datamosh.mp4";
+}
+
+bool MediaImporter::isDatamoshDirectSourceEligible(const QString& sourcePath) {
+    const QFileInfo sourceInfo(sourcePath);
+    // The extension alone is never enough: inspect the demuxed container and
+    // stream metadata below as well. Keeping the user-facing rule to .mp4
+    // avoids unexpectedly treating QuickTime MOV footage as a packet source.
+    if (!sourceInfo.isFile() || sourceInfo.suffix().compare("mp4", Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+
+    AVFormatContext* formatContext = nullptr;
+    const QByteArray encodedPath = sourcePath.toUtf8();
+    if (avformat_open_input(&formatContext, encodedPath.constData(), nullptr, nullptr) < 0) {
+        return false;
+    }
+
+    const auto closeInput = [&formatContext] {
+        if (formatContext) avformat_close_input(&formatContext);
+    };
+    if (avformat_find_stream_info(formatContext, nullptr) < 0) {
+        closeInput();
+        return false;
+    }
+
+    const QString demuxerNames = formatContext->iformat && formatContext->iformat->name
+        ? QString::fromLatin1(formatContext->iformat->name) : QString();
+    const bool usesMovMp4Demuxer = demuxerNames.split(',', Qt::SkipEmptyParts).contains("mov");
+    bool eligible = false;
+    if (usesMovMp4Demuxer) {
+        for (unsigned int index = 0; index < formatContext->nb_streams; ++index) {
+            const AVCodecParameters* parameters = formatContext->streams[index]->codecpar;
+            if (!parameters || parameters->codec_type != AVMEDIA_TYPE_VIDEO) continue;
+            // Frame reordering implies B-frames. Z's packet implementation
+            // deliberately targets I/P H.264 GOPs, where stream packet order
+            // stays meaningful when dropping or repeating delta packets.
+            eligible = parameters->codec_id == AV_CODEC_ID_H264 && parameters->video_delay <= 0;
+            break;
+        }
+    }
+
+    closeInput();
+    return eligible;
 }
 
 QString MediaImporter::transcodeToStandardMov(const QString& sourcePath, ProgressCallback progressCallback) {

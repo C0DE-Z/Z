@@ -1,4 +1,5 @@
 #include "media/mediaimporter.h"
+#include "engine/videodecoder.h"
 #include <QFileInfo>
 #include <QTemporaryFile>
 #include <cassert>
@@ -16,6 +17,15 @@ int main() {
     assert(datamoshPath.endsWith("_datamosh.mp4", Qt::CaseInsensitive));
     assert(datamoshPath.contains("transparent_clip"));
     assert(datamoshPath != path);
+    assert(!MediaImporter::isDatamoshDirectSourceEligible(source));
+
+    // An effect instance is not enough to activate packet Datamosh. All-zero
+    // settings and a repeat count of one must preserve the original decoder.
+    assert(!VideoDecoder::hasEffectiveDatamoshSettings(true, 0.0, 0.0, 1, 0.0));
+    assert(!VideoDecoder::hasEffectiveDatamoshSettings(true, 0.0, 1.0, 1, 0.0));
+    assert(VideoDecoder::hasEffectiveDatamoshSettings(true, 0.0, 1.0, 2, 0.0));
+    assert(VideoDecoder::hasEffectiveDatamoshSettings(true, 1.0, 0.0, 1, 0.0));
+    assert(VideoDecoder::hasEffectiveDatamoshSettings(true, 0.0, 0.0, 1, 0.01));
 
     // Normal imports retain their own validated source format rather than
     // creating an opaque video-only cache or a YUVA ProRes intermediate.

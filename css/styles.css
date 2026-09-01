@@ -217,7 +217,6 @@ nav {
     background: var(--bg-purple-active);
 }
 
-/* Showcase Image Box matching Z UI panel styling */
 .showcase-container {
     background: var(--bg-panel);
     border-left: 3px solid var(--accent-purple);
@@ -262,7 +261,6 @@ nav {
     border: 1px solid var(--border-color);
 }
 
-/* Features Section */
 .features-section {
     max-width: 1150px;
     margin: 0 auto 70px auto;
@@ -437,7 +435,6 @@ footer a:hover {
     .hero-title { font-size: 28px; }
 }
 
-/* Landing page refinement */
 :root {
     --bg-app: #09090e;
     --bg-panel: #101017;
@@ -480,7 +477,7 @@ nav { backdrop-filter: blur(18px); background: rgba(10, 10, 15, .88); padding: 0
 .features-section, .screens-section { max-width: 1180px; margin-bottom: 110px; }
 .grid-3 { gap: 14px; }
 .feature-card { min-height: 160px; border: 1px solid #302c38; border-radius: 10px; padding: 24px; background: linear-gradient(145deg, rgba(28,26,37,.92), rgba(15,15,22,.96)); }
-.feature-card:hover { border-color: #b94bc8; background: linear-gradient(145deg, #29182f, #16111c); box-shadow: 0 14px 32px rgba(0,0,0,.24); }
+.feature-card:hover { border-color: #b94bc8; backgrIound: linear-gradient(145deg, #29182f, #16111c); box-shadow: 0 14px 32px rgba(0,0,0,.24); }
 .feature-title { font-size: 16px; }.feature-desc { font-size: 13px; color: #aaa5b4; }
 .screen-card { max-width: 920px; margin: 0 auto; border-radius: 11px; padding: 10px; box-shadow: 0 26px 60px rgba(0,0,0,.4); }
 .screen-card video { width: 100%; display: block; border-radius: 5px; background: #050507; }

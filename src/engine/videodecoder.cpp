@@ -50,13 +50,18 @@ VideoDecoder::VideoDecoder() {
 void VideoDecoder::setDatamoshing(bool enabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb) {
     std::lock_guard<std::mutex> lock(decodeMutex);
     const int duplicateCount = std::max(1, pDupCount);
-    const bool changed = datamoshEnabled != enabled || iFrameDropProb != iDropProb ||
-        pFrameDuplicateProb != pDupProb || pFrameDuplicateCount != duplicateCount || pFrameDropProb != pDropProb;
-    datamoshEnabled = enabled;
-    iFrameDropProb = iDropProb;
-    pFrameDuplicateProb = pDupProb;
+    const bool effectiveEnabled = hasEffectiveDatamoshSettings(
+        enabled, iDropProb, pDupProb, duplicateCount, pDropProb);
+    const double effectiveIDropProb = effectiveEnabled && iDropProb >= 0.5 ? 1.0 : 0.0;
+    const double effectivePDupProb = effectiveEnabled && pDupProb > 0.0 && duplicateCount > 1 ? pDupProb : 0.0;
+    const double effectivePDropProb = effectiveEnabled && pDropProb > 0.0 ? pDropProb : 0.0;
+    const bool changed = datamoshEnabled != effectiveEnabled || iFrameDropProb != effectiveIDropProb ||
+        pFrameDuplicateProb != effectivePDupProb || pFrameDuplicateCount != duplicateCount || pFrameDropProb != effectivePDropProb;
+    datamoshEnabled = effectiveEnabled;
+    iFrameDropProb = effectiveIDropProb;
+    pFrameDuplicateProb = effectivePDupProb;
     pFrameDuplicateCount = duplicateCount;
-    pFrameDropProb = pDropProb;
+    pFrameDropProb = effectivePDropProb;
     if (changed) {
         datamoshBaseKeyframeSeen = false;
         datamoshRepeatPacketsRemaining = 0;
@@ -782,11 +787,12 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 sws_scale(swsCtx, activeFrame->data, activeFrame->linesize, 0, height, dest, linesize);
 
                 const size_t rgbSize = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight) * 3;
+                const size_t totalPixels = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight);
                 if (outFrame.rgbData.size() != rgbSize) {
                     outFrame.rgbData.resize(rgbSize);
                 }
-                outFrame.alphaData.resize(outWidth * outHeight);
-                for (size_t i = 0; i < outWidth * outHeight; ++i) {
+                outFrame.alphaData.resize(totalPixels);
+                for (size_t i = 0; i < totalPixels; ++i) {
                     outFrame.rgbData[i * 3 + 0] = rgbaData[i * 4 + 0];
                     outFrame.rgbData[i * 3 + 1] = rgbaData[i * 4 + 1];
                     outFrame.rgbData[i * 3 + 2] = rgbaData[i * 4 + 2];

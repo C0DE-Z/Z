@@ -15,11 +15,46 @@
 #include <vector>
 #include <unordered_map>
 #include <array>
+#include <memory>
 #include "engine/pluginmanager.h"
 #include "engine/videoengine.h"
 #include "engine/detector.h"
 #include "engine/renderbackend.h"
 #include "core/project.h"
+
+enum class DetectionOverlayStyle {
+    Rectangle,
+    CornerBrackets,
+    RoundedRectangle,
+    Ellipse
+};
+
+enum class DetectionColorMode {
+    ByTrack,
+    ByClass,
+    Fixed
+};
+
+struct DetectionOverlayOptions {
+    DetectionOverlayStyle style = DetectionOverlayStyle::CornerBrackets;
+    DetectionColorMode colorMode = DetectionColorMode::ByTrack;
+    bool showLabels = true;
+    bool showConfidence = true;
+    bool showTrackIds = false;
+    bool showTrails = true;
+    bool showLinks = false;
+    bool showCenters = false;
+    bool showPersonOutline = true;
+    bool replacePersonBoxesWithOutline = true;
+    int lineWidth = 2;
+    int labelPointSize = 15;
+    int maxDetections = 64;
+    int fillOpacity = 0;
+    int trailLength = 30;
+    int trailWidth = 2;
+    int trailOpacity = 180;
+    float linkDistance = 0.25f;
+};
 
 class GLWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions {
     Q_OBJECT
@@ -37,6 +72,7 @@ public:
 
     void updateFrame(const DecodedVideoFrame& frame);
     void updateFrame(DecodedVideoFrame&& frame);
+    void updateFrame(std::shared_ptr<const DecodedVideoFrame> frame);
     void updateTransitionFrames(const DecodedVideoFrame& frame1, const DecodedVideoFrame& frame2, double progress, const std::string& transitionPluginId);
     void clearFrame();
 
@@ -52,12 +88,16 @@ public:
     void setDetections(const std::vector<DetectionBox>& boxes);
     void setShowDetections(bool show);
     bool showDetections() const { return m_showDetections; }
+    void setDetectionOverlayOptions(const DetectionOverlayOptions& options);
     void setDetectionShape(DetectionShape shape);
     void setGuideOverlay(GuideOverlay guide);
 
     void setMaskEnabled(bool enabled);
     bool maskEnabled() const { return m_maskEnabled; }
+    void setMaskInverted(bool inverted);
+    bool maskInverted() const { return m_maskInverted; }
     void setMaskData(int width, int height, const std::vector<uint8_t>& maskR);
+    void setMaskData(int width, int height, std::vector<uint8_t>&& maskR);
     QImage grabRenderedFrame();
 
 protected:
@@ -70,6 +110,7 @@ private:
     double m_time = 0.0;
     bool hasNewFrame = false;
     DecodedVideoFrame currentFrame;
+    std::shared_ptr<const DecodedVideoFrame> sharedCurrentFrame;
     QElapsedTimer fpsTimer;
     int frameCount = 0;
     double currentFps = 0.0;
@@ -97,6 +138,7 @@ private:
     int lastMaskHeight = 0;
     bool hasMaskTexture = false;
     bool m_maskEnabled = false;
+    bool m_maskInverted = false;
     bool maskDirty = false;
     std::vector<uint8_t> pendingMask;
     int pendingMaskW = 0;
@@ -104,6 +146,7 @@ private:
 
     bool m_showDetections = true;
     DetectionShape m_detectionShape = DetectionShape::Rectangle;
+    DetectionOverlayOptions m_detectionOverlayOptions;
     GuideOverlay m_guideOverlay = GuideOverlay::None;
     std::vector<DetectionBox> detections;
 

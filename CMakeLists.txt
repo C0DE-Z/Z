@@ -33,6 +33,7 @@ set(Z_SOURCES
     src/engine/videodecoder.cpp
     src/engine/cpueffects.cpp
     src/engine/detector.cpp
+    src/engine/detectionworker.cpp
     src/engine/videoengine.cpp
     src/engine/audioengine.cpp
     src/engine/glwidget.cpp
@@ -62,6 +63,7 @@ set(Z_HEADERS
     src/engine/videodecoder.h
     src/engine/cpueffects.h
     src/engine/detector.h
+    src/engine/detectionworker.h
     src/engine/videoengine.h
     src/engine/audioengine.h
     src/engine/glwidget.h

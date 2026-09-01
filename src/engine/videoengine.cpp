@@ -1,4 +1,5 @@
 #include "videoengine.h"
+#include "media/mediaimporter.h"
 #include <map>
 #include <algorithm>
 #include <QDebug>
@@ -127,25 +128,42 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
         datamoshDecoders.erase(clipId);
         asyncDatamoshDecoders.erase(clipId);
         datamoshActive[clipId] = false;
+        directDatamoshSources.erase(clipId);
         datamoshSettings.erase(clipId);
-        if (!datamoshProxyPath.empty()) {
+        const QString sourcePath = QString::fromStdString(filePath);
+        const bool useDirectSource = MediaImporter::isDatamoshDirectSourceEligible(sourcePath);
+        const std::string packetSourcePath = useDirectSource
+            ? filePath : datamoshProxyPath;
+        if (!packetSourcePath.empty()) {
             // Software decoding is deliberate: hardware decoders commonly
             // conceal dropped reference packets, erasing the very artifacts
             // this effect creates.
             auto datamoshDecoder = std::make_shared<VideoDecoder>();
-            if (datamoshDecoder->openFile(datamoshProxyPath, false, false)) {
+            if (datamoshDecoder->openFile(packetSourcePath, false, false)) {
                 datamoshDecoders[clipId] = std::move(datamoshDecoder);
                 auto asyncDatamoshDecoder = std::make_shared<VideoDecoder>();
-                if (asyncDatamoshDecoder->openFile(datamoshProxyPath, false, false)) {
+                if (asyncDatamoshDecoder->openFile(packetSourcePath, false, false)) {
                     asyncDatamoshDecoders[clipId] = std::move(asyncDatamoshDecoder);
                 }
+                directDatamoshSources[clipId] = useDirectSource;
             } else {
-                qWarning() << "Datamosh proxy could not be opened for" << QString::fromStdString(clipId);
+                qWarning() << "Datamosh packet source could not be opened for" << QString::fromStdString(clipId);
             }
         }
         return true;
     }
     return false;
+}
+
+bool VideoEngine::hasDatamoshPacketSource(const std::string& clipId) const {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    return datamoshDecoders.contains(clipId);
+}
+
+bool VideoEngine::usesDirectDatamoshSource(const std::string& clipId) const {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    const auto it = directDatamoshSources.find(clipId);
+    return it != directDatamoshSources.end() && it->second;
 }
 
 bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
@@ -195,14 +213,23 @@ double VideoEngine::getFps(const std::string& clipId) {
 void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb) {
     std::lock_guard<std::mutex> lock(engineMutex);
     const bool proxyAvailable = datamoshDecoders.contains(clipId);
-    const bool isActive = datamoshEnabled && proxyAvailable;
-    const DatamoshSettings newSettings { isActive, iDropProb, pDupProb, pDupCount, pDropProb };
+    const int duplicateCount = std::max(1, pDupCount);
+    const bool effectIsEffective = VideoDecoder::hasEffectiveDatamoshSettings(
+        datamoshEnabled, iDropProb, pDupProb, duplicateCount, pDropProb);
+    const bool isActive = effectIsEffective && proxyAvailable;
+    const DatamoshSettings newSettings {
+        isActive,
+        isActive && iDropProb >= 0.5 ? 1.0 : 0.0,
+        isActive && pDupProb > 0.0 && duplicateCount > 1 ? pDupProb : 0.0,
+        duplicateCount,
+        isActive && pDropProb > 0.0 ? pDropProb : 0.0
+    };
     const auto oldSettings = datamoshSettings.find(clipId);
     const bool settingsChanged = oldSettings == datamoshSettings.end() || oldSettings->second != newSettings;
     datamoshSettings[clipId] = newSettings;
     datamoshActive[clipId] = isActive;
-    if (datamoshEnabled && !proxyAvailable && settingsChanged) {
-        qWarning() << "Datamosh proxy is unavailable for" << QString::fromStdString(clipId);
+    if (effectIsEffective && !proxyAvailable && settingsChanged) {
+        qWarning() << "Datamosh packet source is unavailable for" << QString::fromStdString(clipId);
     }
     if (auto it = decoders.find(clipId); it != decoders.end()) {
         // The normal decoder must never use the old decoded-pixel fallback.
@@ -212,10 +239,10 @@ void VideoEngine::setDatamoshing(const std::string& clipId, bool datamoshEnabled
         it->second->setDatamoshing(false, 0.0, 0.0, 1, 0.0);
     }
     if (auto it = datamoshDecoders.find(clipId); it != datamoshDecoders.end()) {
-        it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
+        it->second->setDatamoshing(isActive, iDropProb, pDupProb, duplicateCount, pDropProb);
     }
     if (auto it = asyncDatamoshDecoders.find(clipId); it != asyncDatamoshDecoders.end()) {
-        it->second->setDatamoshing(datamoshEnabled, iDropProb, pDupProb, pDupCount, pDropProb);
+        it->second->setDatamoshing(isActive, iDropProb, pDupProb, duplicateCount, pDropProb);
     }
     if (settingsChanged) {
         invalidateCacheForClip(clipId);
@@ -354,6 +381,7 @@ void VideoEngine::clear() {
     datamoshDecoders.clear();
     asyncDatamoshDecoders.clear();
     datamoshActive.clear();
+    directDatamoshSources.clear();
     datamoshSettings.clear();
     {
         std::lock_guard<std::mutex> cacheLock(cacheMutex);

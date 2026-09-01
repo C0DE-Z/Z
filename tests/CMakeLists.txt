@@ -38,3 +38,16 @@ add_executable(test_project
 target_include_directories(test_project PRIVATE ../src)
 target_link_libraries(test_project PRIVATE Qt6::Core Qt6::Gui OpenGL::GL)
 add_test(NAME ProjectTests COMMAND test_project)
+
+add_executable(test_detector
+    unit/test_detector.cpp
+    ../src/engine/detector.cpp
+)
+target_include_directories(test_detector PRIVATE ../src)
+target_link_libraries(test_detector PRIVATE Qt6::Gui)
+if(OpenCV_FOUND)
+    target_include_directories(test_detector PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(test_detector PRIVATE ${OpenCV_LIBS})
+    target_compile_definitions(test_detector PRIVATE Z_HAS_OPENCV_DNN=1)
+endif()
+add_test(NAME DetectorTests COMMAND test_detector)

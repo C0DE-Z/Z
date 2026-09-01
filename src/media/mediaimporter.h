@@ -17,6 +17,10 @@ public:
     // A separate opaque interframe proxy used only by Datamosh. Normal
     // editing continues to use the original media, including source alpha.
     static QString datamoshProxyPathForSource(const QString& sourcePath);
+    // A P-frame-compatible H.264 MP4 can be read by a separate software
+    // decoder directly. Non-H.264 sources and streams with frame reordering
+    // still need Z's controlled P-frame proxy.
+    static bool isDatamoshDirectSourceEligible(const QString& sourcePath);
     static QString transcodeToDatamoshProxy(const QString& sourcePath, ProgressCallback progressCallback = {});
 };
 

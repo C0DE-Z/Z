@@ -18,6 +18,7 @@
 #include "ui/components/mediapool.h"
 #include "ui/components/trackcontrol.h"
 #include "engine/detector.h"
+#include "engine/detectionworker.h"
 #include <QSlider>
 #include <QCheckBox>
 #include <QLineEdit>
@@ -27,6 +28,13 @@
 #include <QPointer>
 #include <thread>
 #include <set>
+#include <map>
+#include <memory>
+#include <cstdint>
+
+class QNetworkReply;
+class QProgressDialog;
+class QSaveFile;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -57,6 +65,8 @@ private slots:
     void clearDetections();
     void chooseYoloModel();
     void downloadRecommendedYoloModel();
+    void detectEntireActiveClip();
+    void cancelDetectionScan();
     void checkForUpdates();
 
 private:
@@ -89,19 +99,89 @@ private:
     QListWidget* detectionList = nullptr;
     QSlider* detectSensitivitySlider = nullptr;
     QSlider* detectMinAreaSlider = nullptr;
+    QSlider* yoloConfidenceSlider = nullptr;
+    QSlider* yoloNmsSlider = nullptr;
+    QComboBox* yoloInputSizeCombo = nullptr;
+    QSlider* liveDetectionIntervalSlider = nullptr;
+    QSlider* detectionScanIntervalSlider = nullptr;
+    QSlider* detectionLineWidthSlider = nullptr;
+    QSlider* detectionFillOpacitySlider = nullptr;
+    QSlider* detectionLabelSizeSlider = nullptr;
+    QSlider* detectionTrailLengthSlider = nullptr;
+    QSlider* detectionTrailWidthSlider = nullptr;
+    QSlider* detectionTrailOpacitySlider = nullptr;
+    QSlider* detectionLinkDistanceSlider = nullptr;
+    QSlider* maskFeatherSlider = nullptr;
+    QSlider* maskPaddingSlider = nullptr;
+    QSlider* maskOutlineWidthSlider = nullptr;
     QCheckBox* liveDetectCheck = nullptr;
     QCheckBox* showBoxesCheck = nullptr;
+    QCheckBox* showDetectionLabelsCheck = nullptr;
+    QCheckBox* showDetectionConfidenceCheck = nullptr;
+    QCheckBox* showDetectionTrackIdsCheck = nullptr;
+    QCheckBox* showDetectionTrailsCheck = nullptr;
+    QCheckBox* showDetectionLinksCheck = nullptr;
+    QCheckBox* showDetectionCentersCheck = nullptr;
     QCheckBox* applyMaskCheck = nullptr;
+    QCheckBox* invertMaskCheck = nullptr;
     QCheckBox* openClCheck = nullptr;
+    QCheckBox* showPersonOutlineCheck = nullptr;
+    QCheckBox* replacePersonBoxesCheck = nullptr;
     QComboBox* detectionShapeCombo = nullptr;
+    QComboBox* detectionOverlayStyleCombo = nullptr;
+    QComboBox* detectionColorModeCombo = nullptr;
     QLineEdit* yoloModelPathEdit = nullptr;
+    QLineEdit* detectionClassFilterEdit = nullptr;
+    QListWidget* detectionClassList = nullptr;
+    QPushButton* detectEntireClipButton = nullptr;
+    QPushButton* cancelDetectionScanButton = nullptr;
     QLabel* detectionStatusLabel = nullptr;
     QNetworkAccessManager* modelDownloadManager = nullptr;
     QNetworkAccessManager* updateCheckManager = nullptr;
     bool liveDetectEnabled = false;
     QElapsedTimer liveDetectionTimer;
+    QTimer* detectionSettingsTimer = nullptr;
+    std::unique_ptr<DetectionWorker> detectionWorker;
+    DetectionWorkerSettings detectionWorkerSettings;
+    bool yoloModelReady = false;
+    uint64_t modelLoadGeneration = 0;
+    uint64_t detectionGeneration = 0;
+    uint64_t maskGeneration = 0;
+    uint64_t detectionScanGeneration = 0;
+    bool detectionScanInProgress = false;
+    QString detectionWorkerTrackClipId;
+    double detectionWorkerTrackSourceTime = -1.0;
     std::vector<DetectionBox> currentDetections;
-    DecodedVideoFrame lastDetectFrame;
+    std::vector<DetectionBox> rawCurrentDetections;
+    std::shared_ptr<const DecodedVideoFrame> latestDetectionFrame;
+    QString latestDetectionFrameClipId;
+    double latestDetectionFrameSourceTime = -1.0;
+    int currentDetectionFrameWidth = 0;
+    int currentDetectionFrameHeight = 0;
+    QString detectionSourceClipId;
+    double lastDetectionPlayhead = -1.0;
+    std::set<std::string> allowedDetectionClasses;
+    bool detectionClassFilterEnabled = false;
+    std::map<std::string, std::set<int>> rejectedDetectionTracks;
+
+    struct CachedDetectionSample {
+        double sourceTime = 0.0;
+        int width = 0;
+        int height = 0;
+        std::vector<DetectionBox> detections;
+    };
+    struct ClipDetectionCache {
+        double sampleInterval = 1.0;
+        bool complete = false;
+        std::vector<CachedDetectionSample> samples;
+    };
+    std::map<std::string, ClipDetectionCache> clipDetectionCaches;
+
+    QPointer<QNetworkReply> modelDownloadReply;
+    QPointer<QProgressDialog> modelDownloadProgress;
+    std::unique_ptr<QSaveFile> modelDownloadFile;
+    qsizetype modelDownloadBytes = 0;
+    bool modelDownloadInProgress = false;
 
     // Transport Bar UI Elements
     QLabel* timecodeLabel = nullptr;
@@ -137,6 +217,31 @@ private:
     void createDocks();
     void createTransportToolbar();
     void applyShortcuts();
+    void applyDetectionOverlayOptions();
+    void refreshDetectionMask();
+    DetectionWorkerSettings currentDetectionSettings() const;
+    void queueDetectionForCurrentFrame(bool forceTrackingReset = false);
+    void queueDetectionForSource(
+        const QString& sourcePath,
+        const QString& sourceClipId,
+        double sourceTime,
+        bool forceTrackingReset = false);
+    void scheduleDetectionSettingsRefresh();
+    void postDetectionWorkerResult(DetectionWorkerResult&& result);
+    void handleDetectionWorkerResult(const std::shared_ptr<DetectionWorkerResult>& result);
+    void applyDetectionResults(
+        std::vector<DetectionBox> detections,
+        const QString& sourceClipId,
+        double sourceTime,
+        int width,
+        int height,
+        bool fromPrecomputedScan = false);
+    void applyCurrentDetectionFilters();
+    void refreshDetectionList();
+    void updateClassFilterFromUi();
+    bool applyPrecomputedDetectionsForClip(const ProjectClip& clip, double sourceTime);
+    void beginYoloModelLoad(const QString& path);
+    void drainModelDownload(QNetworkReply* reply);
     void updateTimecodeDisplay(double time);
     void updateStatusBar();
 

@@ -22,7 +22,7 @@ if not exist "%MINGW%\windeployqt6.exe" (
 
 echo === Building latest Z Video Editor ===
 if exist "%BUILD%" rmdir /s /q "%BUILD%"
-cmake -S . -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="%MINGW%\c++.exe" -DCMAKE_C_COMPILER="%MINGW%\gcc.exe" -DCMAKE_PREFIX_PATH="C:\msys64\mingw64"
+cmake -S . -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="%MINGW%\c++.exe" -DCMAKE_PREFIX_PATH="C:\msys64\mingw64"
 if errorlevel 1 (
     echo ERROR: configure failed.
     exit /b 1
@@ -68,6 +68,12 @@ for %%f in ("%MINGW%\avcodec*.dll" "%MINGW%\avformat*.dll" "%MINGW%\avutil*.dll"
 
 copy /Y "%MINGW%\libportaudio*.dll" "%OUT%\" >nul 2>&1
 copy /Y "%MINGW%\libsqlite3*.dll" "%OUT%\" >nul 2>&1
+
+echo Copying OpenCV YOLO inference DLLs...
+for %%f in ("%MINGW%\libopencv_core*.dll" "%MINGW%\libopencv_dnn*.dll" "%MINGW%\libopencv_imgproc*.dll") do (
+    copy /Y "%%~f" "%OUT%\" >nul 2>&1
+)
+
 copy /Y "%MINGW%\libgcc_s_seh-1.dll" "%OUT%\" >nul 2>&1
 copy /Y "%MINGW%\libstdc++-6.dll" "%OUT%\" >nul 2>&1
 copy /Y "%MINGW%\libwinpthread-1.dll" "%OUT%\" >nul 2>&1

@@ -27,6 +27,8 @@ public:
     bool tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds = 0.08);
     void setAsyncDecodeEnabled(bool enabled);
     bool isAsyncDecodeEnabled() const;
+    bool hasDatamoshPacketSource(const std::string& clipId) const;
+    bool usesDirectDatamoshSource(const std::string& clipId) const;
     void setDatamoshing(const std::string& clipId, bool datamoshEnabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb);
     void setOpticalSmear(const std::string& clipId, bool smearEnabled, double frameMerge, double frameSmear, double colorBleed, double lumaBias);
     void setCpuXor(const std::string& clipId, bool xorEnabled, double xorValue, double intensity);
@@ -56,6 +58,7 @@ private:
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDecoders;
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDatamoshDecoders;
     std::map<std::string, bool> datamoshActive;
+    std::map<std::string, bool> directDatamoshSources;
     struct DatamoshSettings {
         bool active = false;
         double iDropProb = 0.0;
@@ -66,7 +69,7 @@ private:
         bool operator==(const DatamoshSettings&) const = default;
     };
     std::map<std::string, DatamoshSettings> datamoshSettings;
-    std::mutex engineMutex;
+    mutable std::mutex engineMutex;
     std::mutex cacheMutex;
 
     std::thread workerThread;

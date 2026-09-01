@@ -42,6 +42,19 @@ public:
     bool hasActiveCpuEffects() const;
     bool canUseAsyncFrameCache() const;
 
+    // Keep the activation predicate in one place. An effect instance with
+    // all-zero values (or a repeat count of one) must leave the original
+    // decoder selected and must never retain stale repeated packets.
+    static bool hasEffectiveDatamoshSettings(
+        bool requested,
+        double iDropProb,
+        double pDupProb,
+        int pDupCount,
+        double pDropProb) {
+        return requested && (iDropProb >= 0.5 || pDropProb > 0.0 ||
+            (pDupProb > 0.0 && pDupCount > 1));
+    }
+
 private:
     AVFormatContext* formatCtx = nullptr;
     AVCodecContext* codecCtx = nullptr;

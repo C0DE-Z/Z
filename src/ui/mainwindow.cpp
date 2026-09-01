@@ -37,6 +37,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDesktopServices>
@@ -62,6 +63,10 @@
 
 namespace {
 constexpr auto kLatestReleaseApi = "https://api.github.com/repos/C0DE-Z/Z/releases/latest";
+constexpr auto kRecommendedYoloModelName = "YOLOv5x6";
+constexpr auto kRecommendedYoloModelFileName = "yolov5x6.onnx";
+constexpr auto kRecommendedYoloModelUrl = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5x6.onnx";
+constexpr qsizetype kMinimumRecommendedYoloModelBytes = 250 * 1024 * 1024;
 
 std::optional<std::array<int, 3>> parseSemanticVersion(QString version) {
     version = version.trimmed();
@@ -172,6 +177,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     centerLayout->addWidget(glWidget, 1);
     modelDownloadManager = new QNetworkAccessManager(this);
     updateCheckManager = new QNetworkAccessManager(this);
+    detectionWorker = std::make_unique<DetectionWorker>();
+    detectionSettingsTimer = new QTimer(this);
+    detectionSettingsTimer->setSingleShot(true);
+    detectionSettingsTimer->setInterval(180);
+    connect(detectionSettingsTimer, &QTimer::timeout, this, [this] {
+        if (!rawCurrentDetections.empty() || liveDetectEnabled) {
+            queueDetectionForCurrentFrame();
+        }
+    });
 
     setCentralWidget(centerWidget);
 
@@ -195,6 +209,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    if (modelDownloadReply) modelDownloadReply->abort();
+    modelDownloadFile.reset();
+    if (detectionWorker) {
+        detectionWorker->cancelScan();
+        detectionWorker->stop();
+    }
     if (importThread.joinable()) {
         importThread.join();
     }
@@ -1350,11 +1370,20 @@ void MainWindow::onTimelineScrubbed(double time) {
         }
 
         if (gotFrame && frame.width > 0 && frame.height > 0 && !frame.rgbData.empty()) {
-            lastDetectFrame = frame;
-            glWidget->updateFrame(std::move(frame));
+            auto sharedFrame = std::make_shared<DecodedVideoFrame>(std::move(frame));
+            latestDetectionFrame = sharedFrame;
+            latestDetectionFrameClipId = QString::fromStdString(topClip->id);
+            latestDetectionFrameSourceTime = localTime;
+            glWidget->updateFrame(std::move(sharedFrame));
+
+            // A completed clip scan is sampled immediately for playback. This
+            // keeps detection completely out of the playback/UI path.
+            const bool usingPrecomputedDetections = applyPrecomputedDetectionsForClip(*topClip, localTime);
             // Detection is intentionally decoupled from the 60 Hz renderer;
-            // CPU fallback and YOLO are both expensive enough to cause jitter.
-            if (liveDetectEnabled && liveDetectionTimer.elapsed() >= 150) {
+            // CPU fallback and YOLO both execute on DetectionWorker.
+            const int detectionIntervalMs = liveDetectionIntervalSlider
+                ? liveDetectionIntervalSlider->value() : 750;
+            if (!usingPrecomputedDetections && liveDetectEnabled && liveDetectionTimer.elapsed() >= detectionIntervalMs) {
                 liveDetectionTimer.restart();
                 runDetectionOnCurrentFrame();
             }
@@ -1384,16 +1413,103 @@ void MainWindow::onToggleFpsOverlay(bool checked) {
 
 void MainWindow::onDetectionSettingsChanged() {
     if (!detectSensitivitySlider || !detectMinAreaSlider) return;
-    Detector::instance().setSensitivity(detectSensitivitySlider->value() / 100.0f);
-    Detector::instance().setMinArea(detectMinAreaSlider->value() / 1000.0f);
-    if (!currentDetections.empty() || liveDetectEnabled) {
-        runDetectionOnCurrentFrame();
+    detectionWorkerSettings.sensitivity = detectSensitivitySlider->value() / 100.0f;
+    detectionWorkerSettings.minArea = detectMinAreaSlider->value() / 1000.0f;
+    scheduleDetectionSettingsRefresh();
+}
+
+DetectionWorkerSettings MainWindow::currentDetectionSettings() const {
+    DetectionWorkerSettings settings = detectionWorkerSettings;
+    // The GUI owns class filtering so existing manual and whole-clip results
+    // can be toggled instantly without another heavyweight model pass.
+    settings.classFilterEnabled = false;
+    settings.allowedClasses.clear();
+    return settings;
+}
+
+void MainWindow::scheduleDetectionSettingsRefresh() {
+    if (!detectionSettingsTimer) return;
+    detectionSettingsTimer->start();
+}
+
+void MainWindow::applyDetectionOverlayOptions() {
+    if (!glWidget) return;
+
+    DetectionOverlayOptions options;
+    options.style = detectionOverlayStyleCombo
+        ? static_cast<DetectionOverlayStyle>(detectionOverlayStyleCombo->currentData().toInt())
+        : DetectionOverlayStyle::CornerBrackets;
+    options.colorMode = detectionColorModeCombo
+        ? static_cast<DetectionColorMode>(detectionColorModeCombo->currentData().toInt())
+        : DetectionColorMode::ByTrack;
+    options.showLabels = !showDetectionLabelsCheck || showDetectionLabelsCheck->isChecked();
+    options.showConfidence = !showDetectionConfidenceCheck || showDetectionConfidenceCheck->isChecked();
+    options.showTrackIds = showDetectionTrackIdsCheck && showDetectionTrackIdsCheck->isChecked();
+    options.showTrails = !showDetectionTrailsCheck || showDetectionTrailsCheck->isChecked();
+    options.showLinks = showDetectionLinksCheck && showDetectionLinksCheck->isChecked();
+    options.showCenters = showDetectionCentersCheck && showDetectionCentersCheck->isChecked();
+    options.showPersonOutline = !showPersonOutlineCheck || showPersonOutlineCheck->isChecked();
+    options.replacePersonBoxesWithOutline = !replacePersonBoxesCheck || replacePersonBoxesCheck->isChecked();
+    options.lineWidth = detectionLineWidthSlider ? detectionLineWidthSlider->value() : 2;
+    options.fillOpacity = detectionFillOpacitySlider ? detectionFillOpacitySlider->value() : 0;
+    options.labelPointSize = detectionLabelSizeSlider ? detectionLabelSizeSlider->value() : 15;
+    options.trailLength = detectionTrailLengthSlider ? detectionTrailLengthSlider->value() : 30;
+    options.trailWidth = detectionTrailWidthSlider ? detectionTrailWidthSlider->value() : 2;
+    options.trailOpacity = detectionTrailOpacitySlider ? detectionTrailOpacitySlider->value() : 180;
+    options.linkDistance = detectionLinkDistanceSlider
+        ? detectionLinkDistanceSlider->value() / 100.0f : 0.25f;
+
+    glWidget->setDetectionOverlayOptions(options);
+    glWidget->setShowDetections(!showBoxesCheck || showBoxesCheck->isChecked());
+}
+
+void MainWindow::refreshDetectionMask() {
+    if (!glWidget) return;
+
+    const bool maskOn = applyMaskCheck && applyMaskCheck->isChecked();
+    glWidget->setMaskEnabled(maskOn);
+    glWidget->setMaskInverted(invertMaskCheck && invertMaskCheck->isChecked());
+    ++maskGeneration;
+    const uint64_t generation = maskGeneration;
+    if (!maskOn || currentDetections.empty() || currentDetectionFrameWidth <= 0 || currentDetectionFrameHeight <= 0) {
+        glWidget->setMaskData(0, 0, {});
+        return;
     }
+
+    const DetectionShape shape = detectionShapeCombo
+        ? static_cast<DetectionShape>(detectionShapeCombo->currentData().toInt())
+        : DetectionShape::Rectangle;
+    const float feather = maskFeatherSlider ? static_cast<float>(maskFeatherSlider->value()) : 6.0f;
+    const float padding = maskPaddingSlider ? static_cast<float>(maskPaddingSlider->value()) : 0.0f;
+    const float outlineWidth = maskOutlineWidthSlider ? static_cast<float>(maskOutlineWidthSlider->value()) : 6.0f;
+    if (!detectionWorker) return;
+    const QPointer<MainWindow> window(this);
+    detectionWorker->requestMaskBuild(
+        currentDetectionFrameWidth, currentDetectionFrameHeight, currentDetections,
+        feather, shape, outlineWidth, padding, generation,
+        [window](DetectionWorkerResult&& result) {
+            if (window) window->postDetectionWorkerResult(std::move(result));
+        });
 }
 
 void MainWindow::clearDetections() {
+    ++detectionGeneration;
+    ++maskGeneration;
+    ++detectionScanGeneration;
+    if (detectionWorker) detectionWorker->cancelScan();
+    detectionScanInProgress = false;
+    if (detectEntireClipButton) detectEntireClipButton->setEnabled(true);
+    if (cancelDetectionScanButton) cancelDetectionScanButton->setEnabled(false);
     currentDetections.clear();
-    Detector::instance().reset();
+    rawCurrentDetections.clear();
+    detectionSourceClipId.clear();
+    lastDetectionPlayhead = -1.0;
+    currentDetectionFrameWidth = 0;
+    currentDetectionFrameHeight = 0;
+    detectionWorkerTrackClipId.clear();
+    detectionWorkerTrackSourceTime = -1.0;
+    rejectedDetectionTracks.clear();
+    clipDetectionCaches.clear();
     if (detectionList) detectionList->clear();
     if (glWidget) {
         glWidget->setDetections({});
@@ -1404,27 +1520,350 @@ void MainWindow::clearDetections() {
     if (statusBar()) statusBar()->showMessage("Detections cleared", 2000);
 }
 
+void MainWindow::updateClassFilterFromUi() {
+    allowedDetectionClasses.clear();
+    if (!detectionClassList) return;
+
+    int checkedCount = 0;
+    for (int row = 0; row < detectionClassList->count(); ++row) {
+        const auto* item = detectionClassList->item(row);
+        if (item->checkState() == Qt::Checked) {
+            ++checkedCount;
+            allowedDetectionClasses.insert(item->data(Qt::UserRole).toString().toStdString());
+        }
+    }
+    detectionClassFilterEnabled = checkedCount != detectionClassList->count();
+    // Raw results stay cached, so restoring a class is instant and never
+    // causes expensive inference simply to undo a UI filter choice.
+    applyCurrentDetectionFilters();
+}
+
+void MainWindow::refreshDetectionList() {
+    if (!detectionList) return;
+    const QSignalBlocker blocker(detectionList);
+    detectionList->clear();
+
+    const auto rejectedIt = rejectedDetectionTracks.find(detectionSourceClipId.toStdString());
+    for (const auto& box : rawCurrentDetections) {
+        if (detectionClassFilterEnabled && !allowedDetectionClasses.contains(box.label)) continue;
+        const QString track = box.trackId > 0 ? QString("#%1  ").arg(box.trackId) : QString();
+        auto* item = new QListWidgetItem(QString("%1%2  (%3%)  [%4x%5]")
+            .arg(track)
+            .arg(QString::fromStdString(box.label.empty() ? "object" : box.label))
+            .arg(box.confidence * 100.0f, 0, 'f', 0)
+            .arg(box.w * currentDetectionFrameWidth, 0, 'f', 0)
+            .arg(box.h * currentDetectionFrameHeight, 0, 'f', 0), detectionList);
+        if (box.trackId > 0) {
+            item->setData(Qt::UserRole, box.trackId);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            const bool rejected = rejectedIt != rejectedDetectionTracks.end() &&
+                rejectedIt->second.contains(box.trackId);
+            item->setCheckState(rejected ? Qt::Unchecked : Qt::Checked);
+        }
+    }
+}
+
+void MainWindow::applyCurrentDetectionFilters() {
+    currentDetections.clear();
+    const auto rejectedIt = rejectedDetectionTracks.find(detectionSourceClipId.toStdString());
+    for (const auto& box : rawCurrentDetections) {
+        if (detectionClassFilterEnabled && !allowedDetectionClasses.contains(box.label)) continue;
+        if (box.trackId > 0 && rejectedIt != rejectedDetectionTracks.end() &&
+            rejectedIt->second.contains(box.trackId)) {
+            continue;
+        }
+        currentDetections.push_back(box);
+    }
+    refreshDetectionList();
+    if (glWidget) {
+        glWidget->setDetections(currentDetections);
+        applyDetectionOverlayOptions();
+    }
+    refreshDetectionMask();
+}
+
+void MainWindow::applyDetectionResults(
+    std::vector<DetectionBox> detections,
+    const QString& sourceClipId,
+    double sourceTime,
+    int width,
+    int height,
+    bool fromPrecomputedScan) {
+    Q_UNUSED(fromPrecomputedScan);
+    rawCurrentDetections = std::move(detections);
+    detectionSourceClipId = sourceClipId;
+    lastDetectionPlayhead = sourceTime;
+    currentDetectionFrameWidth = width;
+    currentDetectionFrameHeight = height;
+    applyCurrentDetectionFilters();
+}
+
+bool MainWindow::applyPrecomputedDetectionsForClip(const ProjectClip& clip, double sourceTime) {
+    const auto cacheIt = clipDetectionCaches.find(clip.id);
+    if (cacheIt == clipDetectionCaches.end() || cacheIt->second.samples.empty()) return false;
+
+    const auto& samples = cacheIt->second.samples;
+    const auto nearest = std::min_element(samples.begin(), samples.end(), [sourceTime](const auto& a, const auto& b) {
+        return std::abs(a.sourceTime - sourceTime) < std::abs(b.sourceTime - sourceTime);
+    });
+    if (nearest == samples.end()) return false;
+
+    if (detectionSourceClipId == QString::fromStdString(clip.id) &&
+        std::abs(lastDetectionPlayhead - nearest->sourceTime) < 0.0001 &&
+        currentDetectionFrameWidth == nearest->width && currentDetectionFrameHeight == nearest->height) {
+        return true;
+    }
+
+    applyDetectionResults(nearest->detections, QString::fromStdString(clip.id), nearest->sourceTime,
+        nearest->width, nearest->height, true);
+    return true;
+}
+
+void MainWindow::postDetectionWorkerResult(DetectionWorkerResult&& result) {
+    const QPointer<MainWindow> window(this);
+    if (!window) return;
+    const auto payload = std::make_shared<DetectionWorkerResult>(std::move(result));
+    QMetaObject::invokeMethod(window.data(), [window, payload] {
+        if (window) window->handleDetectionWorkerResult(payload);
+    }, Qt::QueuedConnection);
+}
+
+void MainWindow::handleDetectionWorkerResult(const std::shared_ptr<DetectionWorkerResult>& result) {
+    if (!result) return;
+
+    switch (result->type) {
+    case DetectionWorkerResultType::ModelLoaded:
+        if (result->generation != modelLoadGeneration) return;
+        yoloModelReady = result->modelReady;
+        if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(result->status));
+        if (statusBar()) statusBar()->showMessage(QString::fromStdString(result->status), result->success ? 5000 : 10000);
+        if (result->success) queueDetectionForCurrentFrame(true);
+        return;
+
+    case DetectionWorkerResultType::FrameDetected:
+        if (result->generation != detectionGeneration) return;
+        if (!result->success) {
+            if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(result->status));
+            if (statusBar()) statusBar()->showMessage(QString::fromStdString(result->status), 5000);
+            return;
+        }
+        applyDetectionResults(std::move(result->detections), QString::fromStdString(result->sourceClipId),
+            result->sourceTime, result->width, result->height);
+        if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(result->status));
+        if (statusBar()) statusBar()->showMessage(
+                QString("Detected %1 object(s)").arg(currentDetections.size()), 2500);
+        return;
+
+    case DetectionWorkerResultType::MaskBuilt:
+        if (result->generation != maskGeneration || !applyMaskCheck || !applyMaskCheck->isChecked()) return;
+        if (glWidget) glWidget->setMaskData(result->width, result->height, std::move(result->mask));
+        return;
+
+    case DetectionWorkerResultType::ScanStarted:
+        if (result->generation != detectionScanGeneration) return;
+        detectionScanInProgress = true;
+        if (detectEntireClipButton) detectEntireClipButton->setEnabled(false);
+        if (cancelDetectionScanButton) cancelDetectionScanButton->setEnabled(true);
+        if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(result->status));
+        return;
+
+    case DetectionWorkerResultType::ScanSample: {
+        if (result->generation != detectionScanGeneration) return;
+        auto& cache = clipDetectionCaches[result->sourceClipId];
+        cache.samples.push_back({result->sourceTime, result->width, result->height, std::move(result->detections)});
+        if (detectionStatusLabel) {
+            detectionStatusLabel->setText(QString("Scanning clip: %1 / %2 samples — %3")
+                .arg(result->sampleIndex).arg(result->sampleCount)
+                .arg(QString::fromStdString(result->status)));
+        }
+        if (latestDetectionFrameClipId == QString::fromStdString(result->sourceClipId)) {
+            if (const ProjectClip* clip = currentClip()) {
+                applyPrecomputedDetectionsForClip(*clip, latestDetectionFrameSourceTime);
+            }
+        }
+        return;
+    }
+
+    case DetectionWorkerResultType::ScanFinished:
+        if (result->generation != detectionScanGeneration) return;
+        detectionScanInProgress = false;
+        if (detectEntireClipButton) detectEntireClipButton->setEnabled(true);
+        if (cancelDetectionScanButton) cancelDetectionScanButton->setEnabled(false);
+        if (auto cacheIt = clipDetectionCaches.find(result->sourceClipId); cacheIt != clipDetectionCaches.end()) {
+            cacheIt->second.complete = result->success && !result->cancelled;
+        }
+        if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(result->status));
+        if (statusBar()) statusBar()->showMessage(QString::fromStdString(result->status), 4000);
+        return;
+    }
+}
+
+void MainWindow::queueDetectionForCurrentFrame(bool forceTrackingReset) {
+    if (!detectionWorker) return;
+    if (latestDetectionFrame && !latestDetectionFrameClipId.isEmpty()) {
+        const QString sourceClipId = latestDetectionFrameClipId;
+        const double sourceTime = latestDetectionFrameSourceTime;
+        const bool resetTracking = forceTrackingReset || sourceClipId != detectionWorkerTrackClipId ||
+            (detectionWorkerTrackSourceTime >= 0.0 &&
+                (sourceTime + 0.001 < detectionWorkerTrackSourceTime || sourceTime - detectionWorkerTrackSourceTime > 1.0));
+        detectionWorkerTrackClipId = sourceClipId;
+        detectionWorkerTrackSourceTime = sourceTime;
+        const uint64_t generation = ++detectionGeneration;
+        const QPointer<MainWindow> window(this);
+        detectionWorker->requestFrameDetection(latestDetectionFrame, sourceClipId.toStdString(), sourceTime,
+            currentDetectionSettings(), resetTracking, generation,
+            [window](DetectionWorkerResult&& result) {
+                if (window) window->postDetectionWorkerResult(std::move(result));
+            });
+        if (detectionStatusLabel) detectionStatusLabel->setText("Detecting current frame on the background worker…");
+        return;
+    }
+
+    const ProjectClip* clip = currentClip();
+    if (!clip) {
+        if (statusBar()) statusBar()->showMessage("No clip under playhead to detect", 2500);
+        return;
+    }
+    const double sourceTime = clip->sourceStart + std::max(0.0, currentPlayhead - clip->timelineStart);
+    queueDetectionForSource(QString::fromStdString(clip->filePath), QString::fromStdString(clip->id),
+        sourceTime, forceTrackingReset);
+}
+
+void MainWindow::queueDetectionForSource(
+    const QString& sourcePath,
+    const QString& sourceClipId,
+    double sourceTime,
+    bool forceTrackingReset) {
+    if (!detectionWorker || sourcePath.isEmpty() || sourceClipId.isEmpty()) return;
+    const bool resetTracking = forceTrackingReset || sourceClipId != detectionWorkerTrackClipId ||
+        (detectionWorkerTrackSourceTime >= 0.0 &&
+            (sourceTime + 0.001 < detectionWorkerTrackSourceTime || sourceTime - detectionWorkerTrackSourceTime > 1.0));
+    detectionWorkerTrackClipId = sourceClipId;
+    detectionWorkerTrackSourceTime = sourceTime;
+    const uint64_t generation = ++detectionGeneration;
+    const QPointer<MainWindow> window(this);
+    detectionWorker->requestSourceFrameDetection(sourcePath.toStdString(), sourceClipId.toStdString(), sourceTime,
+        currentDetectionSettings(), resetTracking, generation,
+        [window](DetectionWorkerResult&& result) {
+            if (window) window->postDetectionWorkerResult(std::move(result));
+        });
+    if (detectionStatusLabel) detectionStatusLabel->setText("Decoding and detecting on the background worker…");
+}
+
+void MainWindow::runDetectionOnCurrentFrame() {
+    queueDetectionForCurrentFrame();
+}
+
+void MainWindow::detectEntireActiveClip() {
+    if (!detectionWorker) return;
+
+    const ProjectClip* targetClip = nullptr;
+    const auto& tracks = Project::instance().getTracks();
+    for (const auto& track : tracks) {
+        if (track.type == TimelineTrackType::Audio) continue;
+        for (const auto& clip : track.clips) {
+            if (QString::fromStdString(clip.id) == activeClipId) {
+                targetClip = &clip;
+                break;
+            }
+        }
+        if (targetClip) break;
+    }
+    if (!targetClip) targetClip = currentClip();
+    if (!targetClip || targetClip->filePath.empty() || targetClip->sourceDuration <= 0.0) {
+        if (statusBar()) statusBar()->showMessage("Select an active video clip before scanning.", 3500);
+        return;
+    }
+
+    detectionWorker->cancelScan();
+    const uint64_t generation = ++detectionScanGeneration;
+    const std::string clipId = targetClip->id;
+    auto& cache = clipDetectionCaches[clipId];
+    cache = {};
+    cache.sampleInterval = (detectionScanIntervalSlider
+        ? detectionScanIntervalSlider->value() : 1000) / 1000.0;
+    rejectedDetectionTracks.erase(clipId);
+    detectionScanInProgress = true;
+    if (detectEntireClipButton) detectEntireClipButton->setEnabled(false);
+    if (cancelDetectionScanButton) cancelDetectionScanButton->setEnabled(true);
+    if (detectionStatusLabel) detectionStatusLabel->setText("Queued whole-clip detection on the background worker…");
+
+    const QPointer<MainWindow> window(this);
+    detectionWorker->requestClipScan(targetClip->filePath, clipId, targetClip->sourceStart,
+        targetClip->sourceDuration, cache.sampleInterval, currentDetectionSettings(), generation,
+        [window](DetectionWorkerResult&& result) {
+            if (window) window->postDetectionWorkerResult(std::move(result));
+        });
+}
+
+void MainWindow::cancelDetectionScan() {
+    if (detectionWorker) detectionWorker->cancelScan();
+    ++detectionScanGeneration;
+    detectionScanInProgress = false;
+    if (detectEntireClipButton) detectEntireClipButton->setEnabled(true);
+    if (cancelDetectionScanButton) cancelDetectionScanButton->setEnabled(false);
+    if (detectionStatusLabel) detectionStatusLabel->setText("Whole-clip detection cancelled.");
+}
+
+void MainWindow::beginYoloModelLoad(const QString& path) {
+    if (!detectionWorker || path.isEmpty()) return;
+    const uint64_t generation = ++modelLoadGeneration;
+    yoloModelReady = false;
+    if (detectionStatusLabel) detectionStatusLabel->setText(
+        QString("Loading %1 on the background worker…").arg(QFileInfo(path).fileName()));
+    const QPointer<MainWindow> window(this);
+    detectionWorker->requestModelLoad(path.toStdString(), currentDetectionSettings(), generation,
+        [window](DetectionWorkerResult&& result) {
+            if (window) window->postDetectionWorkerResult(std::move(result));
+        });
+}
+
+void MainWindow::drainModelDownload(QNetworkReply* reply) {
+    if (!reply || reply != modelDownloadReply.data() || !modelDownloadFile) return;
+    constexpr qint64 chunkSize = 1024 * 1024;
+    while (reply->bytesAvailable() > 0) {
+        const QByteArray bytes = reply->read(std::min(chunkSize, reply->bytesAvailable()));
+        if (bytes.isEmpty()) break;
+        if (modelDownloadFile->write(bytes) != bytes.size()) {
+            reply->abort();
+            return;
+        }
+        modelDownloadBytes += bytes.size();
+    }
+}
+
 void MainWindow::chooseYoloModel() {
     const QString path = QFileDialog::getOpenFileName(this, "Load YOLO ONNX model", QString(), "ONNX model (*.onnx)");
     if (path.isEmpty()) return;
-    std::string error;
-    const bool ready = Detector::instance().setYoloModel(path.toStdString(), &error);
     if (yoloModelPathEdit) yoloModelPathEdit->setText(path);
-    if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(ready ? "YOLO model loaded" : error));
-    if (ready) runDetectionOnCurrentFrame();
+    beginYoloModelLoad(path);
 }
 
 void MainWindow::downloadRecommendedYoloModel() {
-    if (!modelDownloadManager) return;
+    if (!modelDownloadManager || modelDownloadInProgress) return;
 
-    // Official Ultralytics YOLO11 nano COCO detector: small enough for local
-    // editing, with general-purpose labels such as person, pet, vehicle, etc.
-    const QUrl modelUrl("https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx");
+    // Official Ultralytics YOLOv5 medium COCO export. Its static ONNX graph is
+    // verified with Z's OpenCV DNN backend and materially improves detection
+    // quality over the previous nano model.
+    const QUrl modelUrl(QString::fromLatin1(kRecommendedYoloModelUrl));
     const QString modelDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/models";
     QDir().mkpath(modelDir);
-    const QString modelPath = modelDir + "/yolo11n.onnx";
+    const QString modelPath = modelDir + "/" + QString::fromLatin1(kRecommendedYoloModelFileName);
 
-    auto* progress = new QProgressDialog("Downloading recommended YOLO11n object model...", "Cancel", 0, 100, this);
+    modelDownloadFile = std::make_unique<QSaveFile>(modelPath);
+    if (!modelDownloadFile->open(QIODevice::WriteOnly)) {
+        modelDownloadFile.reset();
+        const QString message = "Could not create the downloaded YOLO model file.";
+        if (detectionStatusLabel) detectionStatusLabel->setText(message);
+        if (statusBar()) statusBar()->showMessage(message, 5000);
+        return;
+    }
+    modelDownloadBytes = 0;
+    modelDownloadInProgress = true;
+
+    auto* progress = new QProgressDialog(
+        QString("Downloading recommended %1 object model...").arg(QString::fromLatin1(kRecommendedYoloModelName)),
+        "Cancel", 0, 100, this);
     progress->setWindowModality(Qt::WindowModal);
     progress->setMinimumDuration(0);
     progress->setAutoClose(true);
@@ -1433,12 +1872,26 @@ void MainWindow::downloadRecommendedYoloModel() {
     QNetworkRequest request(modelUrl);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = modelDownloadManager->get(request);
+    modelDownloadReply = reply;
+    modelDownloadProgress = progress;
     connect(progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
     connect(reply, &QNetworkReply::downloadProgress, progress, [progress](qint64 received, qint64 total) {
         if (total > 0) progress->setValue(static_cast<int>(received * 100 / total));
     });
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
+        drainModelDownload(reply);
+    });
     connect(reply, &QNetworkReply::finished, this, [this, reply, progress, modelPath] {
         progress->deleteLater();
+        if (reply != modelDownloadReply.data()) {
+            reply->deleteLater();
+            return;
+        }
+        drainModelDownload(reply);
+        modelDownloadReply.clear();
+        modelDownloadProgress.clear();
+        modelDownloadInProgress = false;
+        auto downloadedFile = std::move(modelDownloadFile);
         if (reply->error() != QNetworkReply::NoError) {
             const QString message = "Model download failed: " + reply->errorString();
             if (detectionStatusLabel) detectionStatusLabel->setText(message);
@@ -1447,8 +1900,16 @@ void MainWindow::downloadRecommendedYoloModel() {
             return;
         }
 
-        QSaveFile modelFile(modelPath);
-        if (!modelFile.open(QIODevice::WriteOnly) || modelFile.write(reply->readAll()) < 0 || !modelFile.commit()) {
+        if (!downloadedFile || modelDownloadBytes < kMinimumRecommendedYoloModelBytes) {
+            const QString message = QString("The downloaded %1 model was incomplete; the existing model was left unchanged.")
+                .arg(QString::fromLatin1(kRecommendedYoloModelName));
+            if (detectionStatusLabel) detectionStatusLabel->setText(message);
+            if (statusBar()) statusBar()->showMessage(message, 7000);
+            reply->deleteLater();
+            return;
+        }
+
+        if (!downloadedFile->commit()) {
             const QString message = "Could not save the downloaded YOLO model.";
             if (detectionStatusLabel) detectionStatusLabel->setText(message);
             if (statusBar()) statusBar()->showMessage(message, 5000);
@@ -1456,13 +1917,11 @@ void MainWindow::downloadRecommendedYoloModel() {
             return;
         }
 
-        std::string error;
-        const bool ready = Detector::instance().setYoloModel(modelPath.toStdString(), &error);
         if (yoloModelPathEdit) yoloModelPathEdit->setText(modelPath);
-        const QString message = ready ? "YOLO11n downloaded and ready" : QString::fromStdString(error);
-        if (detectionStatusLabel) detectionStatusLabel->setText(message);
-        if (statusBar()) statusBar()->showMessage(message, 5000);
-        if (ready) runDetectionOnCurrentFrame();
+        if (detectionStatusLabel) detectionStatusLabel->setText(
+                QString("%1 downloaded; loading on the background worker…")
+                    .arg(QString::fromLatin1(kRecommendedYoloModelName)));
+        beginYoloModelLoad(modelPath);
         reply->deleteLater();
     });
 }
@@ -1535,69 +1994,6 @@ void MainWindow::checkForUpdates(bool interactive) {
     });
 }
 
-void MainWindow::runDetectionOnCurrentFrame() {
-    DecodedVideoFrame frame = lastDetectFrame;
-
-    if (frame.rgbData.empty() || frame.width <= 0 || frame.height <= 0) {
-        // Fetch a frame for the active clip at the playhead
-        const ProjectClip* clip = currentClip();
-        if (!clip) {
-            auto* track = currentTrack();
-            if (track) clip = clipAtTime(*track, currentPlayhead);
-        }
-        if (!clip) {
-            if (statusBar()) statusBar()->showMessage("No clip under playhead to detect", 2500);
-            return;
-        }
-        const double localTime = clip->sourceStart + std::max(0.0, currentPlayhead - clip->timelineStart);
-        const std::string mediaId = clip->mediaId.empty() ? clip->id : clip->mediaId;
-        if (!VideoEngine::instance().getFrame(mediaId, localTime, frame) || frame.rgbData.empty()) {
-            if (statusBar()) statusBar()->showMessage("Could not decode frame for detection", 2500);
-            return;
-        }
-        lastDetectFrame = frame;
-    }
-
-    if (detectSensitivitySlider && detectMinAreaSlider) {
-        Detector::instance().setSensitivity(detectSensitivitySlider->value() / 100.0f);
-        Detector::instance().setMinArea(detectMinAreaSlider->value() / 1000.0f);
-    }
-
-    currentDetections = Detector::instance().detectFrame(frame);
-    if (detectionStatusLabel) detectionStatusLabel->setText(QString::fromStdString(Detector::instance().status()));
-
-    if (detectionList) {
-        detectionList->clear();
-        for (const auto& box : currentDetections) {
-            detectionList->addItem(QString("%1  (%2%)  [%3x%4]")
-                .arg(QString::fromStdString(box.label))
-                .arg(box.confidence * 100.0f, 0, 'f', 0)
-                .arg(box.w * frame.width, 0, 'f', 0)
-                .arg(box.h * frame.height, 0, 'f', 0));
-        }
-    }
-
-    if (glWidget) {
-        glWidget->setDetections(currentDetections);
-        if (showBoxesCheck) glWidget->setShowDetections(showBoxesCheck->isChecked());
-        const DetectionShape shape = detectionShapeCombo
-            ? static_cast<DetectionShape>(detectionShapeCombo->currentData().toInt())
-            : DetectionShape::Rectangle;
-        glWidget->setDetectionShape(shape);
-
-        const bool maskOn = applyMaskCheck && applyMaskCheck->isChecked();
-        glWidget->setMaskEnabled(maskOn);
-        if (maskOn) {
-            auto mask = Detector::buildMaskFromBoxes(frame.width, frame.height, currentDetections, 6.0f, shape);
-            glWidget->setMaskData(frame.width, frame.height, mask);
-        }
-    }
-
-    if (statusBar()) {
-        statusBar()->showMessage(QString("Detected %1 region(s)").arg(currentDetections.size()), 2500);
-    }
-}
-
 void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* activeTrack, const ProjectClip* activeClip) {
     Q_UNUSED(activeTrack);
     if (!activeTrack) {
@@ -1651,11 +2047,12 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
             return index < evaluatedEffect.parameters.size() ? evaluatedEffect.parameters[index].currentVal : fallback;
         };
         if (eff.pluginId == "datamosh") {
-            iDrop = readParam(0, 0.0);
-            pDup = readParam(1, 0.0);
-            pDupCount = std::max(1, static_cast<int>(readParam(2, 4.0)));
-            pDrop = readParam(3, 0.0);
-            datamoshEnabled = iDrop >= 0.5 || pDup > 0.0 || pDrop > 0.0;
+            iDrop = std::clamp(readParam(0, 0.0), 0.0, 1.0);
+            pDup = std::clamp(readParam(1, 0.0), 0.0, 1.0);
+            pDupCount = std::max(1, static_cast<int>(readParam(2, 1.0)));
+            pDrop = std::clamp(readParam(3, 0.0), 0.0, 1.0);
+            datamoshEnabled = VideoDecoder::hasEffectiveDatamoshSettings(
+                true, iDrop, pDup, pDupCount, pDrop);
         } else if (eff.pluginId == "optical_smear") {
             frameMerge = readParam(0, 0.25);
             frameSmear = readParam(1, 0.1);
@@ -1687,7 +2084,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
         }
     }
 
-    VideoEngine::instance().setDatamoshing(mediaId, datamoshEnabled, iDrop >= 0.5 ? 1.0 : 0.0, pDup, pDupCount, pDrop);
+    VideoEngine::instance().setDatamoshing(mediaId, datamoshEnabled, iDrop, pDup, pDupCount, pDrop);
     if (datamoshEnabled && VideoEngine::instance().isAsyncDecodeEnabled()) {
         // Begin a rolling look-ahead decode immediately, not just after Play
         // is pressed. Packet manipulation is CPU-intensive; warming the
@@ -1695,7 +2092,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
         // playback seconds from stalling.
         VideoEngine::instance().requestFrameAsync(mediaId, clipTime);
     }
-    if (datamoshEnabled && activeClip->datamoshProxyPath.empty()) {
+    if (datamoshEnabled && !VideoEngine::instance().hasDatamoshPacketSource(mediaId)) {
         createDatamoshProxyAsync(*activeClip);
     }
     VideoEngine::instance().setOpticalSmear(mediaId, smearEnabled, frameMerge, frameSmear, colorBleed, lumaBias);
@@ -2016,9 +2413,9 @@ AppliedEffect MainWindow::createEffectTemplate(const QString& effectId) const {
             return ShaderParameter{name, label, minV, maxV, defV, defV, isBool, AnimationCurve(defV)};
         };
         effect.parameters = {
-            make("iDrop", "Remove I-Frames", 0.0, 1.0, 1.0, true),
+            make("iDrop", "Remove I-Frames", 0.0, 1.0, 0.0, true),
             make("pDup", "P-Frame Repeat Chance", 0.0, 1.0, 0.0),
-            make("pDupCount", "P-Frame Repeat Count", 1.0, 20.0, 2.0),
+            make("pDupCount", "P-Frame Repeat Count", 1.0, 20.0, 1.0),
             make("pDrop", "P-Frame Drop Chance", 0.0, 1.0, 0.0)
         };
     } else if (effectId == "optical_smear") {

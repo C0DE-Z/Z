@@ -1,5 +1,6 @@
-KeyframeTests 18 0.00650502
-AppStateTests 18 0.0101125
-ProjectTests 18 0.010252
-MediaImporterTests 17 0.0127585
+KeyframeTests 32 0.000927256
+AppStateTests 32 0.00179013
+ProjectTests 32 0.0012608
+MediaImporterTests 31 0.00216828
+DetectorTests 11 0.0198319
 ---

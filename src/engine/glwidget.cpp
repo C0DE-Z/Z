@@ -4,6 +4,8 @@
 #include <QCursor>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPainterPath>
+#include <QStringList>
 #include <cmath>
 #include <algorithm>
 #include <QDebug>
@@ -185,6 +187,7 @@ void GLWidget::allocateFBOs(int w, int h) {
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
+    delete exportFbo;
 
     QOpenGLFramebufferObjectFormat format;
     format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
@@ -246,6 +249,7 @@ void GLWidget::resizeGL(int w, int h) {
 
 void GLWidget::updateFrame(const DecodedVideoFrame& frame) {
     std::lock_guard<std::mutex> lock(m_frameMutex);
+    sharedCurrentFrame.reset();
     currentFrame = frame;
     hasNewFrame = true;
     isTransitioning = false;
@@ -254,7 +258,19 @@ void GLWidget::updateFrame(const DecodedVideoFrame& frame) {
 
 void GLWidget::updateFrame(DecodedVideoFrame&& frame) {
     std::lock_guard<std::mutex> lock(m_frameMutex);
+    sharedCurrentFrame.reset();
     currentFrame = std::move(frame);
+    hasNewFrame = true;
+    isTransitioning = false;
+    update();
+}
+
+
+void GLWidget::updateFrame(std::shared_ptr<const DecodedVideoFrame> frame) {
+    if (!frame) return;
+    std::lock_guard<std::mutex> lock(m_frameMutex);
+    sharedCurrentFrame = std::move(frame);
+    currentFrame = {};
     hasNewFrame = true;
     isTransitioning = false;
     update();
@@ -262,6 +278,7 @@ void GLWidget::updateFrame(DecodedVideoFrame&& frame) {
 
 void GLWidget::updateTransitionFrames(const DecodedVideoFrame& f1, const DecodedVideoFrame& f2, double progress, const std::string& pluginId) {
     std::lock_guard<std::mutex> lock(m_frameMutex);
+    sharedCurrentFrame.reset();
     transitionFrame1 = f1;
     transitionFrame2 = f2;
     transitionProgress = progress;
@@ -271,6 +288,8 @@ void GLWidget::updateTransitionFrames(const DecodedVideoFrame& f1, const Decoded
     update();
 }
 void GLWidget::clearFrame() {
+    std::lock_guard<std::mutex> lock(m_frameMutex);
+    sharedCurrentFrame.reset();
     int w = lastFrameWidth > 0 ? lastFrameWidth : 1280;
     int h = lastFrameHeight > 0 ? lastFrameHeight : 720;
     currentFrame.rgbData.assign(w * h * 3, 0);
@@ -380,6 +399,19 @@ void GLWidget::setShowDetections(bool show) {
     update();
 }
 
+void GLWidget::setDetectionOverlayOptions(const DetectionOverlayOptions& options) {
+    m_detectionOverlayOptions = options;
+    m_detectionOverlayOptions.lineWidth = std::clamp(m_detectionOverlayOptions.lineWidth, 1, 12);
+    m_detectionOverlayOptions.labelPointSize = std::clamp(m_detectionOverlayOptions.labelPointSize, 8, 48);
+    m_detectionOverlayOptions.maxDetections = std::clamp(m_detectionOverlayOptions.maxDetections, 1, 128);
+    m_detectionOverlayOptions.fillOpacity = std::clamp(m_detectionOverlayOptions.fillOpacity, 0, 255);
+    m_detectionOverlayOptions.trailLength = std::clamp(m_detectionOverlayOptions.trailLength, 2, 120);
+    m_detectionOverlayOptions.trailWidth = std::clamp(m_detectionOverlayOptions.trailWidth, 1, 12);
+    m_detectionOverlayOptions.trailOpacity = std::clamp(m_detectionOverlayOptions.trailOpacity, 0, 255);
+    m_detectionOverlayOptions.linkDistance = std::clamp(m_detectionOverlayOptions.linkDistance, 0.02f, 1.0f);
+    update();
+}
+
 void GLWidget::setDetectionShape(DetectionShape shape) {
     m_detectionShape = shape;
     update();
@@ -395,6 +427,11 @@ void GLWidget::setMaskEnabled(bool enabled) {
     update();
 }
 
+void GLWidget::setMaskInverted(bool inverted) {
+    m_maskInverted = inverted;
+    update();
+}
+
 void GLWidget::setMaskData(int width, int height, const std::vector<uint8_t>& maskR) {
     pendingMaskW = width;
     pendingMaskH = height;
@@ -407,6 +444,18 @@ void GLWidget::setMaskData(int width, int height, const std::vector<uint8_t>& ma
     // while still paying an extra full-screen composite pass per effect.
     // Treat it as no mask until detections produce real coverage.
     hasMaskTexture = (width > 0 && height > 0 && !maskR.empty() && hasCoverage);
+    update();
+}
+
+void GLWidget::setMaskData(int width, int height, std::vector<uint8_t>&& maskR) {
+    pendingMaskW = width;
+    pendingMaskH = height;
+    const bool hasCoverage = std::any_of(maskR.begin(), maskR.end(), [](uint8_t value) {
+        return value != 0;
+    });
+    pendingMask = std::move(maskR);
+    maskDirty = true;
+    hasMaskTexture = (width > 0 && height > 0 && !pendingMask.empty() && hasCoverage);
     update();
 }
 
@@ -443,6 +492,7 @@ void GLWidget::paintEvent(QPaintEvent* event) {
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
     // Editor-only overlays are painted after OpenGL presentation. Export reads
     // renderedTexture directly, so guides and detection labels never render to
@@ -470,17 +520,75 @@ void GLWidget::paintEvent(QPaintEvent* event) {
 
     if (!m_showDetections || detections.empty()) return;
 
-    const QColor colors[] = {
-        QColor(245, 158, 248),
-        QColor(56, 189, 248),
-        QColor(52, 211, 153),
-        QColor(251, 191, 36),
-        QColor(248, 113, 113),
+    const auto stableColor = [](const std::string& key, int fallback) {
+        uint32_t hash = 2166136261u;
+        for (const unsigned char ch : key) {
+            hash = (hash ^ ch) * 16777619u;
+        }
+        hash ^= static_cast<uint32_t>(fallback) * 2654435761u;
+        return QColor::fromHsv(static_cast<int>(hash % 360u), 185 + static_cast<int>((hash >> 9) % 56u), 255);
+    };
+    const auto colorFor = [&](const DetectionBox& box, int fallback) {
+        switch (m_detectionOverlayOptions.colorMode) {
+        case DetectionColorMode::ByClass:
+            return stableColor(box.label, fallback);
+        case DetectionColorMode::Fixed:
+            return QColor(245, 158, 248);
+        case DetectionColorMode::ByTrack:
+        default:
+            return stableColor("track_" + std::to_string(std::max(0, box.trackId)), fallback);
+        }
+    };
+    const auto centerOf = [](const DetectionBox& box) {
+        return QPointF(box.x + box.w * 0.5, box.y + box.h * 0.5);
     };
 
-    for (size_t i = 0; i < detections.size(); ++i) {
+    const size_t visibleCount = std::min(
+        detections.size(), static_cast<size_t>(m_detectionOverlayOptions.maxDetections));
+
+    if (m_detectionOverlayOptions.showLinks && visibleCount > 1) {
+        painter.save();
+        for (size_t i = 0; i < visibleCount; ++i) {
+            const QPointF from = centerOf(detections[i]);
+            for (size_t j = i + 1; j < visibleCount; ++j) {
+                const QPointF to = centerOf(detections[j]);
+                const qreal distance = std::hypot(from.x() - to.x(), from.y() - to.y());
+                if (distance > m_detectionOverlayOptions.linkDistance) continue;
+                QColor color = colorFor(detections[i], static_cast<int>(i));
+                color.setAlpha(130);
+                QPen pen(color, std::max(1, m_detectionOverlayOptions.lineWidth - 1), Qt::DashLine);
+                painter.setPen(pen);
+                painter.drawLine(QPointF(from.x() * width(), from.y() * height()),
+                    QPointF(to.x() * width(), to.y() * height()));
+            }
+        }
+        painter.restore();
+    }
+
+    if (m_detectionOverlayOptions.showTrails) {
+        painter.save();
+        for (size_t boxIndex = 0; boxIndex < visibleCount; ++boxIndex) {
+            const auto& box = detections[boxIndex];
+            const auto& trail = box.trail;
+            if (trail.size() < 2) continue;
+            const size_t first = trail.size() > static_cast<size_t>(m_detectionOverlayOptions.trailLength)
+                ? trail.size() - static_cast<size_t>(m_detectionOverlayOptions.trailLength) : 0;
+            const QColor baseColor = colorFor(box, static_cast<int>(boxIndex));
+            QColor color = baseColor;
+            color.setAlpha(m_detectionOverlayOptions.trailOpacity);
+            painter.setPen(QPen(color, m_detectionOverlayOptions.trailWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            QPainterPath trailPath(QPointF(trail[first].x * width(), trail[first].y * height()));
+            for (size_t pointIndex = first + 1; pointIndex < trail.size(); ++pointIndex) {
+                trailPath.lineTo(QPointF(trail[pointIndex].x * width(), trail[pointIndex].y * height()));
+            }
+            painter.drawPath(trailPath);
+        }
+        painter.restore();
+    }
+
+    for (size_t i = 0; i < visibleCount; ++i) {
         const auto& box = detections[i];
-        const QColor color = colors[i % 5];
+        const QColor color = colorFor(box, static_cast<int>(i));
         const QRectF rect(
             box.x * width(),
             box.y * height(),
@@ -488,31 +596,85 @@ void GLWidget::paintEvent(QPaintEvent* event) {
             box.h * height()
         );
 
-        QPen pen(color, 2.0);
-        if (m_detectionShape == DetectionShape::Outline) {
-            pen.setStyle(Qt::DashLine);
-        }
-        painter.setPen(pen);
-        painter.setBrush(Qt::NoBrush);
-        if (m_detectionShape == DetectionShape::Ellipse) {
-            painter.drawEllipse(rect);
-        } else {
-            painter.drawRect(rect);
+        const bool hasPersonOutline = m_detectionOverlayOptions.showPersonOutline &&
+            box.label == "person" && box.outline.size() >= 3;
+        const bool drawBox = !hasPersonOutline || !m_detectionOverlayOptions.replacePersonBoxesWithOutline;
+
+        if (drawBox && m_detectionOverlayOptions.fillOpacity > 0) {
+            QColor fill = color;
+            fill.setAlpha(m_detectionOverlayOptions.fillOpacity);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(fill);
+            if (m_detectionOverlayOptions.style == DetectionOverlayStyle::Ellipse) {
+                painter.drawEllipse(rect);
+            } else if (m_detectionOverlayOptions.style == DetectionOverlayStyle::RoundedRectangle) {
+                painter.drawRoundedRect(rect, 6.0, 6.0);
+            } else {
+                painter.drawRect(rect);
+            }
         }
 
-        const QString label = QString("%1  %2%")
-            .arg(QString::fromStdString(box.label))
-            .arg(box.confidence * 100.0f, 0, 'f', 0);
+        QPen pen(color, m_detectionOverlayOptions.lineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        if (drawBox) {
+            if (m_detectionOverlayOptions.style == DetectionOverlayStyle::Ellipse) {
+                painter.drawEllipse(rect);
+            } else if (m_detectionOverlayOptions.style == DetectionOverlayStyle::RoundedRectangle) {
+                painter.drawRoundedRect(rect, 6.0, 6.0);
+            } else if (m_detectionOverlayOptions.style == DetectionOverlayStyle::CornerBrackets) {
+                const qreal arm = std::max<qreal>(8.0, std::min(rect.width(), rect.height()) * 0.24);
+                painter.drawLine(rect.left(), rect.top(), rect.left() + arm, rect.top());
+                painter.drawLine(rect.left(), rect.top(), rect.left(), rect.top() + arm);
+                painter.drawLine(rect.right(), rect.top(), rect.right() - arm, rect.top());
+                painter.drawLine(rect.right(), rect.top(), rect.right(), rect.top() + arm);
+                painter.drawLine(rect.left(), rect.bottom(), rect.left() + arm, rect.bottom());
+                painter.drawLine(rect.left(), rect.bottom(), rect.left(), rect.bottom() - arm);
+                painter.drawLine(rect.right(), rect.bottom(), rect.right() - arm, rect.bottom());
+                painter.drawLine(rect.right(), rect.bottom(), rect.right(), rect.bottom() - arm);
+            } else {
+                painter.drawRect(rect);
+            }
+        }
+        if (hasPersonOutline) {
+            QPainterPath outlinePath(QPointF(box.outline.front().x * width(), box.outline.front().y * height()));
+            for (size_t pointIndex = 1; pointIndex < box.outline.size(); ++pointIndex) {
+                outlinePath.lineTo(QPointF(box.outline[pointIndex].x * width(), box.outline[pointIndex].y * height()));
+            }
+            outlinePath.closeSubpath();
+            painter.drawPath(outlinePath);
+        }
+
+        if (m_detectionOverlayOptions.showCenters) {
+            painter.setBrush(color);
+            painter.setPen(Qt::NoPen);
+            const QPointF center(rect.center());
+            const qreal radius = std::max<qreal>(2.0, m_detectionOverlayOptions.lineWidth + 0.5);
+            painter.drawEllipse(center, radius, radius);
+        }
+
+        QStringList labelParts;
+        if (m_detectionOverlayOptions.showTrackIds && box.trackId > 0) {
+            labelParts << QString("#%1").arg(box.trackId);
+        }
+        if (m_detectionOverlayOptions.showLabels) {
+            labelParts << QString::fromStdString(box.label.empty() ? "object" : box.label);
+        }
+        if (m_detectionOverlayOptions.showConfidence) {
+            labelParts << QString("%1%").arg(box.confidence * 100.0f, 0, 'f', 0);
+        }
+        if (labelParts.isEmpty()) continue;
+        const QString label = labelParts.join("  ");
 
         QFont font = painter.font();
         font.setBold(true);
-        font.setPointSize(9);
+        font.setPointSize(m_detectionOverlayOptions.labelPointSize);
         painter.setFont(font);
 
         QFontMetrics fm(font);
         const QRect textRect = fm.boundingRect(label).adjusted(-4, -2, 4, 2);
         QRect badge(
-            static_cast<int>(rect.left()),
+            std::clamp(static_cast<int>(rect.left()), 0, std::max(0, width() - textRect.width())),
             std::max(0, static_cast<int>(rect.top()) - textRect.height()),
             textRect.width(),
             textRect.height()
@@ -580,7 +742,11 @@ void GLWidget::paintGL() {
     if (hasNewFrame) {
         std::lock_guard<std::mutex> lock(m_frameMutex);
         if (!isTransitioning) {
-            uploadPrimaryVideoTexture(currentFrame);
+            if (sharedCurrentFrame) {
+                uploadPrimaryVideoTexture(*sharedCurrentFrame);
+            } else {
+                uploadPrimaryVideoTexture(currentFrame);
+            }
         } else {
             if (!transitionFrame1.rgbData.empty()) {
                 uploadPrimaryVideoTexture(transitionFrame1);
@@ -656,36 +822,16 @@ void GLWidget::paintGL() {
         if (volLoc != -1) glUniform1f(volLoc, (b + m + t) / 3.0f);
     };
 
-    auto guardEffectAlpha = [&](GLuint sourceTex, GLuint effectedTex) -> GLuint {
-        if (!alphaGuardShader || !alphaGuardShader->isLinked()) {
-            return effectedTex;
-        }
-
-        fboPong->bind();
-        glViewport(0, 0, w, h);
-        alphaGuardShader->bind();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sourceTex);
-        alphaGuardShader->setUniformValue("sourceTexture", 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, effectedTex);
-        alphaGuardShader->setUniformValue("effectedTexture", 1);
-        renderQuad();
-        alphaGuardShader->release();
-        fboPong->release();
-
-        const GLuint guardedTex = fboPong->texture();
-        std::swap(fboPing, fboPong);
-        return guardedTex;
-    };
-
     GLuint currentTex = videoTexture;
+    QOpenGLFramebufferObject* readFbo = fboPing;
+    QOpenGLFramebufferObject* writeFbo = fboPong;
+
     if (isTransitioning) {
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(currentTransitionPlugin);
         if (plugin) {
             compileCustomPluginShader(*plugin);
             if (plugin->isCompiled && plugin->shaderProgram > 0) {
-                fboPong->bind();
+                writeFbo->bind();
                 glViewport(0, 0, w, h);
                 glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -709,25 +855,23 @@ void GLWidget::paintGL() {
                 renderQuad();
 
                 glUseProgram(0);
-                fboPong->release();
+                writeFbo->release();
 
-                currentTex = fboPong->texture();
-                std::swap(fboPing, fboPong);
-                currentTex = guardEffectAlpha(videoTexture, currentTex);
+                currentTex = writeFbo->texture();
+                std::swap(readFbo, writeFbo);
             }
         }
     }
 
+    bool anyEffectApplied = false;
     for (const AppliedEffect& eff : activeEffects) {
         Profiler::instance().mark("effect_" + eff.pluginId);
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(eff.pluginId);
         if (plugin) {
             compileCustomPluginShader(*plugin);
             if (plugin->isCompiled && plugin->shaderProgram > 0) {
-                // Preserve the incoming texture: after the plugin renders, a
-                // shared composite pass limits that effect to the active mask.
                 const GLuint sourceTex = currentTex;
-                fboPong->bind();
+                writeFbo->bind();
                 glViewport(0, 0, w, h);
                 glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -768,16 +912,17 @@ void GLWidget::paintGL() {
                 renderQuad();
 
                 glUseProgram(0);
-                fboPong->release();
+                writeFbo->release();
 
                 Profiler::instance().sample("effect_" + eff.pluginId, Profiler::instance().elapsed("effect_" + eff.pluginId));
 
-                currentTex = fboPong->texture();
-                std::swap(fboPing, fboPong);
+                currentTex = writeFbo->texture();
+                std::swap(readFbo, writeFbo);
+                anyEffectApplied = true;
 
                 if (m_maskEnabled && hasMaskTexture &&
                     maskCompositeShader && maskCompositeShader->isLinked()) {
-                    fboPong->bind();
+                    writeFbo->bind();
                     glViewport(0, 0, w, h);
                     maskCompositeShader->bind();
                     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, sourceTex);
@@ -786,19 +931,37 @@ void GLWidget::paintGL() {
                     maskCompositeShader->setUniformValue("effectedTexture", 1);
                     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, maskTexture);
                     maskCompositeShader->setUniformValue("maskTexture", 2);
-                    maskCompositeShader->setUniformValue("invertMask", 0.0f);
+                    maskCompositeShader->setUniformValue("invertMask", m_maskInverted ? 1.0f : 0.0f);
                     renderQuad();
                     maskCompositeShader->release();
-                    fboPong->release();
-                    currentTex = fboPong->texture();
-                    std::swap(fboPing, fboPong);
+                    writeFbo->release();
+                    currentTex = writeFbo->texture();
+                    std::swap(readFbo, writeFbo);
                 }
-
-                // Enforce the source alpha after every effect. This prevents
-                // custom shaders from changing fully transparent pixels.
-                currentTex = guardEffectAlpha(sourceTex, currentTex);
             }
         }
+    }
+
+    // When the source video contains alpha (e.g. transparent ProRes 4444),
+    // restore the source alpha channel once after the effect chain so custom
+    // shaders that write opaque RGB do not erase transparent backgrounds.
+    if (anyEffectApplied && lastFrameHasAlpha && alphaGuardShader && alphaGuardShader->isLinked()) {
+        writeFbo->bind();
+        glViewport(0, 0, w, h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        alphaGuardShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, videoTexture);
+        alphaGuardShader->setUniformValue("sourceTexture", 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, currentTex);
+        alphaGuardShader->setUniformValue("effectedTexture", 1);
+        renderQuad();
+        alphaGuardShader->release();
+        writeFbo->release();
+        currentTex = writeFbo->texture();
+        std::swap(readFbo, writeFbo);
     }
 
     if (fboFeedback && passthroughShader && passthroughShader->isLinked()) {
