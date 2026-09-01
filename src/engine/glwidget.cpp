@@ -546,6 +546,11 @@ void GLWidget::paintEvent(QPaintEvent* event) {
     const size_t visibleCount = std::min(
         detections.size(), static_cast<size_t>(m_detectionOverlayOptions.maxDetections));
 
+    // Badges already on screen; overlapping detections must not print their
+    // labels on top of each other.
+    std::vector<QRect> placedBadges;
+    placedBadges.reserve(visibleCount);
+
     if (m_detectionOverlayOptions.showLinks && visibleCount > 1) {
         painter.save();
         for (size_t i = 0; i < visibleCount; ++i) {
@@ -669,20 +674,56 @@ void GLWidget::paintEvent(QPaintEvent* event) {
         QFont font = painter.font();
         font.setBold(true);
         font.setPointSize(m_detectionOverlayOptions.labelPointSize);
+        font.setStyleStrategy(QFont::StyleStrategy(QFont::PreferAntialias | QFont::PreferQuality));
         painter.setFont(font);
 
-        QFontMetrics fm(font);
-        const QRect textRect = fm.boundingRect(label).adjusted(-4, -2, 4, 2);
-        QRect badge(
-            std::clamp(static_cast<int>(rect.left()), 0, std::max(0, width() - textRect.width())),
-            std::max(0, static_cast<int>(rect.top()) - textRect.height()),
-            textRect.width(),
-            textRect.height()
-        );
+        const QFontMetrics fm(font);
+        const int paddingX = 7;
+        const int paddingY = 3;
+        const int accentWidth = 3;
+        const int badgeW = fm.horizontalAdvance(label) + paddingX * 2 + accentWidth;
+        const int badgeH = fm.height() + paddingY * 2;
 
-        painter.fillRect(badge, QColor(color.red(), color.green(), color.blue(), 210));
-        painter.setPen(QColor(20, 16, 28));
-        painter.drawText(badge, Qt::AlignCenter, label);
+        // Prefer a badge just above the box; when the box touches the top of
+        // the frame, tuck the badge inside it so text never leaves the view
+        // or gets struck through by the box's own edge.
+        int badgeX = static_cast<int>(std::lround(rect.left()));
+        int badgeY = static_cast<int>(std::lround(rect.top())) - badgeH - 2;
+        if (badgeY < 0) {
+            badgeY = static_cast<int>(std::lround(rect.top())) + 2;
+        }
+        badgeX = std::clamp(badgeX, 0, std::max(0, width() - badgeW));
+        badgeY = std::clamp(badgeY, 0, std::max(0, height() - badgeH));
+        QRect badge(badgeX, badgeY, badgeW, badgeH);
+
+        // Nudge colliding badges down until they find free space instead of
+        // double-printing text on top of an existing label.
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            const bool collides = std::any_of(placedBadges.begin(), placedBadges.end(),
+                [&badge](const QRect& placed) { return badge.intersects(placed); });
+            if (!collides) break;
+            badge.translate(0, badgeH + 2);
+            if (badge.bottom() > height() - 1) {
+                badge.moveBottom(height() - 1);
+                break;
+            }
+        }
+        placedBadges.push_back(badge);
+
+        // Dark plate with a colored accent strip: readable over bright and
+        // dark footage alike, unlike saturated fill with near-black text.
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(12, 10, 18, 200));
+        painter.drawRoundedRect(badge, 3.0, 3.0);
+        QColor accent = color;
+        accent.setAlpha(255);
+        painter.setBrush(accent);
+        painter.drawRect(QRect(badge.left(), badge.top() + 2, accentWidth, badge.height() - 4));
+
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(Qt::white);
+        const QRect textArea = badge.adjusted(accentWidth + paddingX, 0, -paddingX, 0);
+        painter.drawText(textArea, Qt::AlignVCenter | Qt::AlignLeft, label);
     }
 }
 
