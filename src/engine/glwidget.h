@@ -13,6 +13,7 @@
 #include <QImage>
 #include <mutex>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <array>
 #include <memory>
@@ -100,6 +101,12 @@ public:
     void setMaskData(int width, int height, std::vector<uint8_t>&& maskR);
     QImage grabRenderedFrame();
 
+    double getCurrentFps() const { return currentFps; }
+    double getLastRenderTimeMs() const { return m_lastRenderTimeMs; }
+    double getAvgRenderTimeMs() const { return m_avgRenderTimeMs; }
+    int getLastFrameWidth() const { return lastFrameWidth; }
+    int getLastFrameHeight() const { return lastFrameHeight; }
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -114,6 +121,9 @@ private:
     QElapsedTimer fpsTimer;
     int frameCount = 0;
     double currentFps = 0.0;
+    double m_lastRenderTimeMs = 0.0;
+    double m_avgRenderTimeMs = 0.0;
+    std::deque<double> m_renderTimeHistory;
     bool showOverlay = true;
     QLabel* overlayLabel = nullptr;
 

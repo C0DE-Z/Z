@@ -149,6 +149,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(playbackTimer, &QTimer::timeout, this, &MainWindow::onPlaybackTimer);
     liveDetectionTimer.start();
 
+    renderStatsTimer = new QTimer(this);
+    connect(renderStatsTimer, &QTimer::timeout, this, &MainWindow::updateRenderStats);
+    renderStatsTimer->start(125);
+
     statusBar()->showMessage("Ready", 3000);
     updateStatusBar();
     updateEffectsState();
@@ -326,6 +330,64 @@ void MainWindow::updateStatusBar() {
         .arg(mins, 2, 10, QChar('0'))
         .arg(secs, 2, 10, QChar('0'))
         .arg(AppState::instance().undoStackSize()));
+
+    updateRenderStats();
+}
+
+void MainWindow::updateRenderStats() {
+    if (!statusBar()) return;
+    if (!renderStatsStatusLabel) {
+        renderStatsStatusLabel = new QLabel(this);
+        renderStatsStatusLabel->setStyleSheet(
+            "QLabel { "
+            "  color: #d8b4fe; "
+            "  background: #14121d; "
+            "  border: 1px solid #37294e; "
+            "  border-radius: 4px; "
+            "  padding: 1px 10px; "
+            "  font-family: 'Consolas', 'Segoe UI Mono', monospace; "
+            "  font-size: 10px; "
+            "  margin-right: 8px; "
+            "}"
+        );
+        statusBar()->addPermanentWidget(renderStatsStatusLabel);
+    }
+
+    if (!glWidget) return;
+
+    double lastMs = glWidget->getLastRenderTimeMs();
+    double avgMs = glWidget->getAvgRenderTimeMs();
+    double fps = glWidget->getCurrentFps();
+    int w = glWidget->getLastFrameWidth();
+    int h = glWidget->getLastFrameHeight();
+
+    size_t cacheCount = VideoEngine::instance().getCacheFrameCount();
+    size_t cacheBytes = VideoEngine::instance().getCacheByteSize();
+    double cacheMb = cacheBytes / (1024.0 * 1024.0);
+
+    QString fpsText;
+    if (isPlaying) {
+        const bool isRealtime = (fps >= 23.0 && fps >= (30.0 * 0.9));
+        QString color = isRealtime ? "#4ade80" : "#fbbf24";
+        fpsText = QString("<span style='color:%1;'>%2 fps (%3)</span>")
+            .arg(color)
+            .arg(fps, 0, 'f', 1)
+            .arg(isRealtime ? "Realtime" : "Slow");
+    } else {
+        fpsText = "<span style='color:#a78bfa;'>Paused</span>";
+    }
+
+    QString resText = (w > 0 && h > 0) ? QString("%1×%2").arg(w).arg(h) : "--";
+
+    renderStatsStatusLabel->setText(
+        QString("Render: <b>%1 ms</b> (Avg: <b>%2 ms</b>)  |  %3  |  %4  |  RAM Cache: <b>%5 f</b> (%6 MB)")
+            .arg(lastMs, 0, 'f', 1)
+            .arg(avgMs, 0, 'f', 1)
+            .arg(fpsText)
+            .arg(resText)
+            .arg(cacheCount)
+            .arg(cacheMb, 0, 'f', 0)
+    );
 }
 
 void MainWindow::openPreferences() {
@@ -1121,19 +1183,47 @@ void MainWindow::togglePlayback() {
         playPauseBtn->setIcon(VectorIcon::create(isPlaying ? VectorIcon::Type::Pause : VectorIcon::Type::Play, QColor(245, 158, 248), QSize(18, 18)));
     }
     if (isPlaying) {
-        // A precise 60 Hz tick leaves enough headroom for UI and GPU work while
-        // audio remains the source of truth for the playhead.
         playbackTimer->start(16);
         AudioEngine::instance().setPlayheadTime(currentPlayhead);
-        AudioEngine::instance().start();
+        bool audioOk = AudioEngine::instance().start();
+        playbackWallClock.restart();
+        playbackStartPlayhead = currentPlayhead;
+        lastAudioPlayhead = currentPlayhead;
+        audioStallCount = 0;
+        qDebug() << "[Playback] START at" << currentPlayhead << "s. Audio hardware active:" << audioOk;
     } else {
         playbackTimer->stop();
         AudioEngine::instance().stop();
+        qDebug() << "[Playback] STOP at" << currentPlayhead << "s";
     }
 }
 
 void MainWindow::onPlaybackTimer() {
-    currentPlayhead = AudioEngine::instance().getPlayheadTime();
+    double audioTime = AudioEngine::instance().getPlayheadTime();
+    double wallElapsed = playbackWallClock.nsecsElapsed() / 1.0e9;
+    double expectedWallTime = playbackStartPlayhead + wallElapsed;
+
+    // Check if AudioEngine is actively advancing
+    if (std::abs(audioTime - lastAudioPlayhead) > 0.0005) {
+        // Audio clock is advancing normally
+        currentPlayhead = audioTime;
+        lastAudioPlayhead = audioTime;
+        audioStallCount = 0;
+    } else {
+        // Audio clock is stationary
+        audioStallCount++;
+        if (audioStallCount > 4) {
+            // After ~60ms without audio movement, fall back to steady wall-clock
+            currentPlayhead = expectedWallTime;
+            AudioEngine::instance().setPlayheadTime(currentPlayhead);
+            lastAudioPlayhead = currentPlayhead;
+            if (audioStallCount == 5) {
+                qDebug() << "[Playback] Audio playhead inactive; falling back to wall-clock timing at" << currentPlayhead << "s";
+            }
+        } else {
+            currentPlayhead = audioTime;
+        }
+    }
 
     double maxDuration = std::max(10.0, Project::instance().getDuration());
     double loopStart = (markIn >= 0.0 && markOut > markIn) ? markIn : 0.0;
@@ -1141,9 +1231,15 @@ void MainWindow::onPlaybackTimer() {
 
     if (currentPlayhead >= loopEnd) {
         if (loopPlayback) {
-            currentPlayhead = loopStart; 
+            qDebug() << "[Playback] Loop boundary reached (" << loopEnd << "s) -> jumping to" << loopStart << "s";
+            currentPlayhead = loopStart;
+            playbackStartPlayhead = loopStart;
+            playbackWallClock.restart();
+            lastAudioPlayhead = loopStart;
+            audioStallCount = 0;
             AudioEngine::instance().setPlayheadTime(loopStart);
         } else {
+            qDebug() << "[Playback] Track end reached (" << loopEnd << "s) -> stopping playback";
             togglePlayback();
             currentPlayhead = loopEnd;
             onTimelineScrubbed(currentPlayhead);
@@ -1152,7 +1248,6 @@ void MainWindow::onPlaybackTimer() {
     }
 
     onTimelineScrubbed(currentPlayhead);
-
 }
 
 void MainWindow::onTimelineScrubbed(double time) {
@@ -1271,7 +1366,9 @@ void MainWindow::onTimelineScrubbed(double time) {
 
         double localTime1 = transLeftClip->sourceStart + std::max(0.0, time - transLeftClip->timelineStart);
         double localTime2 = transRightClip->sourceStart + std::max(0.0, time - transRightClip->timelineStart);
-        AudioEngine::instance().setPlayheadTime(time);
+        if (!isPlaying) {
+            AudioEngine::instance().setPlayheadTime(time);
+        }
 
         DecodedVideoFrame frame1, frame2;
         const ProjectClip* effectClip = progress < 0.5 ? transLeftClip : transRightClip;
@@ -1297,22 +1394,28 @@ void MainWindow::onTimelineScrubbed(double time) {
 
         double localTime = topClip->sourceStart + std::max(0.0, time - topClip->timelineStart);
         if (localTime < 0.0) localTime = 0.0;
-        AudioEngine::instance().setPlayheadTime(time);
+        if (!isPlaying) {
+            AudioEngine::instance().setPlayheadTime(time);
+        }
 
         DecodedVideoFrame frame;
         applyEffectsToRenderer(time, topTrack, topClip);
         const std::string clipKey = topClip->mediaId.empty() ? topClip->id : topClip->mediaId;
         bool gotFrame = false;
         const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
-        if (asyncPlayback) {
-            // Never block the GUI behind async decode lag. Prefer the nearest
-            // cached frame in either direction, then request a small lead ahead.
+        const bool clipCacheable = VideoEngine::instance().isClipCacheable(clipKey);
+        if (asyncPlayback && clipCacheable) {
+            // Prefer cached frame, falling back to nearest or synchronous decode
             gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
             if (!gotFrame) {
-                gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.25);
+                gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.08);
+                if (!gotFrame) {
+                    gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
+                }
             }
-            VideoEngine::instance().requestFrameAsync(clipKey, localTime + 0.10);
+            VideoEngine::instance().requestFrameAsync(clipKey, localTime);
         } else {
+            // Non-cacheable CPU effects (XOR, OR, AND, etc.) or synchronous playback:
             gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
         }
 
@@ -1339,7 +1442,9 @@ void MainWindow::onTimelineScrubbed(double time) {
         }
     } else {
         glWidget->clearFrame();
-        AudioEngine::instance().setPlayheadTime(time);
+        if (!isPlaying) {
+            AudioEngine::instance().setPlayheadTime(time);
+        }
         activeClipId.clear();
         activeFilePath.clear();
         glWidget->setActiveEffects({});

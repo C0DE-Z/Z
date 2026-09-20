@@ -27,6 +27,7 @@ public:
     bool tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds = 0.08);
     void setAsyncDecodeEnabled(bool enabled);
     bool isAsyncDecodeEnabled() const;
+    bool isClipCacheable(const std::string& clipId) const;
     bool hasDatamoshPacketSource(const std::string& clipId) const;
     bool usesDirectDatamoshSource(const std::string& clipId) const;
     void setDatamoshing(const std::string& clipId, bool datamoshEnabled, double iDropProb, double pDupProb, int pDupCount, double pDropProb);
@@ -43,6 +44,9 @@ public:
     double getFps(const std::string& clipId);
     bool getAudioSamples(const std::string& clipId, std::vector<float>& outSamples);
     bool wasAudioPreloadSkipped(const std::string& clipId);
+
+    size_t getCacheFrameCount() const;
+    size_t getCacheByteSize() const;
 
     void clear();
 
@@ -69,8 +73,21 @@ private:
         bool operator==(const DatamoshSettings&) const = default;
     };
     std::map<std::string, DatamoshSettings> datamoshSettings;
+
+    struct CpuEffectParams {
+        bool enabled = false;
+        double val = 0.0;
+        double intensity = 0.0;
+        bool operator==(const CpuEffectParams&) const = default;
+    };
+    std::map<std::string, CpuEffectParams> xorSettings;
+    std::map<std::string, CpuEffectParams> orSettings;
+    std::map<std::string, CpuEffectParams> andSettings;
+    std::map<std::string, CpuEffectParams> xnorSettings;
+    std::map<std::string, CpuEffectParams> nandSettings;
+
     mutable std::mutex engineMutex;
-    std::mutex cacheMutex;
+    mutable std::mutex cacheMutex;
 
     std::thread workerThread;
     mutable std::mutex workerMutex;
@@ -79,12 +96,12 @@ private:
     bool workerHasRequest = false;
     bool asyncDecodeEnabled = false;
     std::string workerClipId;
-    double workerTimestamp = 0.0;
-    double workerPrefetchUntil = -1.0;
+    double workerPlayheadTimestamp = 0.0;
+    double workerNextDecodeTime = 0.0;
     uint64_t workerGeneration = 0;
 
-    static const size_t MAX_CACHE_SIZE = 72;
-    static const size_t MAX_CACHE_BYTES = 256 * 1024 * 1024;
+    static const size_t MAX_CACHE_SIZE = 96;
+    static const size_t MAX_CACHE_BYTES = 512 * 1024 * 1024;
 
     struct CacheEntry {
         std::string clipId;

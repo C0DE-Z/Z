@@ -119,6 +119,7 @@ private:
     std::vector<uint8_t> referenceFrameRgb;
     std::vector<uint8_t> referenceFrameAlpha;
     bool referenceFrameHasAlpha = false;
+    bool formatLogged = false;
     mutable std::mutex decodeMutex;
 
     bool seekTo(double timestamp);

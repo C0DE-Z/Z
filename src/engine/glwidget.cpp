@@ -772,6 +772,8 @@ GLint GLWidget::uniformLocation(GLuint program, const char* name) {
 void GLWidget::paintGL() {
     if (!passthroughShader || !passthroughShader->isLinked()) return;
 
+    QElapsedTimer renderTimer;
+    renderTimer.start();
     Profiler::instance().mark("frame_start");
 
     int w = width();
@@ -1046,17 +1048,36 @@ void GLWidget::paintGL() {
 
     passthroughShader->release();
     renderedTexture = currentTex;
+
+    double frameRenderMs = renderTimer.nsecsElapsed() / 1.0e6;
+    m_lastRenderTimeMs = frameRenderMs;
+    m_renderTimeHistory.push_back(frameRenderMs);
+    if (m_renderTimeHistory.size() > 30) {
+        m_renderTimeHistory.pop_front();
+    }
+    double sum = 0.0;
+    for (double v : m_renderTimeHistory) sum += v;
+    m_avgRenderTimeMs = m_renderTimeHistory.empty() ? 0.0 : (sum / m_renderTimeHistory.size());
+
+    Profiler::instance().sample("frame_render", frameRenderMs);
+
     frameCount++;
-    if (fpsTimer.elapsed() > 1000) {
+    if (fpsTimer.elapsed() >= 500) {
         currentFps = frameCount / (fpsTimer.elapsed() / 1000.0);
         frameCount = 0;
         fpsTimer.restart();
     }
     if (showOverlay && overlayLabel) {
-        overlayLabel->setText(QString("FPS: %1\nRes: %2x%3")
+        size_t cacheCount = VideoEngine::instance().getCacheFrameCount();
+        size_t cacheBytes = VideoEngine::instance().getCacheByteSize();
+        overlayLabel->setText(QString("FPS: %1\nRender: %2 ms (Avg: %3 ms)\nRes: %4x%5\nCache: %6 f (%7 MB)")
             .arg(currentFps, 0, 'f', 1)
+            .arg(m_lastRenderTimeMs, 0, 'f', 1)
+            .arg(m_avgRenderTimeMs, 0, 'f', 1)
             .arg(lastFrameWidth)
-            .arg(lastFrameHeight));
+            .arg(lastFrameHeight)
+            .arg(cacheCount)
+            .arg(cacheBytes / (1024 * 1024)));
         overlayLabel->adjustSize();
     }
 }

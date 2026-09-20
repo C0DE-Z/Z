@@ -71,6 +71,10 @@ private slots:
 
 private:
     QTimer* playbackTimer = nullptr;
+    QElapsedTimer playbackWallClock;
+    double playbackStartPlayhead = 0.0;
+    double lastAudioPlayhead = -1.0;
+    int audioStallCount = 0;
     std::thread importThread;
     std::thread datamoshProxyThread;
     std::set<std::string> datamoshProxyInProgress;
@@ -186,6 +190,8 @@ private:
     QPushButton* playPauseBtn = nullptr;
     QPushButton* loopBtn = nullptr;
     QLabel* projectInfoStatusLabel = nullptr;
+    QLabel* renderStatsStatusLabel = nullptr;
+    QTimer* renderStatsTimer = nullptr;
 
     QAction* importAct = nullptr;
     QAction* openAct = nullptr;
@@ -213,6 +219,7 @@ private:
     void checkForUpdates(bool interactive);
     void createDocks();
     void createTransportToolbar();
+    void updateRenderStats();
     void applyShortcuts();
     void applyDetectionOverlayOptions();
     void refreshDetectionMask();

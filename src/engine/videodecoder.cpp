@@ -565,6 +565,7 @@ void VideoDecoder::close() {
     referenceFrameRgb.clear();
     referenceFrameAlpha.clear();
     referenceFrameHasAlpha = false;
+    formatLogged = false;
 }
 
 bool VideoDecoder::seekTo(double timestamp) {
@@ -755,10 +756,14 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 static_cast<AVPixelFormat>(activeFrame->format));
             const bool sourceHasAlpha = descriptor && (descriptor->flags & AV_PIX_FMT_FLAG_ALPHA);
 
-            const char* formatName = av_get_pix_fmt_name((AVPixelFormat)activeFrame->format);
-            qDebug() << "VideoDecoder: Frame format =" << activeFrame->format
-                     << "(" << (formatName ? formatName : "unknown") << ")"
-                     << "has alpha:" << sourceHasAlpha;
+            if (!formatLogged) {
+                formatLogged = true;
+                const char* formatName = av_get_pix_fmt_name((AVPixelFormat)activeFrame->format);
+                qDebug() << "[VideoDecoder] Format:" << activeFrame->format
+                         << "(" << (formatName ? formatName : "unknown") << ")"
+                         << "dimensions:" << outWidth << "x" << outHeight
+                         << "hasAlpha:" << sourceHasAlpha;
+            }
 
             const AVPixelFormat targetFmt = sourceHasAlpha ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24;
             swsCtx = sws_getCachedContext(
