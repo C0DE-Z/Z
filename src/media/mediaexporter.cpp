@@ -362,9 +362,14 @@ void MediaExporter::exportVideo(
         const double time = settings.startTime + (static_cast<double>(i) / settings.fps);
         scrubCallback(time);
 
+        // QOpenGLWidget::update() is intentionally asynchronous. During export
+        // that meant grabRenderedFrame could read the previous timeline state,
+        // so effects looked correct in preview but were absent from the file.
+        // Render this state synchronously before reading its offscreen texture.
+        glWidget->renderFrameNow();
+
         // Capture the renderer's transparent offscreen result, not the
         // QOpenGLWidget window surface (which may already be black/opaque).
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
         QImage img = glWidget->grabRenderedFrame();
         if (img.isNull()) {
             proc.kill();

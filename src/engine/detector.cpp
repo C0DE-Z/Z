@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cctype>
 #include <filesystem>
+#include <iterator>
 #include <numeric>
 #include <sstream>
 
@@ -35,7 +36,8 @@ float intersectionOverUnion(const DetectionBox& box, float trackX, float trackY,
 }
 
 bool isGenericRegionLabel(const std::string& label) {
-    return label.empty() || label.rfind("region_", 0) == 0 || label.rfind("object_", 0) == 0;
+    return label.empty() || label.rfind("region_", 0) == 0 ||
+        label.rfind("motion_region_", 0) == 0 || label.rfind("object_", 0) == 0;
 }
 
 std::string lowerAscii(std::string value) {
@@ -294,17 +296,33 @@ bool Detector::classFilterEnabled() const {
     return m_classFilterEnabled;
 }
 
+void Detector::setIncludeMotionRegions(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex);
+    m_includeMotionRegions = enabled;
+}
+
+bool Detector::includeMotionRegions() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return m_includeMotionRegions;
+}
+
 std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) {
     std::lock_guard<std::mutex> lock(mutex);
 
+    std::vector<DetectionBox> modelDetections;
+    bool appendMotionRegions = false;
+
 #ifdef Z_HAS_OPENCV_DNN
     if (m_yoloReady) {
-        auto yolo = detectYolo(frame);
-        // Do not silently substitute contrast blobs for an active YOLO model.
-        // It made model inference failures look like unlabelled "region_N"
-        // detections, hiding the actual class-label problem from the editor.
-        updateTracksLocked(yolo);
-        return yolo;
+        modelDetections = detectYolo(frame);
+        appendMotionRegions = m_includeMotionRegions;
+        if (!appendMotionRegions) {
+            // Do not silently substitute contrast blobs for an active YOLO
+            // model. It made inference failures look like unlabelled regions,
+            // hiding the actual class-label problem from the editor.
+            updateTracksLocked(modelDetections);
+            return modelDetections;
+        }
     }
 #endif
 
@@ -452,7 +470,7 @@ std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) 
         box.w = static_cast<float>(px1 - px0) / static_cast<float>(w);
         box.h = static_cast<float>(py1 - py0) / static_cast<float>(h);
         box.confidence = std::clamp(0.35f + c.score / static_cast<float>(gw * gh) * 2.0f, 0.0f, 0.99f);
-        box.label = "region_" + std::to_string(objIndex++);
+        box.label = "motion_region_" + std::to_string(objIndex++);
         
         results.push_back(box);
     }
@@ -462,11 +480,24 @@ std::vector<DetectionBox> Detector::detectFrame(const DecodedVideoFrame& frame) 
     });
     if (m_classFilterEnabled) {
         std::erase_if(results, [this](const DetectionBox& box) {
-            return !m_allowedClasses.contains(box.label);
+            // Motion regions are geometric rather than semantic classes, so
+            // a COCO class selection must not hide an explicitly enabled
+            // motion layer.
+            return !isGenericRegionLabel(box.label) && !m_allowedClasses.contains(box.label);
         });
     }
     if (results.size() > 12) {
         results.resize(12);
+    }
+    const size_t motionRegionCount = results.size();
+    if (appendMotionRegions) {
+        modelDetections.insert(modelDetections.end(),
+            std::make_move_iterator(results.begin()), std::make_move_iterator(results.end()));
+        results = std::move(modelDetections);
+        m_status += " + " + std::to_string(motionRegionCount) +
+            (motionRegionCount == 1 ? " motion region" : " motion regions");
+    } else {
+        m_status = "Motion regions: " + std::to_string(motionRegionCount);
     }
     updateTracksLocked(results);
     return results;
@@ -485,12 +516,17 @@ void Detector::updateTracksLocked(std::vector<DetectionBox>& detections) {
         const float centerY = detection.y + detection.h * 0.5f;
         int bestTrack = -1;
         float bestScore = -1.0f;
+        const bool detectionIsRegion = isGenericRegionLabel(detection.label);
 
         for (size_t index = 0; index < m_tracks.size(); ++index) {
             const auto& track = m_tracks[index];
             if (trackMatched[index]) continue;
-            if (!isGenericRegionLabel(detection.label) && !isGenericRegionLabel(track.label) &&
-                detection.label != track.label) {
+            const bool trackIsRegion = isGenericRegionLabel(track.label);
+            // A supplementary motion region may overlap a named YOLO box,
+            // but it represents a separate visual layer and must not inherit
+            // the object's label or track ID.
+            if (detectionIsRegion != trackIsRegion) continue;
+            if (!detectionIsRegion && detection.label != track.label) {
                 continue;
             }
 
@@ -524,7 +560,7 @@ void Detector::updateTracksLocked(std::vector<DetectionBox>& detections) {
         } else {
             auto& track = m_tracks[static_cast<size_t>(bestTrack)];
             trackMatched[static_cast<size_t>(bestTrack)] = true;
-            track.label = isGenericRegionLabel(detection.label) && !track.label.empty()
+            track.label = detectionIsRegion && !track.label.empty()
                 ? track.label : detection.label;
             track.x = detection.x;
             track.y = detection.y;

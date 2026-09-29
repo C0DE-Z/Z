@@ -36,6 +36,14 @@ enum class DetectionColorMode {
     Fixed
 };
 
+// Whole-clip detections are sampled sparsely. This controls how the preview
+// travels between those samples without changing the underlying tracks.
+enum class DetectionTrackMotion {
+    Stepped,
+    Smooth,
+    NearestSample
+};
+
 struct DetectionOverlayOptions {
     DetectionOverlayStyle style = DetectionOverlayStyle::CornerBrackets;
     DetectionColorMode colorMode = DetectionColorMode::ByTrack;
@@ -99,6 +107,9 @@ public:
     bool maskInverted() const { return m_maskInverted; }
     void setMaskData(int width, int height, const std::vector<uint8_t>& maskR);
     void setMaskData(int width, int height, std::vector<uint8_t>&& maskR);
+    // Draw the current timeline/effect state immediately. Export uses this to
+    // avoid capturing a queued, stale QOpenGLWidget paint.
+    void renderFrameNow();
     QImage grabRenderedFrame();
 
     double getCurrentFps() const { return currentFps; }

@@ -25,6 +25,9 @@ struct DetectionWorkerSettings {
     bool preferOpenCL = true;
     // 0 restores the model's automatic compatibility input size.
     int yoloInputSize = 0;
+    // Keep the inexpensive motion/contrast regions alongside semantic YOLO
+    // boxes. This is off by default so a loaded model remains uncluttered.
+    bool includeMotionRegions = false;
     bool classFilterEnabled = false;
     std::unordered_set<std::string> allowedClasses;
 };

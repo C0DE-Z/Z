@@ -231,6 +231,7 @@ void DetectionWorker::applySettings(const DetectionWorkerSettings& settings) {
     // Zero is meaningful: restore the current model's automatic compatibility
     // input size. Omitting it here retained an earlier manual resolution.
     m_detector.setYoloInputSize(settings.yoloInputSize);
+    m_detector.setIncludeMotionRegions(settings.includeMotionRegions);
     m_detector.setAllowedClasses(settings.allowedClasses, settings.classFilterEnabled);
 }
 

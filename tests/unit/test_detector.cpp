@@ -79,6 +79,10 @@ bool testFallbackTracksAndTrails() {
     detector.reset();
     detector.setSensitivity(0.45f);
     detector.setMinArea(0.01f);
+    detector.setIncludeMotionRegions(true);
+    if (!expect(detector.includeMotionRegions(), "motion-region option should be retained")) return false;
+    detector.setIncludeMotionRegions(false);
+    if (!expect(!detector.includeMotionRegions(), "motion-region option should be disableable")) return false;
 
     auto detections = detector.detectFrame(makePatternFrame(1, false));
     if (!expect(detections.size() == 1, "initial high-contrast region should be detected")) return false;

@@ -1655,19 +1655,50 @@ bool MainWindow::applyPrecomputedDetectionsForClip(const ProjectClip& clip, doub
     if (cacheIt == clipDetectionCaches.end() || cacheIt->second.samples.empty()) return false;
 
     const auto& samples = cacheIt->second.samples;
-    const auto nearest = std::min_element(samples.begin(), samples.end(), [sourceTime](const auto& a, const auto& b) {
-        return std::abs(a.sourceTime - sourceTime) < std::abs(b.sourceTime - sourceTime);
-    });
-    if (nearest == samples.end()) return false;
+    const auto after = std::lower_bound(samples.begin(), samples.end(), sourceTime,
+        [](const CachedDetectionSample& sample, double time) { return sample.sourceTime < time; });
+    const auto before = after == samples.begin() ? after : std::prev(after);
+    if (before == samples.end()) return false;
+
+    const CachedDetectionSample* first = &*before;
+    const CachedDetectionSample* second = nullptr;
+    if (after != samples.end() && after != before && after->sourceTime > before->sourceTime) {
+        second = &*after;
+    }
+
+    std::vector<DetectionBox> trackedDetections = first->detections;
+    const auto motion = detectionTrackMotionCombo
+        ? static_cast<DetectionTrackMotion>(detectionTrackMotionCombo->currentData().toInt())
+        : DetectionTrackMotion::Stepped;
+    const CachedDetectionSample* geometrySample = first;
+    if (second && motion == DetectionTrackMotion::NearestSample &&
+        sourceTime - first->sourceTime > second->sourceTime - sourceTime) {
+        trackedDetections = second->detections;
+        geometrySample = second;
+    } else if (second && motion == DetectionTrackMotion::Smooth) {
+        const float progress = std::clamp(static_cast<float>((sourceTime - first->sourceTime) /
+            (second->sourceTime - first->sourceTime)), 0.0f, 1.0f);
+        for (auto& box : trackedDetections) {
+            if (box.trackId <= 0) continue;
+            const auto match = std::find_if(second->detections.begin(), second->detections.end(),
+                [&box](const DetectionBox& candidate) { return candidate.trackId == box.trackId; });
+            if (match == second->detections.end()) continue;
+            box.x += (match->x - box.x) * progress;
+            box.y += (match->y - box.y) * progress;
+            box.w += (match->w - box.w) * progress;
+            box.h += (match->h - box.h) * progress;
+            box.confidence += (match->confidence - box.confidence) * progress;
+        }
+    }
 
     if (detectionSourceClipId == QString::fromStdString(clip.id) &&
-        std::abs(lastDetectionPlayhead - nearest->sourceTime) < 0.0001 &&
-        currentDetectionFrameWidth == nearest->width && currentDetectionFrameHeight == nearest->height) {
+        std::abs(lastDetectionPlayhead - sourceTime) < 0.0001 &&
+        currentDetectionFrameWidth == first->width && currentDetectionFrameHeight == first->height) {
         return true;
     }
 
-    applyDetectionResults(nearest->detections, QString::fromStdString(clip.id), nearest->sourceTime,
-        nearest->width, nearest->height, true);
+    applyDetectionResults(std::move(trackedDetections), QString::fromStdString(clip.id), sourceTime,
+        geometrySample->width, geometrySample->height, true);
     return true;
 }
 
@@ -2704,10 +2735,32 @@ void MainWindow::exportVideo() {
         activeClipId,
         activeFilePath,
         glWidget,
-        [this](double time) { this->onTimelineScrubbed(time); },
+        [this](double time) { this->prepareExportFrame(time); },
         [this]() { this->togglePlayback(); },
         isPlaying,
         markIn,
         markOut
     );
+}
+
+void MainWindow::prepareExportFrame(double time) {
+    onTimelineScrubbed(time);
+
+    // Mask construction is normally offloaded to keep preview playback fluid.
+    // Export instead builds it deterministically for the just-selected tracked
+    // objects, ensuring no stale asynchronous mask reaches the output frame.
+    if (!glWidget || !applyMaskCheck || !applyMaskCheck->isChecked()) return;
+    if (currentDetections.empty() || currentDetectionFrameWidth <= 0 || currentDetectionFrameHeight <= 0) {
+        glWidget->setMaskData(0, 0, {});
+        return;
+    }
+    const DetectionShape shape = detectionShapeCombo
+        ? static_cast<DetectionShape>(detectionShapeCombo->currentData().toInt())
+        : DetectionShape::Rectangle;
+    const float feather = maskFeatherSlider ? static_cast<float>(maskFeatherSlider->value()) : 6.0f;
+    const float padding = maskPaddingSlider ? static_cast<float>(maskPaddingSlider->value()) : 0.0f;
+    const float outlineWidth = maskOutlineWidthSlider ? static_cast<float>(maskOutlineWidthSlider->value()) : 6.0f;
+    glWidget->setMaskData(currentDetectionFrameWidth, currentDetectionFrameHeight,
+        Detector::buildMaskFromBoxes(currentDetectionFrameWidth, currentDetectionFrameHeight,
+            currentDetections, feather, shape, outlineWidth, padding));
 }

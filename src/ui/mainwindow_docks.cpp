@@ -275,9 +275,19 @@ void MainWindow::createDocks() {
 
     liveDetectionIntervalSlider = addSlider("Detection interval", 250, 2000, 750, " ms");
 
-    QLabel* fallbackHint = new QLabel("Fallback motion-region controls", detectTab);
+    QLabel* fallbackHint = new QLabel("Motion-region layer controls", detectTab);
     fallbackHint->setStyleSheet("color: #918B92; font-size: 10px; padding-top: 3px;");
     detectLayout->addWidget(fallbackHint);
+    includeMotionRegionsCheck = new QCheckBox("Include motion regions with model detections", detectTab);
+    includeMotionRegionsCheck->setToolTip(
+        "Adds low-cost motion/contrast regions beside YOLO's named objects. "
+        "They can also be used by the effect mask.");
+    includeMotionRegionsCheck->setStyleSheet("color: #C3BEC3;");
+    connect(includeMotionRegionsCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        detectionWorkerSettings.includeMotionRegions = enabled;
+        scheduleDetectionSettingsRefresh();
+    });
+    detectLayout->addWidget(includeMotionRegionsCheck);
     detectSensitivitySlider = addSlider("Sensitivity", 5, 95, 45, "%");
     connect(detectSensitivitySlider, &QSlider::valueChanged, this, &MainWindow::onDetectionSettingsChanged);
     detectMinAreaSlider = addSlider("Minimum region area", 1, 40, 12, " ‰");
@@ -337,6 +347,20 @@ void MainWindow::createDocks() {
     detectionColorModeCombo->addItem("Fixed magenta", static_cast<int>(DetectionColorMode::Fixed));
     addCombo("Colour mode", detectionColorModeCombo);
     connect(detectionColorModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { applyDetectionOverlayOptions(); });
+
+    detectionTrackMotionCombo = new QComboBox(detectTab);
+    detectionTrackMotionCombo->addItem("Stepped — hold each scan", static_cast<int>(DetectionTrackMotion::Stepped));
+    detectionTrackMotionCombo->addItem("Smooth — interpolate scans", static_cast<int>(DetectionTrackMotion::Smooth));
+    detectionTrackMotionCombo->addItem("Nearest scan sample", static_cast<int>(DetectionTrackMotion::NearestSample));
+    detectionTrackMotionCombo->setToolTip(
+        "Controls movement of whole-clip detection boxes between scan samples. "
+        "Stepped is intentionally choppy and is the default.");
+    addCombo("Track movement", detectionTrackMotionCombo);
+    connect(detectionTrackMotionCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        // Re-resolve the timeline position to the active clip's source time
+        // before choosing the cached scan geometry.
+        onTimelineScrubbed(currentPlayhead);
+    });
 
     detectionLineWidthSlider = addSlider("Box line width", 1, 8, 2, " px");
     connect(detectionLineWidthSlider, &QSlider::valueChanged, this, [this](int) { applyDetectionOverlayOptions(); });

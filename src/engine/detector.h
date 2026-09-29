@@ -75,6 +75,10 @@ public:
     int yoloInputSize() const;
     void setAllowedClasses(std::unordered_set<std::string> classes, bool enabled);
     bool classFilterEnabled() const;
+    // When a model is active, keep its named detections and append the
+    // lightweight motion/contrast regions used by the fallback detector.
+    void setIncludeMotionRegions(bool enabled);
+    bool includeMotionRegions() const;
 
     std::vector<DetectionBox> detectFrame(const DecodedVideoFrame& frame);
 
@@ -107,6 +111,7 @@ private:
     int m_yoloInputSize = 640;
     bool m_classFilterEnabled = false;
     std::unordered_set<std::string> m_allowedClasses;
+    bool m_includeMotionRegions = false;
 
     struct TrackedObject {
         int id = -1;

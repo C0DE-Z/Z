@@ -105,6 +105,7 @@ private:
     QSlider* yoloConfidenceSlider = nullptr;
     QSlider* yoloNmsSlider = nullptr;
     QComboBox* yoloInputSizeCombo = nullptr;
+    QCheckBox* includeMotionRegionsCheck = nullptr;
     QSlider* liveDetectionIntervalSlider = nullptr;
     QSlider* detectionScanIntervalSlider = nullptr;
     QSlider* detectionLineWidthSlider = nullptr;
@@ -114,6 +115,7 @@ private:
     QSlider* detectionTrailWidthSlider = nullptr;
     QSlider* detectionTrailOpacitySlider = nullptr;
     QSlider* detectionLinkDistanceSlider = nullptr;
+    QComboBox* detectionTrackMotionCombo = nullptr;
     QSlider* maskFeatherSlider = nullptr;
     QSlider* maskPaddingSlider = nullptr;
     QSlider* maskOutlineWidthSlider = nullptr;
@@ -223,6 +225,7 @@ private:
     void applyShortcuts();
     void applyDetectionOverlayOptions();
     void refreshDetectionMask();
+    void prepareExportFrame(double time);
     DetectionWorkerSettings currentDetectionSettings() const;
     void queueDetectionForCurrentFrame(bool forceTrackingReset = false);
     void queueDetectionForSource(

@@ -242,6 +242,13 @@ QImage GLWidget::grabRenderedFrame() {
     return image.mirrored(false, true);
 }
 
+void GLWidget::renderFrameNow() {
+    if (!context() || !passthroughShader || !passthroughShader->isLinked()) return;
+    makeCurrent();
+    paintGL();
+    doneCurrent();
+}
+
 void GLWidget::resizeGL(int w, int h) {
     glViewport(0, 0, w, h);
     allocateFBOs(w, h);
@@ -491,6 +498,22 @@ void GLWidget::paintEvent(QPaintEvent* event) {
     if (m_guideOverlay == GuideOverlay::None && (!m_showDetections || detections.empty())) return;
 
     QPainter painter(this);
+    // The renderer leaves custom programs, textures and framebuffer state
+    // behind. Reset that state through Qt's native-painting boundary before
+    // it uploads the glyph atlas; without it, text quads can sample the video
+    // texture and appear as striped or missing letters.
+    painter.beginNativePainting();
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    painter.endNativePainting();
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
@@ -542,6 +565,20 @@ void GLWidget::paintEvent(QPaintEvent* event) {
     const auto centerOf = [](const DetectionBox& box) {
         return QPointF(box.x + box.w * 0.5, box.y + box.h * 0.5);
     };
+    // Decoded RGB rows are flipped for OpenGL texture upload: detector space
+    // has y=0 at the texture's bottom while QPainter has y=0 at the widget's
+    // top. Keep this conversion in one place so boxes, labels, links and
+    // trails stay registered to the preview image.
+    const auto previewPoint = [&](float x, float y) {
+        return QPointF(x * width(), (1.0f - y) * height());
+    };
+    const auto previewRect = [&](const DetectionBox& box) {
+        return QRectF(
+            box.x * width(),
+            (1.0f - box.y - box.h) * height(),
+            box.w * width(),
+            box.h * height());
+    };
 
     const size_t visibleCount = std::min(
         detections.size(), static_cast<size_t>(m_detectionOverlayOptions.maxDetections));
@@ -563,8 +600,8 @@ void GLWidget::paintEvent(QPaintEvent* event) {
                 color.setAlpha(130);
                 QPen pen(color, std::max(1, m_detectionOverlayOptions.lineWidth - 1), Qt::DashLine);
                 painter.setPen(pen);
-                painter.drawLine(QPointF(from.x() * width(), from.y() * height()),
-                    QPointF(to.x() * width(), to.y() * height()));
+                painter.drawLine(previewPoint(static_cast<float>(from.x()), static_cast<float>(from.y())),
+                    previewPoint(static_cast<float>(to.x()), static_cast<float>(to.y())));
             }
         }
         painter.restore();
@@ -582,9 +619,9 @@ void GLWidget::paintEvent(QPaintEvent* event) {
             QColor color = baseColor;
             color.setAlpha(m_detectionOverlayOptions.trailOpacity);
             painter.setPen(QPen(color, m_detectionOverlayOptions.trailWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            QPainterPath trailPath(QPointF(trail[first].x * width(), trail[first].y * height()));
+            QPainterPath trailPath(previewPoint(trail[first].x, trail[first].y));
             for (size_t pointIndex = first + 1; pointIndex < trail.size(); ++pointIndex) {
-                trailPath.lineTo(QPointF(trail[pointIndex].x * width(), trail[pointIndex].y * height()));
+                trailPath.lineTo(previewPoint(trail[pointIndex].x, trail[pointIndex].y));
             }
             painter.drawPath(trailPath);
         }
@@ -594,12 +631,7 @@ void GLWidget::paintEvent(QPaintEvent* event) {
     for (size_t i = 0; i < visibleCount; ++i) {
         const auto& box = detections[i];
         const QColor color = colorFor(box, static_cast<int>(i));
-        const QRectF rect(
-            box.x * width(),
-            box.y * height(),
-            box.w * width(),
-            box.h * height()
-        );
+        const QRectF rect = previewRect(box);
 
         const bool hasPersonOutline = m_detectionOverlayOptions.showPersonOutline &&
             box.label == "person" && box.outline.size() >= 3;
@@ -642,9 +674,9 @@ void GLWidget::paintEvent(QPaintEvent* event) {
             }
         }
         if (hasPersonOutline) {
-            QPainterPath outlinePath(QPointF(box.outline.front().x * width(), box.outline.front().y * height()));
+            QPainterPath outlinePath(previewPoint(box.outline.front().x, box.outline.front().y));
             for (size_t pointIndex = 1; pointIndex < box.outline.size(); ++pointIndex) {
-                outlinePath.lineTo(QPointF(box.outline[pointIndex].x * width(), box.outline[pointIndex].y * height()));
+                outlinePath.lineTo(previewPoint(box.outline[pointIndex].x, box.outline[pointIndex].y));
             }
             outlinePath.closeSubpath();
             painter.drawPath(outlinePath);

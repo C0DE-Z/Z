@@ -4,7 +4,7 @@
 #include "ui/mainwindow.h"
 
 #ifndef Z_APP_VERSION
-#define Z_APP_VERSION "1.1.14"
+#define Z_APP_VERSION "1.1.15"
 #endif
 
 int main(int argc, char *argv[]) {
