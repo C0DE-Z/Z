@@ -4,11 +4,11 @@
 #include "ui/mainwindow.h"
 
 #ifndef Z_APP_VERSION
-#define Z_APP_VERSION "1.1.15"
+#define Z_APP_VERSION "1.1.999"
 #endif
 
 int main(int argc, char *argv[]) {
-    QApplication app(argc, argv);
+    QApplication app(argc, argv);s
     app.setApplicationName("Z");
     app.setApplicationVersion(Z_APP_VERSION);
     app.setOrganizationName("Z-Creative");

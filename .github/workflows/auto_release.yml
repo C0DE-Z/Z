@@ -256,7 +256,6 @@ jobs:
           name: Z Video Editor ${{ steps.tag.outputs.tag_name }}
           body: |
             ## Z Video Editor Release ${{ steps.tag.outputs.tag_name }}
-            Realtime GPU GLSL Shader & Datamosh Video Editor.
             
             ### Included Assets:
             - **Windows (x64)**: `Z-VideoEditor-Windows-x64.zip`

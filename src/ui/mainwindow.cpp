@@ -86,6 +86,10 @@ bool isNewerVersion(const std::array<int, 3>& candidate, const std::array<int, 3
     return candidate > current;
 }
 
+bool isDeveloperBuild(const std::array<int, 3>& version) {
+    return version[0] == 999;
+}
+
 template <typename Fn>
 auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
     (void)parent;
@@ -1200,14 +1204,11 @@ void MainWindow::onPlaybackTimer() {
     double wallElapsed = playbackWallClock.nsecsElapsed() / 1.0e9;
     double expectedWallTime = playbackStartPlayhead + wallElapsed;
 
-    // Check if AudioEngine is actively advancing
     if (std::abs(audioTime - lastAudioPlayhead) > 0.0005) {
-        // Audio clock is advancing normally
         currentPlayhead = audioTime;
         lastAudioPlayhead = audioTime;
         audioStallCount = 0;
     } else {
-        // Audio clock is stationary
         audioStallCount++;
         if (audioStallCount > 4) {
             currentPlayhead = expectedWallTime;
@@ -1381,8 +1382,6 @@ void MainWindow::onTimelineScrubbed(double time) {
         } else if (gotFrame2 && !frame2.rgbData.empty()) {
             glWidget->updateFrame(frame2);
         } else {
-            // Keep the last valid frame while async decoding catches up.
-            // Clearing here produced intermittent blank frames during playback.
         }
     } else if (topClip) {
         activeClipId = QString::fromStdString(topClip->id);
@@ -1401,7 +1400,6 @@ void MainWindow::onTimelineScrubbed(double time) {
         const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
         const bool clipCacheable = VideoEngine::instance().isClipCacheable(clipKey);
         if (asyncPlayback && clipCacheable) {
-            // Prefer cached frame, falling back to nearest or synchronous decode
             gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
             if (!gotFrame) {
                 gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.08);
@@ -1411,7 +1409,6 @@ void MainWindow::onTimelineScrubbed(double time) {
             }
             VideoEngine::instance().requestFrameAsync(clipKey, localTime);
         } else {
-            // Non-cacheable CPU effects (XOR, OR, AND, etc.) or synchronous playback:
             gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
         }
 
@@ -1422,11 +1419,7 @@ void MainWindow::onTimelineScrubbed(double time) {
             latestDetectionFrameSourceTime = localTime;
             glWidget->updateFrame(std::move(sharedFrame));
 
-            // A completed clip scan is sampled immediately for playback. This
-            // keeps detection completely out of the playback/UI path.
             const bool usingPrecomputedDetections = applyPrecomputedDetectionsForClip(*topClip, localTime);
-            // Detection is intentionally decoupled from the 60 Hz renderer;
-            // CPU fallback and YOLO both execute on DetectionWorker.
             const int detectionIntervalMs = liveDetectionIntervalSlider
                 ? liveDetectionIntervalSlider->value() : 750;
             if (!usingPrecomputedDetections && liveDetectEnabled && liveDetectionTimer.elapsed() >= detectionIntervalMs) {
@@ -1921,9 +1914,6 @@ void MainWindow::chooseYoloModel() {
 void MainWindow::downloadRecommendedYoloModel() {
     if (!modelDownloadManager || modelDownloadInProgress) return;
 
-    // Official Ultralytics YOLOv5 medium COCO export. Its static ONNX graph is
-    // verified with Z's OpenCV DNN backend and materially improves detection
-    // quality over the previous nano model.
     const QUrl modelUrl(QString::fromLatin1(kRecommendedYoloModelUrl));
     const QString modelDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/models";
     QDir().mkpath(modelDir);
@@ -2032,7 +2022,7 @@ void MainWindow::checkForUpdates(bool interactive) {
         const QString releaseUrl = release.value("html_url").toString();
         const auto current = parseSemanticVersion(QApplication::applicationVersion());
         const auto available = parseSemanticVersion(tag);
-        if (!current || !available) {
+        if (!current || !available ) {
             if (interactive) {
                 QMessageBox::information(this, "Z Updates", "The latest release does not use a supported integer version number.");
             }
@@ -2040,7 +2030,8 @@ void MainWindow::checkForUpdates(bool interactive) {
             return;
         }
 
-        if (!isNewerVersion(*available, *current)) {
+        if (!isNewerVersion(*available, *current) ) {
+
             if (interactive) {
                 QMessageBox::information(this, "Z Updates", "Z is up to date (version " + QApplication::applicationVersion() + ").");
             }
@@ -2055,6 +2046,11 @@ void MainWindow::checkForUpdates(bool interactive) {
             return;
         }
 
+        if  (isDeveloperBuild(*current)) {
+            QMessageBox::information(this, "Z Updates", "You are using a developer build of Z. Updates are not available for developer builds.");
+            return;
+        }
+        
         QMessageBox dialog(this);
         dialog.setWindowTitle("Update Available");
         dialog.setIcon(QMessageBox::Information);
