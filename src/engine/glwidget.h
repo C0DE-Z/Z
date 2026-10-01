@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QLabel>
 #include <QPaintEvent>
+#include <QMouseEvent>
 #include <QImage>
 #include <mutex>
 #include <vector>
@@ -111,6 +112,18 @@ public:
     // avoid capturing a queued, stale QOpenGLWidget paint.
     void renderFrameNow();
     QImage grabRenderedFrame();
+    bool renderExportFrame(int targetW, int targetH, std::vector<uint8_t>& outRgbaBuffer);
+
+    // Interactive Mask Editing
+    void setActiveEditMask(const ClipMask* mask);
+    const ClipMask* activeEditMask() const { return m_activeEditMask; }
+    void setEditMaskClipTime(double localTime) { m_editMaskClipTime = localTime; update(); }
+
+signals:
+    void maskPointMoved(int pointIndex, float newX, float newY);
+    void maskTransformChanged(double posX, double posY, double scaleX, double scaleY, double rotation);
+
+public:
 
     double getCurrentFps() const { return currentFps; }
     double getLastRenderTimeMs() const { return m_lastRenderTimeMs; }
@@ -123,6 +136,9 @@ protected:
     void resizeGL(int w, int h) override;
     void paintGL() override;
     void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     double m_time = 0.0;
@@ -181,6 +197,25 @@ private:
     QOpenGLShaderProgram* transparencyGridShader = nullptr;
     QOpenGLShaderProgram* maskCompositeShader = nullptr;
     QOpenGLShaderProgram* alphaGuardShader = nullptr;
+    QOpenGLShaderProgram* exportBlitShader = nullptr;
+    void renderPipeline(int w, int h, bool toScreen, bool isExport);
+
+    // Mask editing state
+    const ClipMask* m_activeEditMask = nullptr;
+    double m_editMaskClipTime = 0.0;
+    int m_hoveredPointIndex = -1;
+    int m_draggedPointIndex = -1;
+    bool m_draggingMaskCenter = false;
+    bool m_draggingMaskRotate = false;
+    bool m_draggingMaskScale = false;
+    QPointF m_dragStartPos;
+    double m_dragStartPosX = 0.5;
+    double m_dragStartPosY = 0.5;
+    double m_dragStartScaleX = 1.0;
+    double m_dragStartScaleY = 1.0;
+    double m_dragStartRotation = 0.0;
+    void renderMaskDirectOverlay(QPainter& painter);
+
 
     std::vector<AppliedEffect> activeEffects;
 

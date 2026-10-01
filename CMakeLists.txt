@@ -37,6 +37,7 @@ set(Z_SOURCES
     src/engine/videoengine.cpp
     src/engine/audioengine.cpp
     src/engine/glwidget.cpp
+    src/engine/maskgenerator.cpp
     src/engine/shaders.cpp
     src/ui/mainwindow.cpp
     src/ui/mainwindow_docks.cpp
@@ -67,6 +68,7 @@ set(Z_HEADERS
     src/engine/videoengine.h
     src/engine/audioengine.h
     src/engine/glwidget.h
+    src/engine/maskgenerator.h
     src/engine/shaders.h
     src/ui/mainwindow.h
     src/ui/vector_icons.h

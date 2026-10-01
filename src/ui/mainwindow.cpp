@@ -1119,9 +1119,6 @@ void MainWindow::openProject() {
                         if (!MediaImporter::isUsableVideoFile(QString::fromStdString(clip.filePath))) {
                             return false;
                         }
-                        // Project opening remains fast. A missing Datamosh
-                        // proxy is generated later, only if the effect is
-                        // actually enabled for this media.
                         return VideoEngine::instance().loadVideo(
                             mediaId, clip.filePath, clip.datamoshProxyPath);
                     });
@@ -1213,7 +1210,6 @@ void MainWindow::onPlaybackTimer() {
         // Audio clock is stationary
         audioStallCount++;
         if (audioStallCount > 4) {
-            // After ~60ms without audio movement, fall back to steady wall-clock
             currentPlayhead = expectedWallTime;
             AudioEngine::instance().setPlayheadTime(currentPlayhead);
             lastAudioPlayhead = currentPlayhead;

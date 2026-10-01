@@ -61,6 +61,7 @@ GLWidget::~GLWidget() {
     delete transparencyGridShader;
     delete maskCompositeShader;
     delete alphaGuardShader;
+    delete exportBlitShader;
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
@@ -81,6 +82,7 @@ void GLWidget::initializeGL() {
     transparencyGridShader = nullptr;
     maskCompositeShader = nullptr;
     alphaGuardShader = nullptr;
+    exportBlitShader = nullptr;
     uniformLocations.clear();
     for (auto& plugin : PluginManager::instance().getPlugins()) {
         plugin.compileAttempted = false;
@@ -175,6 +177,13 @@ void GLWidget::initShaders() {
         qWarning() << "Failed to link alpha guard shader:" << alphaGuardShader->log();
     }
 
+    exportBlitShader = new QOpenGLShaderProgram(this);
+    exportBlitShader->addShaderFromSourceCode(QOpenGLShader::Vertex, exportVertexShaderSource);
+    exportBlitShader->addShaderFromSourceCode(QOpenGLShader::Fragment, passthroughShaderSource);
+    if (!exportBlitShader->link()) {
+        qWarning() << "Failed to link export blit shader:" << exportBlitShader->log();
+    }
+
 }
 
 void GLWidget::allocateFBOs(int w, int h) {
@@ -247,6 +256,30 @@ void GLWidget::renderFrameNow() {
     makeCurrent();
     paintGL();
     doneCurrent();
+}
+
+bool GLWidget::renderExportFrame(int targetW, int targetH, std::vector<uint8_t>& outRgbaBuffer) {
+    if (!context() || !passthroughShader || !passthroughShader->isLinked() || targetW <= 0 || targetH <= 0) {
+        return false;
+    }
+    const size_t totalBytes = static_cast<size_t>(targetW) * static_cast<size_t>(targetH) * 4;
+    if (outRgbaBuffer.size() != totalBytes) {
+        outRgbaBuffer.resize(totalBytes);
+    }
+
+    makeCurrent();
+    renderPipeline(targetW, targetH, false, true);
+
+    if (!exportFbo) {
+        doneCurrent();
+        return false;
+    }
+
+    exportFbo->bind();
+    glReadPixels(0, 0, targetW, targetH, GL_RGBA, GL_UNSIGNED_BYTE, outRgbaBuffer.data());
+    exportFbo->release();
+    doneCurrent();
+    return true;
 }
 
 void GLWidget::resizeGL(int w, int h) {
@@ -495,7 +528,7 @@ void GLWidget::uploadMaskIfNeeded() {
 void GLWidget::paintEvent(QPaintEvent* event) {
     QOpenGLWidget::paintEvent(event);
 
-    if (m_guideOverlay == GuideOverlay::None && (!m_showDetections || detections.empty())) return;
+    if (m_guideOverlay == GuideOverlay::None && (!m_showDetections || detections.empty()) && !m_activeEditMask) return;
 
     QPainter painter(this);
     // The renderer leaves custom programs, textures and framebuffer state
@@ -757,6 +790,249 @@ void GLWidget::paintEvent(QPaintEvent* event) {
         const QRect textArea = badge.adjusted(accentWidth + paddingX, 0, -paddingX, 0);
         painter.drawText(textArea, Qt::AlignVCenter | Qt::AlignLeft, label);
     }
+
+    if (m_activeEditMask) {
+        renderMaskDirectOverlay(painter);
+    }
+}
+
+void GLWidget::setActiveEditMask(const ClipMask* mask) {
+    m_activeEditMask = mask;
+    m_hoveredPointIndex = -1;
+    m_draggedPointIndex = -1;
+    m_draggingMaskCenter = false;
+    m_draggingMaskRotate = false;
+    m_draggingMaskScale = false;
+    update();
+}
+
+void GLWidget::renderMaskDirectOverlay(QPainter& painter) {
+    if (!m_activeEditMask || width() <= 0 || height() <= 0) return;
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const int w = width();
+    const int h = height();
+    const double px = m_activeEditMask->evalProp(m_activeEditMask->posXCurve, m_activeEditMask->posX, m_editMaskClipTime);
+    const double py = m_activeEditMask->evalProp(m_activeEditMask->posYCurve, m_activeEditMask->posY, m_editMaskClipTime);
+    const double sx = m_activeEditMask->evalProp(m_activeEditMask->scaleXCurve, m_activeEditMask->scaleX, m_editMaskClipTime);
+    const double sy = m_activeEditMask->evalProp(m_activeEditMask->scaleYCurve, m_activeEditMask->scaleY, m_editMaskClipTime);
+    const double rot = m_activeEditMask->evalProp(m_activeEditMask->rotationCurve, m_activeEditMask->rotation, m_editMaskClipTime);
+    const double feather = std::max(0.0, m_activeEditMask->evalProp(m_activeEditMask->featherCurve, m_activeEditMask->feather, m_editMaskClipTime));
+    const double expPx = m_activeEditMask->evalProp(m_activeEditMask->expansionCurve, m_activeEditMask->expansion, m_editMaskClipTime);
+
+    const float cx = static_cast<float>(px * w);
+    const float cy = static_cast<float>(py * h);
+
+    QTransform transform;
+    transform.translate(cx, cy);
+    transform.rotate(rot);
+    transform.scale(sx, sy);
+    transform.translate(-cx, -cy);
+
+    QPen outlinePen(QColor("#e855f4"), 2.0);
+    outlinePen.setStyle(Qt::SolidLine);
+    painter.setPen(outlinePen);
+    painter.setBrush(Qt::NoBrush);
+
+    QPainterPath path;
+    if (m_activeEditMask->shapeType == MaskShapeType::Rectangle) {
+        float halfW = (0.25f * w) + static_cast<float>(expPx);
+        float halfH = (0.25f * h) + static_cast<float>(expPx);
+        path.addRect(cx - halfW, cy - halfH, halfW * 2.0f, halfH * 2.0f);
+    } else if (m_activeEditMask->shapeType == MaskShapeType::Ellipse) {
+        float rx = (0.25f * w) + static_cast<float>(expPx);
+        float ry = (0.25f * h) + static_cast<float>(expPx);
+        path.addEllipse(QPointF(cx, cy), rx, ry);
+    } else if (!m_activeEditMask->points.empty()) {
+        path.moveTo(m_activeEditMask->points[0].x * w, m_activeEditMask->points[0].y * h);
+        for (size_t i = 1; i < m_activeEditMask->points.size(); ++i) {
+            const auto& prev = m_activeEditMask->points[i - 1];
+            const auto& curr = m_activeEditMask->points[i];
+            if (m_activeEditMask->shapeType == MaskShapeType::Bezier &&
+                (prev.outHandleX != 0 || prev.outHandleY != 0 || curr.inHandleX != 0 || curr.inHandleY != 0)) {
+                QPointF c1(prev.x * w + prev.outHandleX * w, prev.y * h + prev.outHandleY * h);
+                QPointF c2(curr.x * w + curr.inHandleX * w, curr.y * h + curr.inHandleY * h);
+                path.cubicTo(c1, c2, QPointF(curr.x * w, curr.y * h));
+            } else {
+                path.lineTo(curr.x * w, curr.y * h);
+            }
+        }
+        if (m_activeEditMask->closed) path.closeSubpath();
+    }
+
+    QPainterPath transformedPath = transform.map(path);
+    painter.drawPath(transformedPath);
+
+    if (feather > 1.0) {
+        QPen featherPen(QColor(232, 85, 244, 90), 1.0, Qt::DashLine);
+        painter.setPen(featherPen);
+        painter.drawPath(transformedPath);
+    }
+
+    QPen vertexPen(QColor("#ffffff"), 1.5);
+    QBrush vertexBrush(QColor("#e855f4"));
+    QBrush hoverBrush(QColor("#38bdf8"));
+
+    if (m_activeEditMask->shapeType == MaskShapeType::Polygon || m_activeEditMask->shapeType == MaskShapeType::Bezier) {
+        for (size_t i = 0; i < m_activeEditMask->points.size(); ++i) {
+            const auto& pt = m_activeEditMask->points[i];
+            QPointF rawPt(pt.x * w, pt.y * h);
+            QPointF screenPt = transform.map(rawPt);
+
+            bool isHovered = (static_cast<int>(i) == m_hoveredPointIndex || static_cast<int>(i) == m_draggedPointIndex);
+            painter.setPen(vertexPen);
+            painter.setBrush(isHovered ? hoverBrush : vertexBrush);
+            const float r = isHovered ? 6.0f : 4.5f;
+            painter.drawEllipse(screenPt, r, r);
+
+            if (m_activeEditMask->shapeType == MaskShapeType::Bezier) {
+                if (pt.inHandleX != 0 || pt.inHandleY != 0) {
+                    QPointF inPt = transform.map(QPointF((pt.x + pt.inHandleX) * w, (pt.y + pt.inHandleY) * h));
+                    painter.setPen(QPen(QColor(255, 255, 255, 140), 1.0));
+                    painter.drawLine(screenPt, inPt);
+                    painter.setBrush(QColor("#38bdf8"));
+                    painter.drawEllipse(inPt, 3.0f, 3.0f);
+                }
+                if (pt.outHandleX != 0 || pt.outHandleY != 0) {
+                    QPointF outPt = transform.map(QPointF((pt.x + pt.outHandleX) * w, (pt.y + pt.outHandleY) * h));
+                    painter.setPen(QPen(QColor(255, 255, 255, 140), 1.0));
+                    painter.drawLine(screenPt, outPt);
+                    painter.setBrush(QColor("#38bdf8"));
+                    painter.drawEllipse(outPt, 3.0f, 3.0f);
+                }
+            }
+        }
+    }
+
+    painter.setPen(QPen(QColor("#ffffff"), 1.5));
+    painter.setBrush(QColor(232, 85, 244, 180));
+    painter.drawEllipse(QPointF(cx, cy), 5.0, 5.0);
+    painter.drawLine(QPointF(cx - 8, cy), QPointF(cx + 8, cy));
+    painter.drawLine(QPointF(cx, cy - 8), QPointF(cx, cy + 8));
+
+    QPointF rotHandle(cx, cy - 35.0f);
+    QPointF transformedRot = transform.map(rotHandle);
+    painter.setPen(QPen(QColor("#e855f4"), 1.0, Qt::DashLine));
+    painter.drawLine(QPointF(cx, cy), transformedRot);
+    painter.setPen(vertexPen);
+    painter.setBrush(m_draggingMaskRotate ? hoverBrush : QColor("#a855f7"));
+    painter.drawEllipse(transformedRot, 5.0, 5.0);
+
+    painter.restore();
+}
+
+void GLWidget::mousePressEvent(QMouseEvent* event) {
+    if (m_activeEditMask && event->button() == Qt::LeftButton) {
+        const int w = width();
+        const int h = height();
+        if (w > 0 && h > 0) {
+            const double px = m_activeEditMask->evalProp(m_activeEditMask->posXCurve, m_activeEditMask->posX, m_editMaskClipTime);
+            const double py = m_activeEditMask->evalProp(m_activeEditMask->posYCurve, m_activeEditMask->posY, m_editMaskClipTime);
+            const double sx = m_activeEditMask->evalProp(m_activeEditMask->scaleXCurve, m_activeEditMask->scaleX, m_editMaskClipTime);
+            const double sy = m_activeEditMask->evalProp(m_activeEditMask->scaleYCurve, m_activeEditMask->scaleY, m_editMaskClipTime);
+            const double rot = m_activeEditMask->evalProp(m_activeEditMask->rotationCurve, m_activeEditMask->rotation, m_editMaskClipTime);
+
+            const float cx = static_cast<float>(px * w);
+            const float cy = static_cast<float>(py * h);
+
+            QTransform transform;
+            transform.translate(cx, cy);
+            transform.rotate(rot);
+            transform.scale(sx, sy);
+            transform.translate(-cx, -cy);
+
+            m_dragStartPos = event->position();
+            m_dragStartPosX = px;
+            m_dragStartPosY = py;
+            m_dragStartScaleX = sx;
+            m_dragStartScaleY = sy;
+            m_dragStartRotation = rot;
+
+            QPointF rotHandle = transform.map(QPointF(cx, cy - 35.0f));
+            if (QLineF(event->position(), rotHandle).length() <= 10.0) {
+                m_draggingMaskRotate = true;
+                event->accept();
+                return;
+            }
+
+            for (size_t i = 0; i < m_activeEditMask->points.size(); ++i) {
+                QPointF pt = transform.map(QPointF(m_activeEditMask->points[i].x * w, m_activeEditMask->points[i].y * h));
+                if (QLineF(event->position(), pt).length() <= 8.0) {
+                    m_draggedPointIndex = static_cast<int>(i);
+                    event->accept();
+                    return;
+                }
+            }
+
+            if (QLineF(event->position(), QPointF(cx, cy)).length() <= 12.0) {
+                m_draggingMaskCenter = true;
+                event->accept();
+                return;
+            }
+        }
+    }
+    QOpenGLWidget::mousePressEvent(event);
+}
+
+void GLWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (m_activeEditMask) {
+        const int w = width();
+        const int h = height();
+        if (w > 0 && h > 0) {
+            if (m_draggedPointIndex >= 0 && m_draggedPointIndex < static_cast<int>(m_activeEditMask->points.size())) {
+                float nx = std::clamp(static_cast<float>(event->position().x() / w), 0.0f, 1.0f);
+                float ny = std::clamp(static_cast<float>(event->position().y() / h), 0.0f, 1.0f);
+                emit maskPointMoved(m_draggedPointIndex, nx, ny);
+                update();
+                event->accept();
+                return;
+            } else if (m_draggingMaskCenter) {
+                double dx = (event->position().x() - m_dragStartPos.x()) / w;
+                double dy = (event->position().y() - m_dragStartPos.y()) / h;
+                emit maskTransformChanged(m_dragStartPosX + dx, m_dragStartPosY + dy, m_dragStartScaleX, m_dragStartScaleY, m_dragStartRotation);
+                update();
+                event->accept();
+                return;
+            } else if (m_draggingMaskRotate) {
+                float cx = static_cast<float>(m_dragStartPosX * w);
+                float cy = static_cast<float>(m_dragStartPosY * h);
+                double angleNow = std::atan2(event->position().y() - cy, event->position().x() - cx) * 180.0 / M_PI;
+                double angleStart = std::atan2(m_dragStartPos.y() - cy, m_dragStartPos.x() - cx) * 180.0 / M_PI;
+                double dAngle = angleNow - angleStart;
+                emit maskTransformChanged(m_dragStartPosX, m_dragStartPosY, m_dragStartScaleX, m_dragStartScaleY, m_dragStartRotation + dAngle);
+                update();
+                event->accept();
+                return;
+            }
+
+            int oldHover = m_hoveredPointIndex;
+            m_hoveredPointIndex = -1;
+            for (size_t i = 0; i < m_activeEditMask->points.size(); ++i) {
+                QPointF pt(m_activeEditMask->points[i].x * w, m_activeEditMask->points[i].y * h);
+                if (QLineF(event->position(), pt).length() <= 8.0) {
+                    m_hoveredPointIndex = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (oldHover != m_hoveredPointIndex) update();
+        }
+    }
+    QOpenGLWidget::mouseMoveEvent(event);
+}
+
+void GLWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_draggedPointIndex >= 0 || m_draggingMaskCenter || m_draggingMaskRotate || m_draggingMaskScale) {
+        m_draggedPointIndex = -1;
+        m_draggingMaskCenter = false;
+        m_draggingMaskRotate = false;
+        m_draggingMaskScale = false;
+        update();
+        event->accept();
+        return;
+    }
+    QOpenGLWidget::mouseReleaseEvent(event);
 }
 
 void GLWidget::compileCustomPluginShader(ShaderPlugin& plugin) {
@@ -802,14 +1078,18 @@ GLint GLWidget::uniformLocation(GLuint program, const char* name) {
 }
 
 void GLWidget::paintGL() {
+    renderPipeline(width(), height(), true, false);
+}
+
+void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
     if (!passthroughShader || !passthroughShader->isLinked()) return;
 
     QElapsedTimer renderTimer;
     renderTimer.start();
     Profiler::instance().mark("frame_start");
 
-    int w = width();
-    int h = height();
+    if (w <= 0) w = width();
+    if (h <= 0) h = height();
     allocateFBOs(w, h);
     uploadMaskIfNeeded();
     glDisable(GL_BLEND);
@@ -1053,65 +1333,80 @@ void GLWidget::paintGL() {
         fboFeedback->release();
     }
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-    glViewport(0, 0, w, h);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    // Transparency has no visible color on a native window surface and is
-    // commonly shown as black by Windows. Draw an editor-only checkerboard so
-    // alpha is unmistakable; grabRenderedFrame() never reads this framebuffer.
-    if (transparencyGridShader && transparencyGridShader->isLinked()) {
-        glDisable(GL_BLEND);
-        transparencyGridShader->bind();
-        renderQuad();
-        transparencyGridShader->release();
+    if (toScreen) {
         glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        glViewport(0, 0, w, h);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        if (transparencyGridShader && transparencyGridShader->isLinked()) {
+            glDisable(GL_BLEND);
+            transparencyGridShader->bind();
+            renderQuad();
+            transparencyGridShader->release();
+            glEnable(GL_BLEND);
+        }
+
+        passthroughShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, currentTex);
+        passthroughShader->setUniformValue("videoTexture", 0);
+        renderQuad();
+        passthroughShader->release();
+
+        double frameRenderMs = renderTimer.nsecsElapsed() / 1.0e6;
+        m_lastRenderTimeMs = frameRenderMs;
+        m_renderTimeHistory.push_back(frameRenderMs);
+        if (m_renderTimeHistory.size() > 30) {
+            m_renderTimeHistory.pop_front();
+        }
+        double sum = 0.0;
+        for (double v : m_renderTimeHistory) sum += v;
+        m_avgRenderTimeMs = m_renderTimeHistory.empty() ? 0.0 : (sum / m_renderTimeHistory.size());
+
+        Profiler::instance().sample("frame_render", frameRenderMs);
+
+        frameCount++;
+        if (fpsTimer.elapsed() >= 500) {
+            currentFps = frameCount / (fpsTimer.elapsed() / 1000.0);
+            frameCount = 0;
+            fpsTimer.restart();
+        }
+        if (showOverlay && overlayLabel) {
+            size_t cacheCount = VideoEngine::instance().getCacheFrameCount();
+            size_t cacheBytes = VideoEngine::instance().getCacheByteSize();
+            overlayLabel->setText(QString("FPS: %1\nRender: %2 ms (Avg: %3 ms)\nRes: %4x%5\nCache: %6 f (%7 MB)")
+                .arg(currentFps, 0, 'f', 1)
+                .arg(m_lastRenderTimeMs, 0, 'f', 1)
+                .arg(m_avgRenderTimeMs, 0, 'f', 1)
+                .arg(lastFrameWidth)
+                .arg(lastFrameHeight)
+                .arg(cacheCount)
+                .arg(cacheBytes / (1024 * 1024)));
+            overlayLabel->adjustSize();
+        }
     }
 
-    passthroughShader->bind();
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, currentTex);
-    passthroughShader->setUniformValue("videoTexture", 0);
+    if (isExport && exportFbo) {
+        exportFbo->bind();
+        glViewport(0, 0, w, h);
+        glDisable(GL_BLEND);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-    renderQuad();
+        auto* blitShader = (exportBlitShader && exportBlitShader->isLinked()) ? exportBlitShader : passthroughShader;
+        blitShader->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, currentTex);
+        blitShader->setUniformValue("videoTexture", 0);
+        renderQuad();
+        blitShader->release();
+        exportFbo->release();
+    }
 
-    passthroughShader->release();
     renderedTexture = currentTex;
-
-    double frameRenderMs = renderTimer.nsecsElapsed() / 1.0e6;
-    m_lastRenderTimeMs = frameRenderMs;
-    m_renderTimeHistory.push_back(frameRenderMs);
-    if (m_renderTimeHistory.size() > 30) {
-        m_renderTimeHistory.pop_front();
-    }
-    double sum = 0.0;
-    for (double v : m_renderTimeHistory) sum += v;
-    m_avgRenderTimeMs = m_renderTimeHistory.empty() ? 0.0 : (sum / m_renderTimeHistory.size());
-
-    Profiler::instance().sample("frame_render", frameRenderMs);
-
-    frameCount++;
-    if (fpsTimer.elapsed() >= 500) {
-        currentFps = frameCount / (fpsTimer.elapsed() / 1000.0);
-        frameCount = 0;
-        fpsTimer.restart();
-    }
-    if (showOverlay && overlayLabel) {
-        size_t cacheCount = VideoEngine::instance().getCacheFrameCount();
-        size_t cacheBytes = VideoEngine::instance().getCacheByteSize();
-        overlayLabel->setText(QString("FPS: %1\nRender: %2 ms (Avg: %3 ms)\nRes: %4x%5\nCache: %6 f (%7 MB)")
-            .arg(currentFps, 0, 'f', 1)
-            .arg(m_lastRenderTimeMs, 0, 'f', 1)
-            .arg(m_avgRenderTimeMs, 0, 'f', 1)
-            .arg(lastFrameWidth)
-            .arg(lastFrameHeight)
-            .arg(cacheCount)
-            .arg(cacheBytes / (1024 * 1024)));
-        overlayLabel->adjustSize();
-    }
 }
 
 void GLWidget::renderQuad() {

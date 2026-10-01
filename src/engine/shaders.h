@@ -11,3 +11,4 @@ extern const char* maskCompositeShaderSource;
 extern const char* alphaGuardShaderSource;
 extern const char* milkdropShaderSource;
 extern const char* xorShaderSource;
+extern const char* exportVertexShaderSource;

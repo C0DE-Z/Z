@@ -12,11 +12,11 @@ class Timeline : public QWidget {
     Q_OBJECT
 public:
     explicit Timeline(QWidget* parent = nullptr);
-
+    double xToTime(int x) const;
     void setPlayhead(double time);
     void setDuration(double duration);
     void selectParameter(const QString& effectId, const QString& paramName);
-
+    double hoverTime() const;
     void zoomIn();
     void zoomOut();
     void zoomFit(int viewWidth);
@@ -91,7 +91,6 @@ private:
     double dragTransAnchorX = 0.0;
 
     int timeToX(double time) const;
-    double xToTime(int x) const;
     bool hitTestClip(const QPoint& pos, int& trackIndex, int& clipIndex, double& clipStart, double& clipDuration) const;
     bool hitTestTransition(const QPoint& pos, int& trackIndex, int& transIndex, bool& isLeftEdge) const;
     bool hitTestCutEdge(const QPoint& pos, int& trackIndex, double& cutTime) const;

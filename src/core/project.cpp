@@ -107,8 +107,74 @@ void Project::fromJson(const QJsonObject& root) {
                     }
                 }
                 clip.effects.push_back(effect);
-
             }
+
+            QJsonArray masksArray = clipObj.value("masks").toArray();
+            for (int mIdx = 0; mIdx < masksArray.size(); ++mIdx) {
+                QJsonObject mObj = masksArray[mIdx].toObject();
+                ClipMask mask;
+                mask.id = mObj.value("id").toString().toStdString();
+                mask.name = mObj.value("name").toString("Mask").toStdString();
+                mask.shapeType = static_cast<MaskShapeType>(mObj.value("shapeType").toInt(0));
+                mask.mode = static_cast<MaskMode>(mObj.value("mode").toInt(0));
+                mask.enabled = mObj.value("enabled").toBool(true);
+                mask.inverted = mObj.value("inverted").toBool(false);
+                mask.closed = mObj.value("closed").toBool(true);
+                mask.posX = mObj.value("posX").toDouble(0.5);
+                mask.posY = mObj.value("posY").toDouble(0.5);
+                mask.scaleX = mObj.value("scaleX").toDouble(1.0);
+                mask.scaleY = mObj.value("scaleY").toDouble(1.0);
+                mask.rotation = mObj.value("rotation").toDouble(0.0);
+                mask.feather = mObj.value("feather").toDouble(6.0);
+                mask.opacity = mObj.value("opacity").toDouble(1.0);
+                mask.expansion = mObj.value("expansion").toDouble(0.0);
+                mask.maskSourceClip = mObj.value("maskSourceClip").toBool(false);
+
+                auto deserializeCurve = [](AnimationCurve& curve, const QJsonArray& arr) {
+                    for (int k = 0; k < arr.size(); ++k) {
+                        QJsonObject kfObj = arr[k].toObject();
+                        double t = kfObj.value("time").toDouble();
+                        double v = kfObj.value("value").toDouble();
+                        int modeInt = kfObj.value("mode").toInt(0);
+                        curve.insertKeyframe(t, v, static_cast<InterpolationMode>(modeInt));
+                        auto& key = *std::find_if(curve.getKeyframes().begin(), curve.getKeyframes().end(), [t](const Keyframe& k) { return std::abs(k.time - t) < 0.001; });
+                        key.handleInX = kfObj.value("handleInX").toDouble(key.handleInX);
+                        key.handleInY = kfObj.value("handleInY").toDouble(key.handleInY);
+                        key.handleOutX = kfObj.value("handleOutX").toDouble(key.handleOutX);
+                        key.handleOutY = kfObj.value("handleOutY").toDouble(key.handleOutY);
+                    }
+                };
+
+                deserializeCurve(mask.posXCurve, mObj.value("posXCurve").toArray());
+                deserializeCurve(mask.posYCurve, mObj.value("posYCurve").toArray());
+                deserializeCurve(mask.scaleXCurve, mObj.value("scaleXCurve").toArray());
+                deserializeCurve(mask.scaleYCurve, mObj.value("scaleYCurve").toArray());
+                deserializeCurve(mask.rotationCurve, mObj.value("rotationCurve").toArray());
+                deserializeCurve(mask.featherCurve, mObj.value("featherCurve").toArray());
+                deserializeCurve(mask.opacityCurve, mObj.value("opacityCurve").toArray());
+                deserializeCurve(mask.expansionCurve, mObj.value("expansionCurve").toArray());
+
+                QJsonArray ptsArr = mObj.value("points").toArray();
+                for (int pIdx = 0; pIdx < ptsArr.size(); ++pIdx) {
+                    QJsonObject pObj = ptsArr[pIdx].toObject();
+                    MaskPoint pt;
+                    pt.x = static_cast<float>(pObj.value("x").toDouble(0.5));
+                    pt.y = static_cast<float>(pObj.value("y").toDouble(0.5));
+                    pt.inHandleX = static_cast<float>(pObj.value("inHandleX").toDouble(0.0));
+                    pt.inHandleY = static_cast<float>(pObj.value("inHandleY").toDouble(0.0));
+                    pt.outHandleX = static_cast<float>(pObj.value("outHandleX").toDouble(0.0));
+                    pt.outHandleY = static_cast<float>(pObj.value("outHandleY").toDouble(0.0));
+                    mask.points.push_back(pt);
+                }
+
+                QJsonArray effTargetArr = mObj.value("targetEffectIds").toArray();
+                for (int eIdx = 0; eIdx < effTargetArr.size(); ++eIdx) {
+                    mask.targetEffectIds.push_back(effTargetArr[eIdx].toString().toStdString());
+                }
+
+                clip.masks.push_back(mask);
+            }
+
             track.clips.push_back(clip);
         }
 
@@ -336,6 +402,75 @@ QJsonObject Project::toJson() const {
                 clipEffectsArray.append(effectObj);
             }
             clipObj["effects"] = clipEffectsArray;
+
+            QJsonArray masksArray;
+            for (const auto& mask : clip.masks) {
+                QJsonObject mObj;
+                mObj["id"] = QString::fromStdString(mask.id);
+                mObj["name"] = QString::fromStdString(mask.name);
+                mObj["shapeType"] = static_cast<int>(mask.shapeType);
+                mObj["mode"] = static_cast<int>(mask.mode);
+                mObj["enabled"] = mask.enabled;
+                mObj["inverted"] = mask.inverted;
+                mObj["closed"] = mask.closed;
+                mObj["posX"] = mask.posX;
+                mObj["posY"] = mask.posY;
+                mObj["scaleX"] = mask.scaleX;
+                mObj["scaleY"] = mask.scaleY;
+                mObj["rotation"] = mask.rotation;
+                mObj["feather"] = mask.feather;
+                mObj["opacity"] = mask.opacity;
+                mObj["expansion"] = mask.expansion;
+                mObj["maskSourceClip"] = mask.maskSourceClip;
+
+                auto serializeCurve = [](const AnimationCurve& curve) {
+                    QJsonArray arr;
+                    for (const auto& kf : curve.getKeyframes()) {
+                        QJsonObject kfObj;
+                        kfObj["time"] = kf.time;
+                        kfObj["value"] = kf.value;
+                        kfObj["mode"] = static_cast<int>(kf.mode);
+                        kfObj["handleInX"] = kf.handleInX;
+                        kfObj["handleInY"] = kf.handleInY;
+                        kfObj["handleOutX"] = kf.handleOutX;
+                        kfObj["handleOutY"] = kf.handleOutY;
+                        arr.append(kfObj);
+                    }
+                    return arr;
+                };
+
+                mObj["posXCurve"] = serializeCurve(mask.posXCurve);
+                mObj["posYCurve"] = serializeCurve(mask.posYCurve);
+                mObj["scaleXCurve"] = serializeCurve(mask.scaleXCurve);
+                mObj["scaleYCurve"] = serializeCurve(mask.scaleYCurve);
+                mObj["rotationCurve"] = serializeCurve(mask.rotationCurve);
+                mObj["featherCurve"] = serializeCurve(mask.featherCurve);
+                mObj["opacityCurve"] = serializeCurve(mask.opacityCurve);
+                mObj["expansionCurve"] = serializeCurve(mask.expansionCurve);
+
+                QJsonArray ptsArr;
+                for (const auto& pt : mask.points) {
+                    QJsonObject pObj;
+                    pObj["x"] = pt.x;
+                    pObj["y"] = pt.y;
+                    pObj["inHandleX"] = pt.inHandleX;
+                    pObj["inHandleY"] = pt.inHandleY;
+                    pObj["outHandleX"] = pt.outHandleX;
+                    pObj["outHandleY"] = pt.outHandleY;
+                    ptsArr.append(pObj);
+                }
+                mObj["points"] = ptsArr;
+
+                QJsonArray effTargetArr;
+                for (const auto& eId : mask.targetEffectIds) {
+                    effTargetArr.append(QString::fromStdString(eId));
+                }
+                mObj["targetEffectIds"] = effTargetArr;
+
+                masksArray.append(mObj);
+            }
+            clipObj["masks"] = masksArray;
+
             clipsArray.append(clipObj);
         }
         trackObj["clips"] = clipsArray;

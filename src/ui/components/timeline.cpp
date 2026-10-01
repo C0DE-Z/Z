@@ -129,6 +129,12 @@ double Timeline::xToTime(int x) const {
     return std::clamp(static_cast<double>(x - 80) / pixelsPerSecond, 0.0, totalDuration);
 }
 
+double Timeline::hoverTime() const {
+    QPoint cursorPos = mapFromGlobal(QCursor::pos());
+    return xToTime(cursorPos.x());
+}
+
+
 void Timeline::wheelEvent(QWheelEvent* event) {
     if (event->modifiers() & Qt::AltModifier) {
         double oldPixelsPerSecond = pixelsPerSecond;
@@ -625,14 +631,11 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
         int transTrack = -1, transIdx = -1;
         bool isLeftEdge = false;
         if (hitTestTransition(event->pos(), transTrack, transIdx, isLeftEdge)) {
-            // Clear clip selection
             selectedTrackIndex = -1;
             selectedClipIndex = -1;
             selectedTransTrackIndex = transTrack;
             selectedTransIndex = transIdx;
             emit transitionSelected(transTrack, transIdx);
-
-            // Check if we're actually in an edge handle zone
             auto& tracks = Project::instance().getTracks();
             if (transTrack < (int)tracks.size() && transIdx < (int)tracks[transTrack].transitions.size()) {
                 const auto& trans = tracks[transTrack].transitions[transIdx];

@@ -25,6 +25,8 @@ public:
     void requestFrameAsync(const std::string& clipId, double timestamp);
     bool tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     bool tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds = 0.08);
+    void requestCursorFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
+    bool isCursorFrameAvailable(const std::string& clipId, double timestamp);
     void setAsyncDecodeEnabled(bool enabled);
     bool isAsyncDecodeEnabled() const;
     bool isClipCacheable(const std::string& clipId) const;
@@ -53,12 +55,7 @@ public:
 private:
     VideoEngine() = default;
     std::map<std::string, std::shared_ptr<VideoDecoder>> decoders;
-    // Datamosh reads a separate H.264 stream that intentionally contains
-    // P-frame dependencies. The regular decoder remains pristine for normal
-    // editing and alpha-capable media.
     std::map<std::string, std::shared_ptr<VideoDecoder>> datamoshDecoders;
-    // The worker owns separate FFmpeg contexts so prefetch seeks can never
-    // contend with UI-thread decode state.
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDecoders;
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDatamoshDecoders;
     std::map<std::string, bool> datamoshActive;

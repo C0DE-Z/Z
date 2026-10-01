@@ -3,7 +3,7 @@
 #include <map>
 #include <algorithm>
 #include <QDebug>
-
+#include "timeline.h"
 
 VideoEngine::~VideoEngine() {
     {
@@ -132,6 +132,22 @@ bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double tim
     return false;
 }
 
+
+
+// Render frames at cursor postion to save on engine resources
+void VideoEngine::requestCursorFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    hoverTime = timeline->hoverTime();
+    requestFrame(clipId, timestamp, outFrame);
+
+}
+
+bool VideoEngine::isCursorFrameAvailable(const std::string& clipId, double timestamp) {
+    DecodedVideoFrame dummyFrame;
+    return tryGetCachedFrame(clipId, timestamp, dummyFrame);
+}
+
+
 bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePath, const std::string& datamoshProxyPath) {
     std::lock_guard<std::mutex> lock(engineMutex);
 
@@ -155,9 +171,7 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
         const std::string packetSourcePath = useDirectSource
             ? filePath : datamoshProxyPath;
         if (!packetSourcePath.empty()) {
-            // Software decoding is deliberate: hardware decoders commonly
-            // conceal dropped reference packets, erasing the very artifacts
-            // this effect creates.
+
             auto datamoshDecoder = std::make_shared<VideoDecoder>();
             if (datamoshDecoder->openFile(packetSourcePath, false, false)) {
                 datamoshDecoders[clipId] = std::move(datamoshDecoder);
