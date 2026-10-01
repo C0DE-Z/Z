@@ -8,7 +8,7 @@
 #endif
 
 int main(int argc, char *argv[]) {
-    QApplication app(argc, argv);s
+    QApplication app(argc, argv);
     app.setApplicationName("Z");
     app.setApplicationVersion(Z_APP_VERSION);
     app.setOrganizationName("Z-Creative");
