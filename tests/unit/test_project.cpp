@@ -25,6 +25,16 @@ void testProjectSerialization() {
     effect.pluginId = "pixel_sorter";
     effect.startOffset = 3.5;
     c1.effects.push_back(effect);
+    ClipMask mask;
+    mask.id = "mask_person";
+    mask.name = "Person outline";
+    mask.shapeType = MaskShapeType::Bezier;
+    mask.inverted = true;
+    mask.feather = 12.0;
+    mask.targetEffectIds.push_back("pixel_sorter");
+    mask.posXCurve.insertKeyframe(1.0, 0.4);
+    mask.points.push_back({0.2f, 0.3f, -0.02f, 0.0f, 0.03f, 0.01f});
+    c1.masks.push_back(mask);
     t1.clips.push_back(c1);
 
     ProjectTransition tr;
@@ -52,6 +62,13 @@ void testProjectSerialization() {
     assert(proj.getTracks()[0].clips[0].mediaId == "source_01");
     assert(proj.getTracks()[0].clips[0].datamoshProxyPath == "C:/cache/intro_datamosh.mp4");
     assert(proj.getTracks()[0].clips[0].effects[0].startOffset == 3.5);
+    assert(proj.getTracks()[0].clips[0].masks.size() == 1);
+    assert(proj.getTracks()[0].clips[0].masks[0].id == "mask_person");
+    assert(proj.getTracks()[0].clips[0].masks[0].shapeType == MaskShapeType::Bezier);
+    assert(proj.getTracks()[0].clips[0].masks[0].inverted);
+    assert(proj.getTracks()[0].clips[0].masks[0].targetEffectIds[0] == "pixel_sorter");
+    assert(proj.getTracks()[0].clips[0].masks[0].posXCurve.evaluate(1.0) == 0.4);
+    assert(proj.getTracks()[0].clips[0].masks[0].points[0].outHandleX == 0.03f);
     assert(proj.getTracks()[0].type == TimelineTrackType::Video);
     assert(proj.getTracks()[0].transitions.size() == 1);
     assert(proj.getTracks()[0].transitions[0].pluginId == "cross_dissolve");

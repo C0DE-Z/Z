@@ -3,7 +3,6 @@
 #include <map>
 #include <algorithm>
 #include <QDebug>
-#include "timeline.h"
 
 VideoEngine::~VideoEngine() {
     {
@@ -134,12 +133,9 @@ bool VideoEngine::tryGetNearestCachedFrame(const std::string& clipId, double tim
 
 
 
-// Render frames at cursor postion to save on engine resources
+// Decode or retrieve the requested cursor frame through the normal cache path.
 void VideoEngine::requestCursorFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
-    std::lock_guard<std::mutex> lock(engineMutex);
-    hoverTime = timeline->hoverTime();
-    requestFrame(clipId, timestamp, outFrame);
-
+    getFrame(clipId, timestamp, outFrame);
 }
 
 bool VideoEngine::isCursorFrameAvailable(const std::string& clipId, double timestamp) {

@@ -9,7 +9,6 @@
 #include <QProcess>
 #include <QCoreApplication>
 #include <QEventLoop>
-#include <QImage>
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -26,7 +25,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
-#include <future>
+#include <vector>
 
 namespace {
 class ExportConfigDialog : public QDialog {
@@ -296,56 +295,32 @@ void MediaExporter::exportVideo(
     QElapsedTimer timer;
     timer.start();
 
-    const int actualW = exportW;
-    const int actualH = exportH;
-    const int rowBytes = actualW * 4;
-
-    // The QOpenGLWidget has one context, so timeline rendering itself must
-    // remain ordered. Overlap the CPU image conversion/scale for frame N with
-    // GPU rendering of frame N + 1; the bounded one-frame queue prevents 4K
-    // renders from consuming unbounded RAM while FFmpeg encodes concurrently.
-    auto prepareFrame = [actualW, actualH](QImage image) {
-        if (image.width() != actualW || image.height() != actualH) {
-            image = image.convertToFormat(QImage::Format_RGBA8888_Premultiplied)
-                        .scaled(actualW, actualH, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                        .convertToFormat(QImage::Format_RGBA8888);
-        } else if (image.format() != QImage::Format_RGBA8888) {
-            image = image.convertToFormat(QImage::Format_RGBA8888);
-        }
-        return image;
-    };
-
-    auto writeFrame = [&](const QImage& image) {
-        for (int y = 0; y < actualH; ++y) {
-            const char* row = reinterpret_cast<const char*>(image.constScanLine(y));
-            if (proc.write(row, rowBytes) < 0) {
-                return false;
+    // Render directly at the selected export size and read back once. The
+    // QOpenGLWidget context is single-threaded; FFmpeg consumes the pipe on its
+    // own process while this thread prepares the next ordered frame.
+    std::vector<uint8_t> rgbaBuffer;
+    const qint64 frameBytes = static_cast<qint64>(exportW) * exportH * 4;
+    auto writeFrame = [&](const std::vector<uint8_t>& frame) {
+        if (static_cast<qint64>(frame.size()) != frameBytes) return false;
+        qint64 offset = 0;
+        while (offset < frameBytes) {
+            const qint64 chunkSize = std::min<qint64>(frameBytes - offset, 4 * 1024 * 1024);
+            const qint64 accepted = proc.write(
+                reinterpret_cast<const char*>(frame.data() + offset), chunkSize);
+            if (accepted < 0) return false;
+            if (accepted == 0) {
+                if (!proc.waitForBytesWritten(-1)) return false;
+                continue;
             }
+            offset += accepted;
+            if (!proc.waitForBytesWritten(-1)) return false;
         }
         return true;
     };
-
-    std::future<QImage> pendingFrame;
-    int pendingFrameIndex = -1;
     int encodedFrames = 0;
-    auto flushPendingFrame = [&]() -> bool {
-        if (!pendingFrame.valid()) return true;
-        const QImage image = pendingFrame.get();
-        if (image.isNull() || !writeFrame(image)) return false;
-        encodedFrames = pendingFrameIndex + 1;
-        if (encodedFrames % 3 == 0 || encodedFrames == totalFrames) {
-            const double elapsedSec = timer.elapsed() / 1000.0;
-            const double fpsRender = encodedFrames / std::max(0.001, elapsedSec);
-            const double remainingSec = (totalFrames - encodedFrames) / std::max(0.001, fpsRender);
-            progress.setLabelText(QString("Rendering and encoding frame %1 of %2 (%3 fps)\nETA: %4s remaining")
-                .arg(encodedFrames).arg(totalFrames)
-                .arg(fpsRender, 0, 'f', 1)
-                .arg(static_cast<int>(remainingSec)));
-            progress.setValue(encodedFrames);
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-        }
-        return true;
-    };
+    qint64 scrubAndDecodeNs = 0;
+    qint64 renderAndReadbackNs = 0;
+    qint64 pipeWriteNs = 0;
 
     for (int i = 0; i < totalFrames; ++i) {
         if (progress.wasCanceled()) {
@@ -360,18 +335,12 @@ void MediaExporter::exportVideo(
         }
 
         const double time = settings.startTime + (static_cast<double>(i) / settings.fps);
+        QElapsedTimer stageTimer;
+        stageTimer.start();
         scrubCallback(time);
-
-        // QOpenGLWidget::update() is intentionally asynchronous. During export
-        // that meant grabRenderedFrame could read the previous timeline state,
-        // so effects looked correct in preview but were absent from the file.
-        // Render this state synchronously before reading its offscreen texture.
-        glWidget->renderFrameNow();
-
-        // Capture the renderer's transparent offscreen result, not the
-        // QOpenGLWidget window surface (which may already be black/opaque).
-        QImage img = glWidget->grabRenderedFrame();
-        if (img.isNull()) {
+        scrubAndDecodeNs += stageTimer.nsecsElapsed();
+        stageTimer.restart();
+        if (!glWidget->renderExportFrame(exportW, exportH, rgbaBuffer)) {
             proc.kill();
             proc.waitForFinished();
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
@@ -380,11 +349,10 @@ void MediaExporter::exportVideo(
             QMessageBox::critical(parentWindow, "Export Error", QString("Failed to capture GPU frame %1 of %2.").arg(i + 1).arg(totalFrames));
             return;
         }
+        renderAndReadbackNs += stageTimer.nsecsElapsed();
 
-        // Submit this frame before waiting for the previous CPU preparation,
-        // allowing the preparation thread to run while OpenGL draws the next
-        // timeline frame.
-        if (!flushPendingFrame()) {
+        stageTimer.restart();
+        if (!writeFrame(rgbaBuffer)) {
             proc.kill();
             proc.waitForFinished();
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
@@ -393,25 +361,37 @@ void MediaExporter::exportVideo(
             QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
             return;
         }
-        pendingFrame = std::async(std::launch::async, prepareFrame, std::move(img));
-        pendingFrameIndex = i;
+        pipeWriteNs += stageTimer.nsecsElapsed();
+        encodedFrames = i + 1;
+        if (encodedFrames % 3 == 0 || encodedFrames == totalFrames) {
+            const double elapsedSec = timer.elapsed() / 1000.0;
+            const double fpsRender = encodedFrames / std::max(0.001, elapsedSec);
+            const double remainingSec = (totalFrames - encodedFrames) / std::max(0.001, fpsRender);
+            progress.setLabelText(QString("Rendering and encoding frame %1 of %2 (%3 fps)\nETA: %4s remaining")
+                .arg(encodedFrames).arg(totalFrames)
+                .arg(fpsRender, 0, 'f', 1)
+                .arg(static_cast<int>(remainingSec)));
+            progress.setValue(encodedFrames);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        }
     }
 
-    if (!flushPendingFrame()) {
-        proc.kill();
-        proc.waitForFinished();
-        VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
-        AppLogging::setEnabled(logsWereEnabled);
-        if (wasPlaying) togglePlaybackCallback();
-        QMessageBox::critical(parentWindow, "Export Error", "Failed sending final frame buffer to video encoder.");
-        return;
-    }
+        const double scrubMsPerFrame = scrubAndDecodeNs / 1.0e6 / std::max(1, encodedFrames);
+        const double renderMsPerFrame = renderAndReadbackNs / 1.0e6 / std::max(1, encodedFrames);
+    const double pipeMsPerFrame = pipeWriteNs / 1.0e6 / std::max(1, encodedFrames);
+        qInfo() << "Export profile:" << encodedFrames << "frames; timeline scrub/decode avg"
+            << scrubMsPerFrame << "ms; GPU render/readback avg" << renderMsPerFrame
+            << "ms; FFmpeg pipe wait/write avg" << pipeMsPerFrame << "ms";
 
     proc.closeWriteChannel();
     progress.setLabelText("Finalizing MOV container and encoding audio...");
     progress.setValue(totalFrames);
 
-    if (!proc.waitForFinished(-1) || proc.exitCode() != 0) {
+    QElapsedTimer encoderFinalizeTimer;
+    encoderFinalizeTimer.start();
+    const bool encoderFinished = proc.waitForFinished(-1);
+    qInfo() << "Export profile: FFmpeg finalization" << encoderFinalizeTimer.elapsed() << "ms";
+    if (!encoderFinished || proc.exitCode() != 0) {
         QString errOutput = proc.readAllStandardOutput();
         QMessageBox::critical(parentWindow, "Export Failed", "FFmpeg failed encoding final video:\n" + errOutput);
     } else {

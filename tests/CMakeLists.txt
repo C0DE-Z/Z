@@ -51,3 +51,12 @@ if(OpenCV_FOUND)
     target_compile_definitions(test_detector PRIVATE Z_HAS_OPENCV_DNN=1)
 endif()
 add_test(NAME DetectorTests COMMAND test_detector)
+
+add_executable(test_maskgenerator
+    unit/test_maskgenerator.cpp
+    ../src/engine/maskgenerator.cpp
+    ../src/core/keyframe.cpp
+)
+target_include_directories(test_maskgenerator PRIVATE ../src)
+target_link_libraries(test_maskgenerator PRIVATE Qt6::Gui)
+add_test(NAME MaskGeneratorTests COMMAND test_maskgenerator)

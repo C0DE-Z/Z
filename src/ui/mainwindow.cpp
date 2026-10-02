@@ -54,6 +54,7 @@
 #include <optional>
 #include "utils/logging.h"
 #include "engine/videoengine.h"
+#include "engine/maskgenerator.h"
 #include "media/mediaexporter.h"
 #include "core/appstate.h"
 #include "core/shortcutmanager.h"
@@ -655,6 +656,422 @@ void MainWindow::refreshTrackList() {
         trackControl->populateTracks(Project::instance().getTracks());
         if (mediaPool) mediaPool->clearMedia();
     }
+    refreshCustomMaskList();
+}
+
+void MainWindow::refreshCustomMaskList() {
+    if (!customMaskList) return;
+    const QString previousId = customMaskList->currentItem()
+        ? customMaskList->currentItem()->data(Qt::UserRole).toString() : QString();
+    const ProjectClip* clip = currentClip();
+    {
+        const QSignalBlocker blocker(customMaskList);
+        customMaskList->clear();
+        if (clip) {
+            int selectedRow = -1;
+            for (const auto& mask : clip->masks) {
+                const QString id = QString::fromStdString(mask.id);
+                const QString shape = mask.shapeType == MaskShapeType::Rectangle ? "Rectangle" :
+                    mask.shapeType == MaskShapeType::Ellipse ? "Ellipse" :
+                    mask.shapeType == MaskShapeType::Bezier ? "Bezier" : "Polygon";
+                auto* item = new QListWidgetItem(QString("%1  ·  %2%3")
+                    .arg(QString::fromStdString(mask.name), shape, mask.enabled ? "" : "  (disabled)"), customMaskList);
+                item->setData(Qt::UserRole, id);
+                if (!previousId.isEmpty() && id == previousId) selectedRow = customMaskList->count() - 1;
+            }
+            if (selectedRow < 0 && customMaskList->count() > 0) selectedRow = 0;
+            customMaskList->setCurrentRow(selectedRow);
+        }
+    }
+    selectCustomMask();
+}
+
+void MainWindow::selectCustomMask() {
+    ProjectClip* clip = currentClip();
+    ClipMask* selectedMask = nullptr;
+    if (clip && customMaskList && customMaskList->currentItem()) {
+        const std::string id = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+        const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; });
+        if (it != clip->masks.end()) selectedMask = &*it;
+    }
+
+    const bool hasSelection = selectedMask != nullptr;
+    syncingCustomMaskControls = true;
+    const std::array<QWidget*, 9> maskControls = {
+        customMaskEditCheck, customMaskEnabledCheck, customMaskInvertCheck,
+        customMaskFeatherSlider, customMaskOpacitySlider, customMaskExpansionSlider,
+        customMaskModeCombo, customMaskAllEffectsCheck, customMaskEffectTargets
+    };
+    for (QWidget* control : maskControls) {
+        if (control) control->setEnabled(hasSelection);
+    }
+    if (hasSelection) {
+        if (customMaskEnabledCheck) customMaskEnabledCheck->setChecked(selectedMask->enabled);
+        if (customMaskInvertCheck) customMaskInvertCheck->setChecked(selectedMask->inverted);
+        if (customMaskFeatherSlider) customMaskFeatherSlider->setValue(static_cast<int>(std::round(selectedMask->feather)));
+        if (customMaskOpacitySlider) customMaskOpacitySlider->setValue(static_cast<int>(std::round(selectedMask->opacity * 100.0)));
+        if (customMaskExpansionSlider) customMaskExpansionSlider->setValue(static_cast<int>(std::round(selectedMask->expansion)));
+        if (customMaskModeCombo) {
+            const int row = customMaskModeCombo->findData(static_cast<int>(selectedMask->mode));
+            if (row >= 0) customMaskModeCombo->setCurrentIndex(row);
+        }
+        if (customMaskAllEffectsCheck) {
+            customMaskAllEffectsCheck->setChecked(selectedMask->targetEffectIds.empty());
+        }
+        if (customMaskEffectTargets) {
+            const QSignalBlocker blocker(customMaskEffectTargets);
+            customMaskEffectTargets->clear();
+            if (clip) {
+                for (const auto& effect : clip->effects) {
+                    auto* item = new QListWidgetItem(
+                        effectDisplayNameForId(QString::fromStdString(effect.pluginId)), customMaskEffectTargets);
+                    item->setData(Qt::UserRole, QString::fromStdString(effect.pluginId));
+                    const bool applies = selectedMask->targetEffectIds.empty() ||
+                        std::find(selectedMask->targetEffectIds.begin(), selectedMask->targetEffectIds.end(), effect.pluginId) !=
+                            selectedMask->targetEffectIds.end();
+                    item->setSelected(applies);
+                }
+            }
+            customMaskEffectTargets->setEnabled(selectedMask->enabled && !selectedMask->targetEffectIds.empty());
+        }
+    } else if (customMaskEditCheck) {
+        customMaskEditCheck->setChecked(false);
+    }
+    syncingCustomMaskControls = false;
+
+    if (glWidget) {
+        glWidget->setActiveEditMask(hasSelection && customMaskEditCheck && customMaskEditCheck->isChecked()
+            ? selectedMask : nullptr);
+        const double localTime = hasSelection && clip
+            ? std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration) : 0.0;
+        glWidget->setEditMaskClipTime(localTime);
+    }
+}
+
+void MainWindow::createCustomMask() {
+    ProjectClip* clip = currentClip();
+    if (!clip) {
+        if (statusBar()) statusBar()->showMessage("Select a video clip before creating a mask.", 3000);
+        return;
+    }
+
+    const auto shape = customMaskShapeCombo
+        ? static_cast<MaskShapeType>(customMaskShapeCombo->currentData().toInt()) : MaskShapeType::Rectangle;
+    if (shape == MaskShapeType::Rectangle || shape == MaskShapeType::Ellipse) {
+        if (glWidget) glWidget->beginMaskDrawing(shape);
+        if (statusBar()) statusBar()->showMessage(
+            shape == MaskShapeType::Rectangle
+                ? "Drag in Preview to draw the new rectangle mask."
+                : "Drag in Preview to draw the new ellipse mask.", 5000);
+        return;
+    }
+
+    AppState::instance().pushUndoState();
+    const int number = static_cast<int>(clip->masks.size()) + 1;
+    const std::string id = "mask_" + clip->id + "_" + std::to_string(number);
+    const std::string name = "Mask " + std::to_string(number);
+    ClipMask mask;
+    const std::vector<MaskPoint> points = {
+        {0.30f, 0.30f, 0, 0, 0, 0}, {0.70f, 0.30f, 0, 0, 0, 0},
+        {0.70f, 0.70f, 0, 0, 0, 0}, {0.30f, 0.70f, 0, 0, 0, 0}
+    };
+    mask = MaskGenerator::createPolygonMask(id, points, name);
+    clip->masks.push_back(std::move(mask));
+    refreshCustomMaskList();
+    for (int row = 0; row < customMaskList->count(); ++row) {
+        if (customMaskList->item(row)->data(Qt::UserRole).toString() == QString::fromStdString(id)) {
+            customMaskList->setCurrentRow(row);
+            break;
+        }
+    }
+    if (customMaskEditCheck) customMaskEditCheck->setChecked(true);
+    onTimelineScrubbed(currentPlayhead);
+}
+
+void MainWindow::createCustomMaskFromPreview(
+    MaskShapeType shape,
+    double posX,
+    double posY,
+    double scaleX,
+    double scaleY) {
+    ProjectClip* clip = currentClip();
+    if (!clip) return;
+
+    const int number = static_cast<int>(clip->masks.size()) + 1;
+    std::string id = "mask_" + clip->id + "_" + std::to_string(number);
+    while (std::any_of(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; })) {
+        id += "_";
+    }
+    const std::string name = (shape == MaskShapeType::Ellipse ? "Ellipse " : "Rectangle ") + std::to_string(number);
+    ClipMask mask = shape == MaskShapeType::Ellipse
+        ? MaskGenerator::createEllipseMask(id, name)
+        : MaskGenerator::createRectangleMask(id, name);
+    mask.posX = std::clamp(posX, 0.0, 1.0);
+    mask.posY = std::clamp(posY, 0.0, 1.0);
+    mask.scaleX = std::clamp(scaleX, 0.01, 2.0);
+    mask.scaleY = std::clamp(scaleY, 0.01, 2.0);
+
+    AppState::instance().pushUndoState();
+    clip->masks.push_back(std::move(mask));
+    refreshCustomMaskList();
+    for (int row = 0; row < customMaskList->count(); ++row) {
+        if (customMaskList->item(row)->data(Qt::UserRole).toString() == QString::fromStdString(id)) {
+            customMaskList->setCurrentRow(row);
+            break;
+        }
+    }
+    if (customMaskEditCheck) customMaskEditCheck->setChecked(true);
+    if (customMaskShapeCombo) {
+        const int shapeIndex = customMaskShapeCombo->findData(static_cast<int>(shape));
+        if (shapeIndex >= 0) customMaskShapeCombo->setCurrentIndex(shapeIndex);
+    }
+    if (glWidget) glWidget->setActiveEditMask(&clip->masks.back());
+    onTimelineScrubbed(currentPlayhead);
+    if (statusBar()) statusBar()->showMessage("Mask created. Drag its centre, points, or rotation handle to refine it.", 4000);
+}
+
+void MainWindow::createCustomMaskFromDetection() {
+    ProjectClip* clip = currentClip();
+    if (!clip || !detectionList || !detectionList->currentItem()) {
+        if (statusBar()) statusBar()->showMessage("Select a tracked detection first.", 3000);
+        return;
+    }
+    if (detectionSourceClipId.toStdString() != clip->id) {
+        if (statusBar()) statusBar()->showMessage("Run detection on the selected clip before creating its mask.", 3500);
+        return;
+    }
+
+    bool validTrackId = false;
+    const int trackId = detectionList->currentItem()->data(Qt::UserRole).toInt(&validTrackId);
+    if (!validTrackId || trackId <= 0) {
+        if (statusBar()) statusBar()->showMessage("This detection has no tracking ID. Scan the clip or run detection again.", 3500);
+        return;
+    }
+    const auto currentIt = std::find_if(rawCurrentDetections.begin(), rawCurrentDetections.end(), [trackId](const DetectionBox& box) {
+        return box.trackId == trackId;
+    });
+    if (currentIt == rawCurrentDetections.end()) return;
+    const DetectionBox selectedBox = *currentIt;
+
+    bool usedComputerVision = false;
+    const DecodedVideoFrame emptyFrame;
+    const bool frameMatches = latestDetectionFrame && latestDetectionFrameClipId.toStdString() == clip->id &&
+        latestDetectionFrameSourceTime + 0.001 >= clip->sourceStart &&
+        latestDetectionFrameSourceTime <= clip->sourceStart + clip->sourceDuration + 0.001;
+    const auto tracedPoints = MaskGenerator::traceObjectOutline(
+        frameMatches ? *latestDetectionFrame : emptyFrame, selectedBox, &usedComputerVision);
+    if (tracedPoints.size() < 3) {
+        if (statusBar()) statusBar()->showMessage("Could not trace an outline for this detection.", 3000);
+        return;
+    }
+
+    std::vector<MaskPoint> localPoints;
+    localPoints.reserve(tracedPoints.size());
+    const float safeW = std::max(0.0001f, selectedBox.w);
+    const float safeH = std::max(0.0001f, selectedBox.h);
+    for (const auto& point : tracedPoints) {
+        const float localX = std::clamp((point.x - selectedBox.x) / safeW, 0.0f, 1.0f);
+        const float localY = std::clamp(1.0f - (point.y - selectedBox.y) / safeH, 0.0f, 1.0f);
+        localPoints.push_back({0.25f + localX * 0.5f, 0.25f + localY * 0.5f, 0, 0, 0, 0});
+    }
+
+    const int number = static_cast<int>(clip->masks.size()) + 1;
+    std::string id = "mask_" + clip->id + "_" + std::to_string(number);
+    while (std::any_of(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; })) {
+        id += "_";
+    }
+    const std::string maskName = "Track " + std::to_string(trackId);
+    ClipMask mask = MaskGenerator::createPolygonMask(id, localPoints, maskName);
+    mask.posX = selectedBox.x + selectedBox.w * 0.5;
+    mask.posY = 1.0 - (selectedBox.y + selectedBox.h * 0.5);
+    mask.scaleX = std::max(0.01, selectedBox.w * 2.0);
+    mask.scaleY = std::max(0.01, selectedBox.h * 2.0);
+
+    size_t trackKeyCount = 0;
+    const auto cacheIt = clipDetectionCaches.find(clip->id);
+    if (cacheIt != clipDetectionCaches.end()) {
+        for (const auto& sample : cacheIt->second.samples) {
+            const auto boxIt = std::find_if(sample.detections.begin(), sample.detections.end(), [trackId](const DetectionBox& box) {
+                return box.trackId == trackId;
+            });
+            if (boxIt == sample.detections.end()) continue;
+            const double localTime = sample.sourceTime - clip->sourceStart;
+            if (localTime < 0.0 || localTime > clip->sourceDuration) continue;
+            mask.posXCurve.insertKeyframe(localTime, boxIt->x + boxIt->w * 0.5);
+            mask.posYCurve.insertKeyframe(localTime, 1.0 - (boxIt->y + boxIt->h * 0.5));
+            mask.scaleXCurve.insertKeyframe(localTime, std::max(0.01, boxIt->w * 2.0));
+            mask.scaleYCurve.insertKeyframe(localTime, std::max(0.01, boxIt->h * 2.0));
+            ++trackKeyCount;
+        }
+    }
+    if (trackKeyCount == 0) {
+        const double localTime = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+        mask.posXCurve.insertKeyframe(localTime, mask.posX);
+        mask.posYCurve.insertKeyframe(localTime, mask.posY);
+        mask.scaleXCurve.insertKeyframe(localTime, mask.scaleX);
+        mask.scaleYCurve.insertKeyframe(localTime, mask.scaleY);
+        trackKeyCount = 1;
+    }
+
+    AppState::instance().pushUndoState();
+    clip->masks.push_back(std::move(mask));
+    refreshCustomMaskList();
+    for (int row = 0; row < customMaskList->count(); ++row) {
+        if (customMaskList->item(row)->data(Qt::UserRole).toString() == QString::fromStdString(id)) {
+            customMaskList->setCurrentRow(row);
+            break;
+        }
+    }
+    if (customMaskEditCheck) customMaskEditCheck->setChecked(true);
+    onTimelineScrubbed(currentPlayhead);
+    const QString outlineSource = usedComputerVision ? "GrabCut contour" : "detector outline/box fallback";
+    if (statusBar()) statusBar()->showMessage(QString("Editable %1 mask created with %2 tracking keyframe(s). Refine its points in Preview.")
+        .arg(outlineSource).arg(trackKeyCount), 6000);
+}
+
+void MainWindow::trackSelectedCustomMaskFromDetection() {
+    ProjectClip* clip = currentClip();
+    if (!clip || !customMaskList || !customMaskList->currentItem() || !detectionList || !detectionList->currentItem()) {
+        if (statusBar()) statusBar()->showMessage("Select a mask and a tracked detection first.", 3500);
+        return;
+    }
+    if (detectionSourceClipId.toStdString() != clip->id) {
+        if (statusBar()) statusBar()->showMessage("Select the same clip in Detect and Masks, then scan the clip.", 4000);
+        return;
+    }
+
+    bool validTrackId = false;
+    const int trackId = detectionList->currentItem()->data(Qt::UserRole).toInt(&validTrackId);
+    if (!validTrackId || trackId <= 0) {
+        if (statusBar()) statusBar()->showMessage("The selected detection has no track ID. Scan the clip first.", 3500);
+        return;
+    }
+    const auto cacheIt = clipDetectionCaches.find(clip->id);
+    if (cacheIt == clipDetectionCaches.end() || cacheIt->second.samples.empty()) {
+        if (statusBar()) statusBar()->showMessage("No clip-scan track is cached. Use Detect → Scan Entire Clip first.", 4500);
+        return;
+    }
+
+    const std::string maskId = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+    auto maskIt = std::find_if(clip->masks.begin(), clip->masks.end(), [&maskId](const ClipMask& mask) {
+        return mask.id == maskId;
+    });
+    if (maskIt == clip->masks.end()) return;
+
+    struct TransformSample { double time; double x; double y; double sx; double sy; };
+    std::vector<TransformSample> keys;
+    for (const auto& sample : cacheIt->second.samples) {
+        const auto boxIt = std::find_if(sample.detections.begin(), sample.detections.end(), [trackId](const DetectionBox& box) {
+            return box.trackId == trackId;
+        });
+        if (boxIt == sample.detections.end()) continue;
+        const double localTime = sample.sourceTime - clip->sourceStart;
+        if (localTime < 0.0 || localTime > clip->sourceDuration) continue;
+        keys.push_back({localTime, boxIt->x + boxIt->w * 0.5, 1.0 - (boxIt->y + boxIt->h * 0.5),
+            std::max(0.01, boxIt->w * 2.0), std::max(0.01, boxIt->h * 2.0)});
+    }
+    if (keys.empty()) {
+        if (statusBar()) statusBar()->showMessage("The selected track has no samples inside this clip.", 3500);
+        return;
+    }
+
+    AppState::instance().pushUndoState();
+    for (const auto& key : keys) {
+        maskIt->posXCurve.insertKeyframe(key.time, key.x);
+        maskIt->posYCurve.insertKeyframe(key.time, key.y);
+        maskIt->scaleXCurve.insertKeyframe(key.time, key.sx);
+        maskIt->scaleYCurve.insertKeyframe(key.time, key.sy);
+    }
+    const double localTime = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+    if (glWidget) {
+        glWidget->setClipMasks(clip->masks, localTime);
+        glWidget->setEditMaskClipTime(localTime);
+    }
+    if (timelinePanel) timelinePanel->update();
+    if (statusBar()) statusBar()->showMessage(
+        QString("Tracked mask '%1' with %2 position/scale keys.").arg(QString::fromStdString(maskIt->name)).arg(keys.size()), 4500);
+}
+
+void MainWindow::removeSelectedCustomMask() {
+    ProjectClip* clip = currentClip();
+    if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+    const std::string id = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+    const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; });
+    if (it == clip->masks.end()) return;
+    AppState::instance().pushUndoState();
+    clip->masks.erase(it);
+    if (glWidget) glWidget->setActiveEditMask(nullptr);
+    refreshCustomMaskList();
+    onTimelineScrubbed(currentPlayhead);
+}
+
+void MainWindow::updateSelectedCustomMask() {
+    if (syncingCustomMaskControls) return;
+    ProjectClip* clip = currentClip();
+    if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+    const std::string id = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+    const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; });
+    if (it == clip->masks.end()) return;
+
+    if (customMaskEnabledCheck) it->enabled = customMaskEnabledCheck->isChecked();
+    if (customMaskInvertCheck) it->inverted = customMaskInvertCheck->isChecked();
+    if (customMaskFeatherSlider) it->feather = customMaskFeatherSlider->value();
+    if (customMaskOpacitySlider) it->opacity = customMaskOpacitySlider->value() / 100.0;
+    if (customMaskExpansionSlider) it->expansion = customMaskExpansionSlider->value();
+    if (customMaskModeCombo) it->mode = static_cast<MaskMode>(customMaskModeCombo->currentData().toInt());
+    if (customMaskAllEffectsCheck && customMaskAllEffectsCheck->isChecked()) {
+        it->targetEffectIds.clear();
+    } else if (customMaskEffectTargets) {
+        it->targetEffectIds.clear();
+        for (int row = 0; row < customMaskEffectTargets->count(); ++row) {
+            const auto* item = customMaskEffectTargets->item(row);
+            if (item->isSelected()) it->targetEffectIds.push_back(item->data(Qt::UserRole).toString().toStdString());
+        }
+        if (it->targetEffectIds.empty() && customMaskAllEffectsCheck) {
+            const QSignalBlocker blocker(customMaskAllEffectsCheck);
+            customMaskAllEffectsCheck->setChecked(true);
+        }
+    }
+    if (glWidget) {
+        glWidget->setActiveEditMask(customMaskEditCheck && customMaskEditCheck->isChecked() ? &*it : nullptr);
+        const double localTime = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+        glWidget->setEditMaskClipTime(localTime);
+        glWidget->setClipMasks(clip->masks, localTime);
+    }
+    if (customMaskEffectTargets) {
+        customMaskEffectTargets->setEnabled(it->enabled && !it->targetEffectIds.empty());
+    }
+    if (customMaskList->currentItem()) {
+        customMaskList->currentItem()->setText(QString("%1  ·  %2%3")
+            .arg(QString::fromStdString(it->name),
+                it->shapeType == MaskShapeType::Rectangle ? "Rectangle" :
+                it->shapeType == MaskShapeType::Ellipse ? "Ellipse" :
+                it->shapeType == MaskShapeType::Bezier ? "Bezier" : "Polygon",
+                it->enabled ? "" : "  (disabled)"));
+    }
+}
+
+void MainWindow::keyframeSelectedMaskTransform() {
+    ProjectClip* clip = currentClip();
+    if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+    const std::string id = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+    const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&id](const ClipMask& mask) { return mask.id == id; });
+    if (it == clip->masks.end()) return;
+    const double localTime = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+    const auto valueAtPlayhead = [localTime](const AnimationCurve& curve, double base) {
+        return curve.getKeyframes().empty() ? base : curve.evaluate(localTime);
+    };
+    it->posXCurve.insertKeyframe(localTime, valueAtPlayhead(it->posXCurve, it->posX));
+    it->posYCurve.insertKeyframe(localTime, valueAtPlayhead(it->posYCurve, it->posY));
+    it->scaleXCurve.insertKeyframe(localTime, valueAtPlayhead(it->scaleXCurve, it->scaleX));
+    it->scaleYCurve.insertKeyframe(localTime, valueAtPlayhead(it->scaleYCurve, it->scaleY));
+    it->rotationCurve.insertKeyframe(localTime, valueAtPlayhead(it->rotationCurve, it->rotation));
+    it->featherCurve.insertKeyframe(localTime, valueAtPlayhead(it->featherCurve, it->feather));
+    it->opacityCurve.insertKeyframe(localTime, valueAtPlayhead(it->opacityCurve, it->opacity));
+    it->expansionCurve.insertKeyframe(localTime, valueAtPlayhead(it->expansionCurve, it->expansion));
+    if (timelinePanel) timelinePanel->update();
+    if (glWidget) glWidget->setClipMasks(clip->masks, localTime);
+    if (statusBar()) statusBar()->showMessage("Mask transform and feather keyframes added at the playhead.", 2500);
 }
 
 void MainWindow::sortTrackClips(TimelineTrack& track) {
@@ -703,6 +1120,7 @@ void MainWindow::selectClip(int trackIndex, int clipIndex) {
     selectedClipId = QString::fromStdString(clip.id);
     activeClipId = QString::fromStdString(clip.id);
     activeFilePath = QString::fromStdString(clip.filePath);
+    refreshCustomMaskList();
     std::vector<float> audioSamples;
     const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
     if (VideoEngine::instance().getAudioSamples(mediaId, audioSamples)) {
@@ -1507,6 +1925,7 @@ void MainWindow::applyDetectionOverlayOptions() {
 void MainWindow::refreshDetectionMask() {
     if (!glWidget) return;
 
+    updateDetectionMaskTargets();
     const bool maskOn = applyMaskCheck && applyMaskCheck->isChecked();
     glWidget->setMaskEnabled(maskOn);
     glWidget->setMaskInverted(invertMaskCheck && invertMaskCheck->isChecked());
@@ -1531,6 +1950,70 @@ void MainWindow::refreshDetectionMask() {
         [window](DetectionWorkerResult&& result) {
             if (window) window->postDetectionWorkerResult(std::move(result));
         });
+}
+
+void MainWindow::refreshDetectionMaskTargets() {
+    if (!detectionMaskEffectTargets || !detectionMaskAllEffectsCheck) return;
+    const QSignalBlocker blocker(detectionMaskEffectTargets);
+    const QSignalBlocker allEffectsBlocker(detectionMaskAllEffectsCheck);
+    detectionMaskEffectTargets->clear();
+
+    const ProjectClip* clip = currentClip();
+    if (clip) {
+        for (const auto& effect : clip->effects) {
+            const std::string& id = effect.pluginId;
+            if (id == "datamosh" || id == "optical_smear" || id == "cpu_xor" || id == "cpu_or" ||
+                id == "cpu_and" || id == "cpu_xnor" || id == "cpu_nand" || id == "object_mask") {
+                continue;
+            }
+            if (const auto* plugin = PluginManager::instance().findPlugin(id)) {
+                if (QString::fromStdString(plugin->category).startsWith("Transitions", Qt::CaseInsensitive)) continue;
+            }
+            auto* item = new QListWidgetItem(effectDisplayNameForId(QString::fromStdString(id)), detectionMaskEffectTargets);
+            item->setData(Qt::UserRole, QString::fromStdString(id));
+            const bool selected = detectionMaskTargetEffectIds.empty() ||
+                std::find(detectionMaskTargetEffectIds.begin(), detectionMaskTargetEffectIds.end(), id) !=
+                    detectionMaskTargetEffectIds.end();
+            item->setSelected(selected);
+        }
+    }
+    detectionMaskAllEffectsCheck->setChecked(detectionMaskTargetEffectIds.empty());
+    detectionMaskEffectTargets->setEnabled(!detectionMaskTargetEffectIds.empty());
+    updateDetectionMaskTargets();
+}
+
+void MainWindow::updateDetectionMaskTargets() {
+    if (syncingDetectionMaskTargets) return;
+    detectionMaskTargetEffectIds.clear();
+    if (!detectionMaskAllEffectsCheck || detectionMaskAllEffectsCheck->isChecked()) {
+        if (detectionMaskEffectTargets) {
+            const QSignalBlocker blocker(detectionMaskEffectTargets);
+            for (int row = 0; row < detectionMaskEffectTargets->count(); ++row) {
+                detectionMaskEffectTargets->item(row)->setSelected(true);
+            }
+            detectionMaskEffectTargets->setEnabled(false);
+        }
+    } else if (detectionMaskEffectTargets) {
+        for (int row = 0; row < detectionMaskEffectTargets->count(); ++row) {
+            const auto* item = detectionMaskEffectTargets->item(row);
+            if (item->isSelected()) detectionMaskTargetEffectIds.push_back(item->data(Qt::UserRole).toString().toStdString());
+        }
+        if (detectionMaskTargetEffectIds.empty()) {
+            syncingDetectionMaskTargets = true;
+            const QSignalBlocker blocker(detectionMaskAllEffectsCheck);
+            detectionMaskAllEffectsCheck->setChecked(true);
+            syncingDetectionMaskTargets = false;
+            if (detectionMaskEffectTargets) {
+                const QSignalBlocker listBlocker(detectionMaskEffectTargets);
+                for (int row = 0; row < detectionMaskEffectTargets->count(); ++row) {
+                    detectionMaskEffectTargets->item(row)->setSelected(true);
+                }
+            }
+        } else {
+            detectionMaskEffectTargets->setEnabled(true);
+        }
+    }
+    if (glWidget) glWidget->setDetectionMaskEffectIds(detectionMaskTargetEffectIds);
 }
 
 void MainWindow::clearDetections() {
@@ -2074,6 +2557,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     if (!activeTrack) {
         glWidget->clearFrame();
         glWidget->setActiveEffects({});
+        glWidget->setClipMasks({}, 0.0);
         return;
     }
     auto evalParam = [time](const ShaderParameter& p) {
@@ -2081,6 +2565,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     };
     if (!activeClip) {
         glWidget->setActiveEffects({});
+        glWidget->setClipMasks({}, 0.0);
         return;
     }
 
@@ -2090,6 +2575,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     const double clipTime = std::clamp(time - activeClip->timelineStart, 0.0, activeClip->sourceDuration);
     const double sourceTime = activeClip->sourceStart + clipTime;
     glWidget->setPlaybackTime(clipTime);
+    glWidget->setClipMasks(activeClip->masks, clipTime);
 
     bool datamoshEnabled = false;
     double iDrop = 0.0, pDup = 0.0, pDrop = 0.0;
@@ -2630,7 +3116,10 @@ bool MainWindow::addTransitionAtCut(int trackIndex, double dropTime, const QStri
 }
 
 void MainWindow::refreshActiveEffectsList() {
-    if (!activeEffectsList) return;
+    if (!activeEffectsList) {
+        refreshCustomMaskList();
+        return;
+    }
 
     QString selectedId;
     if (activeEffectsList->currentItem()) {
@@ -2640,7 +3129,10 @@ void MainWindow::refreshActiveEffectsList() {
     activeEffectsList->clear();
 
     const auto* effects = activeEffects();
-    if (!effects) return;
+    if (!effects) {
+        refreshCustomMaskList();
+        return;
+    }
 
     int restoreRow = -1;
     for (const auto& eff : *effects) {
@@ -2664,6 +3156,8 @@ void MainWindow::refreshActiveEffectsList() {
     if (restoreRow >= 0) {
         activeEffectsList->setCurrentRow(restoreRow);
     }
+    refreshCustomMaskList();
+    refreshDetectionMaskTargets();
 }
 
 void MainWindow::syncEffectStackToRenderer() {

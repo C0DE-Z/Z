@@ -105,9 +105,11 @@ public:
     void setMaskEnabled(bool enabled);
     bool maskEnabled() const { return m_maskEnabled; }
     void setMaskInverted(bool inverted);
+    void setDetectionMaskEffectIds(std::vector<std::string> effectIds);
     bool maskInverted() const { return m_maskInverted; }
     void setMaskData(int width, int height, const std::vector<uint8_t>& maskR);
     void setMaskData(int width, int height, std::vector<uint8_t>&& maskR);
+    void setClipMasks(const std::vector<ClipMask>& masks, double clipLocalTime);
     // Draw the current timeline/effect state immediately. Export uses this to
     // avoid capturing a queued, stale QOpenGLWidget paint.
     void renderFrameNow();
@@ -116,12 +118,14 @@ public:
 
     // Interactive Mask Editing
     void setActiveEditMask(const ClipMask* mask);
+    void beginMaskDrawing(MaskShapeType shape);
     const ClipMask* activeEditMask() const { return m_activeEditMask; }
     void setEditMaskClipTime(double localTime) { m_editMaskClipTime = localTime; update(); }
 
 signals:
     void maskPointMoved(int pointIndex, float newX, float newY);
     void maskTransformChanged(double posX, double posY, double scaleX, double scaleY, double rotation);
+    void maskDrawn(MaskShapeType shape, double posX, double posY, double scaleX, double scaleY);
 
 public:
 
@@ -174,12 +178,16 @@ private:
     int lastMaskWidth = 0;
     int lastMaskHeight = 0;
     bool hasMaskTexture = false;
+    bool m_detectionMaskHasCoverage = false;
     bool m_maskEnabled = false;
     bool m_maskInverted = false;
     bool maskDirty = false;
     std::vector<uint8_t> pendingMask;
     int pendingMaskW = 0;
     int pendingMaskH = 0;
+    std::vector<std::string> m_detectionMaskEffectIds;
+    std::vector<ClipMask> m_clipMasks;
+    double m_clipMaskLocalTime = 0.0;
 
     bool m_showDetections = true;
     DetectionShape m_detectionShape = DetectionShape::Rectangle;
@@ -199,6 +207,8 @@ private:
     QOpenGLShaderProgram* alphaGuardShader = nullptr;
     QOpenGLShaderProgram* exportBlitShader = nullptr;
     void renderPipeline(int w, int h, bool toScreen, bool isExport);
+    void uploadMaskPixels(const std::vector<uint8_t>& pixels, int width, int height, bool flipVertical = false);
+    void drawDetectionExportOverlay(QPainter& painter, int targetW, int targetH) const;
 
     // Mask editing state
     const ClipMask* m_activeEditMask = nullptr;
@@ -208,6 +218,11 @@ private:
     bool m_draggingMaskCenter = false;
     bool m_draggingMaskRotate = false;
     bool m_draggingMaskScale = false;
+    bool m_maskDrawing = false;
+    bool m_maskDrawInProgress = false;
+    MaskShapeType m_maskDrawingShape = MaskShapeType::Rectangle;
+    QPointF m_maskDrawStart;
+    QPointF m_maskDrawCurrent;
     QPointF m_dragStartPos;
     double m_dragStartPosX = 0.5;
     double m_dragStartPosY = 0.5;

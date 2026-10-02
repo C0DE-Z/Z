@@ -15,6 +15,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QFrame>
 #include <QSignalBlocker>
+#include <QStatusBar>
 
 void MainWindow::createDocks() {
     QDockWidget* sidebarDock = new QDockWidget("Library", this);
@@ -85,6 +86,93 @@ void MainWindow::createDocks() {
     activeLayout->addWidget(removeEffectButton);
 
     sidebarTabs->addTab(activeContainer, "Active FX");
+
+    auto* masksTab = new QWidget(sidebarTabs);
+    auto* masksLayout = new QVBoxLayout(masksTab);
+    masksLayout->setContentsMargins(8, 8, 8, 8);
+    masksLayout->setSpacing(7);
+    auto* masksTitle = new QLabel("CUSTOM MASKS", masksTab);
+    masksTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
+    masksLayout->addWidget(masksTitle);
+    auto* masksHint = new QLabel("Masks belong to the selected clip. Select one to edit its outline in Preview; enabled masks are reused by the clip's effects and final export.", masksTab);
+    masksHint->setWordWrap(true);
+    masksHint->setStyleSheet("color: #918B92; font-size: 10px;");
+    masksLayout->addWidget(masksHint);
+
+    customMaskShapeCombo = new QComboBox(masksTab);
+    customMaskShapeCombo->addItem("Rectangle", static_cast<int>(MaskShapeType::Rectangle));
+    customMaskShapeCombo->addItem("Ellipse", static_cast<int>(MaskShapeType::Ellipse));
+    customMaskShapeCombo->addItem("Freeform Polygon", static_cast<int>(MaskShapeType::Polygon));
+    masksLayout->addWidget(customMaskShapeCombo);
+    auto* maskButtons = new QHBoxLayout();
+    auto* addMaskButton = new QPushButton("+ New Mask — Draw in Preview", masksTab);
+    addMaskButton->setToolTip("Choose Rectangle or Ellipse above, click here, then drag the shape in Preview.");
+    auto* removeMaskButton = new QPushButton("Remove", masksTab);
+    maskButtons->addWidget(addMaskButton);
+    maskButtons->addWidget(removeMaskButton);
+    masksLayout->addLayout(maskButtons);
+    connect(addMaskButton, &QPushButton::clicked, this, &MainWindow::createCustomMask);
+    connect(removeMaskButton, &QPushButton::clicked, this, &MainWindow::removeSelectedCustomMask);
+
+    customMaskList = new QListWidget(masksTab);
+    customMaskList->setMinimumHeight(80);
+    customMaskList->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; } QListWidget::item { padding: 4px; }");
+    masksLayout->addWidget(customMaskList, 1);
+    connect(customMaskList, &QListWidget::currentRowChanged, this, [this](int) { selectCustomMask(); });
+
+    customMaskEditCheck = new QCheckBox("Edit selected mask in Preview", masksTab);
+    customMaskEnabledCheck = new QCheckBox("Mask enabled", masksTab);
+    customMaskInvertCheck = new QCheckBox("Invert", masksTab);
+    customMaskFeatherSlider = new QSlider(Qt::Horizontal, masksTab);
+    customMaskFeatherSlider->setRange(0, 100);
+    customMaskOpacitySlider = new QSlider(Qt::Horizontal, masksTab);
+    customMaskOpacitySlider->setRange(0, 100);
+    customMaskOpacitySlider->setValue(100);
+    customMaskExpansionSlider = new QSlider(Qt::Horizontal, masksTab);
+    customMaskExpansionSlider->setRange(-200, 200);
+    customMaskModeCombo = new QComboBox(masksTab);
+    customMaskModeCombo->addItem("Add / Union", static_cast<int>(MaskMode::Add));
+    customMaskModeCombo->addItem("Subtract", static_cast<int>(MaskMode::Subtract));
+    customMaskModeCombo->addItem("Intersect", static_cast<int>(MaskMode::Intersect));
+    customMaskAllEffectsCheck = new QCheckBox("Apply to all effects", masksTab);
+    customMaskEffectTargets = new QListWidget(masksTab);
+    customMaskEffectTargets->setSelectionMode(QAbstractItemView::MultiSelection);
+    customMaskEffectTargets->setMaximumHeight(110);
+    customMaskEffectTargets->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; } QListWidget::item { padding: 3px; }");
+    masksLayout->addWidget(customMaskEditCheck);
+    masksLayout->addWidget(customMaskEnabledCheck);
+    masksLayout->addWidget(customMaskInvertCheck);
+    masksLayout->addWidget(new QLabel("Feather (px)", masksTab));
+    masksLayout->addWidget(customMaskFeatherSlider);
+    masksLayout->addWidget(new QLabel("Opacity (%)", masksTab));
+    masksLayout->addWidget(customMaskOpacitySlider);
+    masksLayout->addWidget(new QLabel("Expand / contract (px)", masksTab));
+    masksLayout->addWidget(customMaskExpansionSlider);
+    masksLayout->addWidget(customMaskModeCombo);
+    masksLayout->addWidget(customMaskAllEffectsCheck);
+    masksLayout->addWidget(new QLabel("Specific effect targets (multi-select)", masksTab));
+    masksLayout->addWidget(customMaskEffectTargets);
+    auto* keyframeMaskButton = new QPushButton("Keyframe Mask Properties at Playhead", masksTab);
+    masksLayout->addWidget(keyframeMaskButton);
+    connect(keyframeMaskButton, &QPushButton::clicked, this, &MainWindow::keyframeSelectedMaskTransform);
+    auto* trackedMaskButton = new QPushButton("Create Mask from Selected Detection", masksTab);
+    trackedMaskButton->setToolTip("Uses GrabCut outline tracing when OpenCV is available, then turns the selected whole-clip detection track into mask position/scale keyframes.");
+    masksLayout->addWidget(trackedMaskButton);
+    connect(trackedMaskButton, &QPushButton::clicked, this, &MainWindow::createCustomMaskFromDetection);
+    auto* trackSelectedMaskButton = new QPushButton("Track Selected Mask", masksTab);
+    trackSelectedMaskButton->setToolTip("After scanning the clip in Detect, choose an object track there, select a mask here, then add position and scale keyframes to that mask.");
+    masksLayout->addWidget(trackSelectedMaskButton);
+    connect(trackSelectedMaskButton, &QPushButton::clicked, this, &MainWindow::trackSelectedCustomMaskFromDetection);
+    connect(customMaskEditCheck, &QCheckBox::toggled, this, [this](bool) { selectCustomMask(); });
+    connect(customMaskEnabledCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
+    connect(customMaskInvertCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
+    connect(customMaskFeatherSlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
+    connect(customMaskOpacitySlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
+    connect(customMaskExpansionSlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
+    connect(customMaskModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { updateSelectedCustomMask(); });
+    connect(customMaskAllEffectsCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
+    connect(customMaskEffectTargets, &QListWidget::itemSelectionChanged, this, [this] { updateSelectedCustomMask(); });
+    sidebarTabs->addTab(masksTab, "Masks");
 
     auto* detectScroll = new QScrollArea(sidebarTabs);
     detectScroll->setWidgetResizable(true);
@@ -389,13 +477,26 @@ void MainWindow::createDocks() {
         refreshDetectionMask();
     });
 
-    applyMaskCheck = new QCheckBox("Mask all active effects", detectTab);
+    applyMaskCheck = new QCheckBox("Enable motion-region effect mask", detectTab);
     applyMaskCheck->setStyleSheet("color: #C3BEC3;");
     connect(applyMaskCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (on && currentDetections.empty()) runDetectionOnCurrentFrame();
         refreshDetectionMask();
     });
     detectLayout->addWidget(applyMaskCheck);
+    detectionMaskAllEffectsCheck = new QCheckBox("Apply to all GLSL effects", detectTab);
+    detectionMaskAllEffectsCheck->setChecked(true);
+    detectLayout->addWidget(detectionMaskAllEffectsCheck);
+    QLabel* detectionMaskTargetHint = new QLabel("Or choose one or more effects:", detectTab);
+    detectionMaskTargetHint->setStyleSheet("color: #918B92; font-size: 10px;");
+    detectLayout->addWidget(detectionMaskTargetHint);
+    detectionMaskEffectTargets = new QListWidget(detectTab);
+    detectionMaskEffectTargets->setSelectionMode(QAbstractItemView::MultiSelection);
+    detectionMaskEffectTargets->setMaximumHeight(110);
+    detectionMaskEffectTargets->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; } QListWidget::item { padding: 3px; }");
+    detectLayout->addWidget(detectionMaskEffectTargets);
+    connect(detectionMaskAllEffectsCheck, &QCheckBox::toggled, this, [this](bool) { updateDetectionMaskTargets(); });
+    connect(detectionMaskEffectTargets, &QListWidget::itemSelectionChanged, this, [this] { updateDetectionMaskTargets(); });
 
     invertMaskCheck = new QCheckBox("Invert mask (affect background)", detectTab);
     connect(invertMaskCheck, &QCheckBox::toggled, this, [this](bool) { refreshDetectionMask(); });
@@ -453,6 +554,44 @@ void MainWindow::createDocks() {
     detectScroll->setWidget(detectTab);
     sidebarTabs->addTab(detectScroll, "Detect");
     applyDetectionOverlayOptions();
+    refreshCustomMaskList();
+    refreshDetectionMaskTargets();
+
+    connect(glWidget, &GLWidget::maskPointMoved, this, [this](int pointIndex, float newX, float newY) {
+        ProjectClip* clip = currentClip();
+        if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+        const std::string maskId = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+        const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&maskId](const ClipMask& mask) { return mask.id == maskId; });
+        if (it == clip->masks.end() || pointIndex < 0 || pointIndex >= static_cast<int>(it->points.size())) return;
+        it->points[static_cast<size_t>(pointIndex)].x = newX;
+        it->points[static_cast<size_t>(pointIndex)].y = newY;
+        glWidget->setActiveEditMask(&*it);
+        onTimelineScrubbed(currentPlayhead);
+    });
+    connect(glWidget, &GLWidget::maskDrawn, this,
+        [this](MaskShapeType shape, double posX, double posY, double scaleX, double scaleY) {
+            createCustomMaskFromPreview(shape, posX, posY, scaleX, scaleY);
+        });
+    connect(glWidget, &GLWidget::maskTransformChanged, this, [this](double posX, double posY, double scaleX, double scaleY, double rotation) {
+        ProjectClip* clip = currentClip();
+        if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+        const std::string maskId = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+        const auto it = std::find_if(clip->masks.begin(), clip->masks.end(), [&maskId](const ClipMask& mask) { return mask.id == maskId; });
+        if (it == clip->masks.end()) return;
+        const double localTime = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+        const auto applyTransformValue = [localTime](AnimationCurve& curve, double& base, double value) {
+            if (curve.getKeyframes().empty()) base = value;
+            else curve.insertKeyframe(localTime, value);
+        };
+        applyTransformValue(it->posXCurve, it->posX, posX);
+        applyTransformValue(it->posYCurve, it->posY, posY);
+        applyTransformValue(it->scaleXCurve, it->scaleX, scaleX);
+        applyTransformValue(it->scaleYCurve, it->scaleY, scaleY);
+        applyTransformValue(it->rotationCurve, it->rotation, rotation);
+        glWidget->setActiveEditMask(&*it);
+        glWidget->setEditMaskClipTime(localTime);
+        onTimelineScrubbed(currentPlayhead);
+    });
 
     sidebarLayout->addWidget(sidebarTabs);
     sidebarWidget->setLayout(sidebarLayout);
