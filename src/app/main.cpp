@@ -6,7 +6,7 @@
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Z");
-    app.setApplicationVersion("1.0.0");
+    app.setApplicationVersion("1.1.16");
     app.setOrganizationName("Atopos");
     app.setOrganizationDomain("codezey.dev");
 
