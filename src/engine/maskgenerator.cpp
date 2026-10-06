@@ -8,6 +8,10 @@
 #ifdef Z_HAS_OPENCV_DNN
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#if __has_include(<opencv2/geometry.hpp>)
+// OpenCV 5 moved contourArea/approxPolyDP/arcLength out of imgproc.
+#include <opencv2/geometry.hpp>
+#endif
 #endif
 
 std::vector<uint8_t> MaskGenerator::renderMask(

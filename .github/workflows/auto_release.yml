@@ -14,8 +14,40 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Determine Release Version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compute next version
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CMAKE_VERSION=$(sed -nE 's/^project\(z VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -1)
+          if [[ "${GITHUB_REF}" == refs/tags/* && "${GITHUB_REF_NAME#[vV]}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="${GITHUB_REF_NAME#[vV]}"
+          else
+            LATEST=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
+            LATEST="${LATEST#[vV]}"
+            NEXT=""
+            if [[ "$LATEST" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              NEXT="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+            fi
+            # Never go below the version already in CMakeLists.txt.
+            VERSION=$(printf '%s\n' "$NEXT" "$CMAKE_VERSION" | grep -v '^$' | sort -V | tail -1)
+          fi
+          echo "Using version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
   build:
     name: Build Binary for ${{ matrix.platform }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -35,6 +67,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Stamp Version
+        shell: bash
+        run: sed -i.bak -E 's/^(project\(z VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${{ needs.version.outputs.version }}/' CMakeLists.txt && rm -f CMakeLists.txt.bak
       # --- Linux Setup ---
       - name: Install Linux Dependencies
         if: matrix.platform == 'linux'
@@ -201,7 +236,7 @@ jobs:
 
   release:
     name: Create & Publish GitHub Release
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -213,49 +248,13 @@ jobs:
           path: release_assets
           merge-multiple: true
 
-      - name: Determine Release Tag
-        id: tag
-        run: |
-          INITIAL_VERSION="1.1.2"
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # If triggered by a git tag push, use that tag directly
-            TAG_NAME="${{ github.ref_name }}"
-          else
-            # Fetch the latest release tag and auto-increment the patch version
-            LATEST=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              | jq -r '.tag_name // empty')
-
-            if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
-              # No releases yet, start at the current integer SemVer release.
-              TAG_NAME="v${INITIAL_VERSION}"
-            else
-              # Accept either V1.1.1 or v1.1.1, then require exactly three
-              # integer parts. This avoids timestamps, decimals, and shell
-              # numeric conversions that can misinterpret leading zeroes.
-              VERSION="${LATEST#[vV]}"
-              if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-                MAJOR="${BASH_REMATCH[1]}"
-                MINOR="${BASH_REMATCH[2]}"
-                PATCH="${BASH_REMATCH[3]}"
-                PATCH=$((10#$PATCH + 1))
-                TAG_NAME="v${MAJOR}.${MINOR}.${PATCH}"
-              else
-                # Non-SemVer tags (for example Beta) start the clean series.
-                TAG_NAME="v${INITIAL_VERSION}"
-              fi
-            fi
-          fi
-          echo "Using tag: $TAG_NAME"
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag_name }}
-          name: Z Video Editor ${{ steps.tag.outputs.tag_name }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Z Video Editor ${{ needs.version.outputs.tag }}
           body: |
-            ## Z Video Editor Release ${{ steps.tag.outputs.tag_name }}
+            ## Z Video Editor Release ${{ needs.version.outputs.tag }}
             
             ### Included Assets:
             - **Windows (x64)**: `Z-VideoEditor-Windows-x64.zip`
@@ -271,3 +270,14 @@ jobs:
             release_assets/Z-VideoEditor-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit version bump back to branch
+        if: startsWith(github.ref, 'refs/heads/')
+        run: |
+          sed -i -E 's/^(project\(z VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${{ needs.version.outputs.version }}/' CMakeLists.txt
+          sed -i -E 's/(#define Z_APP_VERSION ")[0-9]+\.[0-9]+\.[0-9]+/\1${{ needs.version.outputs.version }}/' src/main.cpp
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Bump version to ${{ needs.version.outputs.version }} [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}"

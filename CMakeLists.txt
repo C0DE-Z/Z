@@ -19,6 +19,10 @@ include(Dependencies)
 # Object detection is optional: the editor keeps its lightweight region detector
 # when an OpenCV DNN build (and a YOLO ONNX model) is not available.
 find_package(OpenCV QUIET COMPONENTS core dnn imgproc)
+# OpenCV 5 moved contourArea/approxPolyDP/arcLength into the geometry module.
+if(OpenCV_FOUND AND TARGET opencv_geometry)
+    list(APPEND OpenCV_LIBS opencv_geometry)
+endif()
 
 # 3. Source File Definitions
 set(Z_SOURCES
