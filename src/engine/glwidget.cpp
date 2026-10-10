@@ -32,6 +32,7 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     setFormat(format);
     fpsTimer.start();
     setAutoFillBackground(false);
+    setMouseTracking(true);
     overlayLabel = new QLabel(this);
     overlayLabel->setStyleSheet(
         "QLabel {"
@@ -55,6 +56,7 @@ GLWidget::~GLWidget() {
     makeCurrent();
     if (videoTexture) glDeleteTextures(1, &videoTexture);
     if (videoTexture2) glDeleteTextures(1, &videoTexture2);
+    if (baseTexture) glDeleteTextures(1, &baseTexture);
     if (maskTexture) glDeleteTextures(1, &maskTexture);
     glDeleteBuffers(static_cast<GLsizei>(uploadPbos.size()), uploadPbos.data());
     quadVao.destroy();
@@ -67,6 +69,7 @@ GLWidget::~GLWidget() {
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
+    delete fboMask;
     delete exportFbo;
     doneCurrent();
 }
@@ -118,6 +121,13 @@ void GLWidget::initializeGL() {
 
     glGenTextures(1, &videoTexture);
     glBindTexture(GL_TEXTURE_2D, videoTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenTextures(1, &baseTexture);
+    glBindTexture(GL_TEXTURE_2D, baseTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -198,6 +208,7 @@ void GLWidget::allocateFBOs(int w, int h) {
     delete fboPing;
     delete fboPong;
     delete fboFeedback;
+    delete fboMask;
     delete exportFbo;
 
     QOpenGLFramebufferObjectFormat format;
@@ -207,9 +218,10 @@ void GLWidget::allocateFBOs(int w, int h) {
     fboPing = new QOpenGLFramebufferObject(w, h, format);
     fboPong = new QOpenGLFramebufferObject(w, h, format);
     fboFeedback = new QOpenGLFramebufferObject(w, h, format);
+    fboMask = new QOpenGLFramebufferObject(w, h, format);
     exportFbo = new QOpenGLFramebufferObject(w, h, format);
 
-    for (QOpenGLFramebufferObject* fbo : { fboPing, fboPong, fboFeedback, exportFbo }) {
+    for (QOpenGLFramebufferObject* fbo : { fboPing, fboPong, fboFeedback, fboMask, exportFbo }) {
         if (!fbo) continue;
         fbo->bind();
         glViewport(0, 0, w, h);
@@ -344,6 +356,11 @@ void GLWidget::updateFrame(DecodedVideoFrame&& frame) {
 void GLWidget::updateFrame(std::shared_ptr<const DecodedVideoFrame> frame) {
     if (!frame) return;
     std::lock_guard<std::mutex> lock(m_frameMutex);
+    if (sharedCurrentFrame == frame && !isTransitioning) {
+        // Same decoded frame: effects still animate, but the texture is current.
+        update();
+        return;
+    }
     sharedCurrentFrame = std::move(frame);
     currentFrame = {};
     hasNewFrame = true;
@@ -548,6 +565,7 @@ void GLWidget::setClipMasks(const std::vector<ClipMask>& masks, double clipLocal
 }
 
 void GLWidget::uploadMaskPixels(const std::vector<uint8_t>& pixels, int width, int height, bool flipVertical) {
+    m_uploadedMaskSignature = 0;
     if (width <= 0 || height <= 0 || pixels.size() != static_cast<size_t>(width) * static_cast<size_t>(height)) {
         hasMaskTexture = false;
         return;
@@ -589,6 +607,7 @@ void GLWidget::uploadMaskIfNeeded() {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0, GL_RED, GL_UNSIGNED_BYTE, &whitePixel);
         lastMaskWidth = 1;
         lastMaskHeight = 1;
+        m_uploadedMaskSignature = 0;
         hasMaskTexture = false;
         return;
     }
@@ -985,6 +1004,9 @@ void GLWidget::renderMaskDirectOverlay(QPainter& painter) {
         const QPainterPath border = stroker.createStroke(transformedPath);
         transformedPath = expPx > 0.0 ? transformedPath.united(border) : transformedPath.subtracted(border);
     }
+    painter.setBrush(QColor(232, 85, 244, 38));
+    painter.drawPath(transformedPath);
+    painter.setBrush(Qt::NoBrush);
     painter.drawPath(transformedPath);
 
     if (feather > 1.0) {
@@ -1443,12 +1465,18 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
     if (hasNewFrame) {
         std::lock_guard<std::mutex> lock(m_frameMutex);
         if (!isTransitioning) {
-            if (sharedCurrentFrame) {
-                uploadPrimaryVideoTexture(*sharedCurrentFrame);
-            } else {
-                uploadPrimaryVideoTexture(currentFrame);
+            const DecodedVideoFrame& uploaded = sharedCurrentFrame ? *sharedCurrentFrame : currentFrame;
+            uploadPrimaryVideoTexture(uploaded);
+            const size_t rgbBytes = static_cast<size_t>(uploaded.width) * static_cast<size_t>(uploaded.height) * 3;
+            hasBaseTexture = rgbBytes > 0 && uploaded.baseRgb.size() == rgbBytes;
+            if (hasBaseTexture) {
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, baseTexture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, uploaded.width, uploaded.height, 0, GL_RGB, GL_UNSIGNED_BYTE, uploaded.baseRgb.data());
             }
         } else {
+            hasBaseTexture = false;
             if (!transitionFrame1.rgbData.empty()) {
                 uploadPrimaryVideoTexture(transitionFrame1);
             }
@@ -1564,8 +1592,51 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
         }
     }
 
+    // Three scratch targets guarantee a pass never writes a texture it samples.
+    auto pickScratchFbo = [&](GLuint avoidA, GLuint avoidB = 0) {
+        for (QOpenGLFramebufferObject* candidate : { fboPing, fboPong, fboMask }) {
+            if (candidate->texture() != avoidA && candidate->texture() != avoidB) return candidate;
+        }
+        return fboPing;
+    };
+
     bool anyEffectApplied = false;
-    std::unordered_map<std::string, std::vector<uint8_t>> clipMaskRasterCache;
+    if (hasBaseTexture && !isTransitioning && !m_decoderEffectIds.empty() &&
+        maskCompositeShader && maskCompositeShader->isLinked()) {
+        // Datamosh and CPU bitwise effects are baked into the decoded frame.
+        // Re-blend the untouched frame through the clip mask so they honor it.
+        for (const std::string& decoderEffectId : m_decoderEffectIds) {
+            const uint64_t sig = MaskGenerator::signature(w, h, m_clipMasks, m_clipMaskLocalTime, decoderEffectId);
+            if (sig == 0) continue;
+            if (m_uploadedMaskSignature != sig) {
+                auto cached = m_maskRasterCache.find(sig);
+                if (cached == m_maskRasterCache.end()) {
+                    if (m_maskRasterCache.size() > 16) m_maskRasterCache.clear();
+                    cached = m_maskRasterCache.emplace(sig, MaskGenerator::renderMask(
+                        w, h, m_clipMasks, m_clipMaskLocalTime, decoderEffectId)).first;
+                }
+                uploadMaskPixels(cached->second, w, h, true);
+                m_uploadedMaskSignature = hasMaskTexture ? sig : 0;
+            }
+            if (!hasMaskTexture) break;
+            QOpenGLFramebufferObject* gateFbo = pickScratchFbo(currentTex);
+            gateFbo->bind();
+            glViewport(0, 0, w, h);
+            maskCompositeShader->bind();
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, baseTexture);
+            maskCompositeShader->setUniformValue("sourceTexture", 0);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, currentTex);
+            maskCompositeShader->setUniformValue("effectedTexture", 1);
+            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, maskTexture);
+            maskCompositeShader->setUniformValue("maskTexture", 2);
+            maskCompositeShader->setUniformValue("invertMask", 0.0f);
+            renderQuad();
+            maskCompositeShader->release();
+            gateFbo->release();
+            currentTex = gateFbo->texture();
+            break;
+        }
+    }
     for (const AppliedEffect& eff : activeEffects) {
         Profiler::instance().mark("effect_" + eff.pluginId);
         ShaderPlugin* plugin = PluginManager::instance().findPlugin(eff.pluginId);
@@ -1575,27 +1646,24 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                 // Clip masks are rasterized for the current output resolution
                 // and effect ID, then applied by the same composite pass in
                 // preview and export. The detector mask remains a fallback.
-                std::string maskKey;
-                for (size_t i = 0; i < m_clipMasks.size(); ++i) {
-                    const auto& mask = m_clipMasks[i];
-                    if (!mask.enabled || mask.maskSourceClip) continue;
-                    if (!mask.targetEffectIds.empty() &&
-                        std::find(mask.targetEffectIds.begin(), mask.targetEffectIds.end(), eff.pluginId) == mask.targetEffectIds.end()) {
-                        continue;
-                    }
-                    maskKey += std::to_string(i) + ":" + mask.id + ";";
-                }
-                auto [maskIt, inserted] = clipMaskRasterCache.try_emplace(maskKey);
-                if (inserted) {
-                    maskIt->second = MaskGenerator::renderMask(
-                        w, h, m_clipMasks, m_clipMaskLocalTime, eff.pluginId);
-                }
-                const auto& clipMaskPixels = maskIt->second;
-                const bool hasClipMask = !clipMaskPixels.empty();
+                const uint64_t maskSignature = MaskGenerator::signature(
+                    w, h, m_clipMasks, m_clipMaskLocalTime, eff.pluginId);
+                bool hasClipMask = maskSignature != 0;
                 if (hasClipMask) {
-                    // MaskGenerator rasterizes with QPainter's top-left origin;
-                    // video textures are uploaded bottom-up for the GL preview.
-                    uploadMaskPixels(clipMaskPixels, w, h, true);
+                    if (m_uploadedMaskSignature != maskSignature) {
+                        auto cached = m_maskRasterCache.find(maskSignature);
+                        if (cached == m_maskRasterCache.end()) {
+                            if (m_maskRasterCache.size() > 16) m_maskRasterCache.clear();
+                            std::vector<uint8_t> pixels = MaskGenerator::renderMask(
+                                w, h, m_clipMasks, m_clipMaskLocalTime, eff.pluginId);
+                            cached = m_maskRasterCache.emplace(maskSignature, std::move(pixels)).first;
+                        }
+                        // MaskGenerator rasterizes with QPainter's top-left origin;
+                        // video textures are uploaded bottom-up for the GL preview.
+                        uploadMaskPixels(cached->second, w, h, true);
+                        m_uploadedMaskSignature = hasMaskTexture ? maskSignature : 0;
+                    }
+                    hasClipMask = hasMaskTexture;
                 }
                 const bool detectionMaskTargetsEffect = m_detectionMaskEffectIds.empty() ||
                     std::find(m_detectionMaskEffectIds.begin(), m_detectionMaskEffectIds.end(), eff.pluginId) !=
@@ -1603,13 +1671,16 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                 const bool effectHasDetectionMask = hasDetectionMask && detectionMaskTargetsEffect;
                 if (!hasClipMask && effectHasDetectionMask) {
                     uploadMaskPixels(pendingMask, pendingMaskW, pendingMaskH);
+                    m_uploadedMaskSignature = 0;
                 } else if (!hasClipMask) {
                     hasMaskTexture = false;
+                    m_uploadedMaskSignature = 0;
                 }
                 const bool effectMaskEnabled = hasClipMask || effectHasDetectionMask;
                 const float effectMaskInverted = hasClipMask ? 0.0f : (m_maskInverted ? 1.0f : 0.0f);
 
                 const GLuint sourceTex = currentTex;
+                writeFbo = pickScratchFbo(sourceTex);
                 writeFbo->bind();
                 glViewport(0, 0, w, h);
                 glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1656,12 +1727,12 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                 Profiler::instance().sample("effect_" + eff.pluginId, Profiler::instance().elapsed("effect_" + eff.pluginId));
 
                 currentTex = writeFbo->texture();
-                std::swap(readFbo, writeFbo);
                 anyEffectApplied = true;
 
                 if (effectMaskEnabled && hasMaskTexture &&
                     maskCompositeShader && maskCompositeShader->isLinked()) {
-                    writeFbo->bind();
+                    QOpenGLFramebufferObject* compositeFbo = pickScratchFbo(sourceTex, currentTex);
+                    compositeFbo->bind();
                     glViewport(0, 0, w, h);
                     maskCompositeShader->bind();
                     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, sourceTex);
@@ -1673,18 +1744,17 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                     maskCompositeShader->setUniformValue("invertMask", effectMaskInverted);
                     renderQuad();
                     maskCompositeShader->release();
-                    writeFbo->release();
-                    currentTex = writeFbo->texture();
-                    std::swap(readFbo, writeFbo);
+                    compositeFbo->release();
+                    currentTex = compositeFbo->texture();
                 }
             }
         }
     }
-
     // When the source video contains alpha (e.g. transparent ProRes 4444),
     // restore the source alpha channel once after the effect chain so custom
     // shaders that write opaque RGB do not erase transparent backgrounds.
     if (anyEffectApplied && lastFrameHasAlpha && alphaGuardShader && alphaGuardShader->isLinked()) {
+        writeFbo = pickScratchFbo(currentTex);
         writeFbo->bind();
         glViewport(0, 0, w, h);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1700,7 +1770,6 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
         alphaGuardShader->release();
         writeFbo->release();
         currentTex = writeFbo->texture();
-        std::swap(readFbo, writeFbo);
     }
 
     if (fboFeedback && passthroughShader && passthroughShader->isLinked()) {

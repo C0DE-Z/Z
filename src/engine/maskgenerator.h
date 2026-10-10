@@ -19,6 +19,15 @@ public:
         bool targetSourceClip = false
     );
 
+    static uint64_t signature(
+        int width,
+        int height,
+        const std::vector<ClipMask>& masks,
+        double clipLocalTime,
+        const std::string& targetEffectId = "",
+        bool targetSourceClip = false
+    );
+
     static ClipMask createRectangleMask(const std::string& id, const std::string& name = "Mask 1");
     static ClipMask createEllipseMask(const std::string& id, const std::string& name = "Mask 1");
     static ClipMask createPolygonMask(const std::string& id, const std::vector<MaskPoint>& points, const std::string& name = "Mask 1");

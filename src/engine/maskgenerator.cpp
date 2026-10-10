@@ -14,6 +14,54 @@
 #endif
 #endif
 
+uint64_t MaskGenerator::signature(
+    int width,
+    int height,
+    const std::vector<ClipMask>& masks,
+    double clipLocalTime,
+    const std::string& targetEffectId,
+    bool targetSourceClip
+) {
+    if (width <= 0 || height <= 0) return 0;
+    uint64_t hash = 1469598103934665603ull;
+    bool any = false;
+    const auto mix = [&hash](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
+    };
+    const auto mixValue = [&mix](auto value) { mix(&value, sizeof(value)); };
+
+    mixValue(width);
+    mixValue(height);
+    for (const auto& m : masks) {
+        if (!m.enabled || m.maskSourceClip != targetSourceClip) continue;
+        if (!targetSourceClip && !targetEffectId.empty() && !m.targetEffectIds.empty() &&
+            std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetEffectId) == m.targetEffectIds.end()) {
+            continue;
+        }
+        any = true;
+        mixValue(static_cast<int>(m.shapeType));
+        mixValue(static_cast<int>(m.mode));
+        mixValue(m.inverted);
+        mixValue(m.closed);
+        mixValue(m.evalProp(m.posXCurve, m.posX, clipLocalTime));
+        mixValue(m.evalProp(m.posYCurve, m.posY, clipLocalTime));
+        mixValue(m.evalProp(m.scaleXCurve, m.scaleX, clipLocalTime));
+        mixValue(m.evalProp(m.scaleYCurve, m.scaleY, clipLocalTime));
+        mixValue(m.evalProp(m.rotationCurve, m.rotation, clipLocalTime));
+        mixValue(m.evalProp(m.featherCurve, m.feather, clipLocalTime));
+        mixValue(m.evalProp(m.opacityCurve, m.opacity, clipLocalTime));
+        mixValue(m.evalProp(m.expansionCurve, m.expansion, clipLocalTime));
+        for (const auto& p : m.points) {
+            mixValue(p.x); mixValue(p.y);
+            mixValue(p.inHandleX); mixValue(p.inHandleY);
+            mixValue(p.outHandleX); mixValue(p.outHandleY);
+        }
+        mixValue(m.points.size());
+    }
+    return any ? (hash | 1ull) : 0;
+}
+
 std::vector<uint8_t> MaskGenerator::renderMask(
     int width,
     int height,

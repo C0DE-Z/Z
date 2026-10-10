@@ -313,6 +313,9 @@ void MediaExporter::exportVideo(
                 continue;
             }
             offset += accepted;
+        }
+        // Let FFmpeg drain in the background; only block when the queue is deep.
+        while (proc.bytesToWrite() > frameBytes * 3) {
             if (!proc.waitForBytesWritten(-1)) return false;
         }
         return true;

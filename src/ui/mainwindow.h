@@ -263,6 +263,7 @@ private:
     void scheduleDetectionSettingsRefresh();
     void postDetectionWorkerResult(DetectionWorkerResult&& result);
     void handleDetectionWorkerResult(const std::shared_ptr<DetectionWorkerResult>& result);
+    void runExportDetection();
     void applyDetectionResults(
         std::vector<DetectionBox> detections,
         const QString& sourceClipId,

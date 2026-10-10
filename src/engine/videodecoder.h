@@ -40,11 +40,10 @@ public:
     void setCpuNand(bool nandEnabled, double nandValue, double intensity);
     void setPlaybackQuality(int downscaleFactor);
     bool hasActiveCpuEffects() const;
+    void setCaptureBase(bool capture);
     bool canUseAsyncFrameCache() const;
 
-    // Keep the activation predicate in one place. An effect instance with
-    // all-zero values (or a repeat count of one) must leave the original
-    // decoder selected and must never retain stale repeated packets.
+   
     static bool hasEffectiveDatamoshSettings(
         bool requested,
         double iDropProb,
@@ -114,6 +113,7 @@ private:
     bool cpuNandEnabled = false;
     double cpuNandValue = 0.5;
     double cpuNandIntensity = 1.0;
+    bool captureBase = false;
 
     bool hasReferenceFrame = false;
     std::vector<uint8_t> referenceFrameRgb;

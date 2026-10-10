@@ -1,4 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
+
+
+if(CMAKE_GENERATOR MATCHES "Ninja" AND CMAKE_MAKE_PROGRAM AND NOT EXISTS "${CMAKE_MAKE_PROGRAM}")
+    find_program(Z_NINJA_EXECUTABLE NAMES ninja ninja-build)
+    if(Z_NINJA_EXECUTABLE)
+        set(CMAKE_MAKE_PROGRAM "${Z_NINJA_EXECUTABLE}" CACHE FILEPATH "Ninja executable" FORCE)
+    else()
+        message(FATAL_ERROR "Ninja was not found. Install Ninja or reconfigure with another CMake generator.")
+    endif()
+endif()
+
 project(z VERSION 1.1.16 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

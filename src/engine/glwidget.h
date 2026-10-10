@@ -89,6 +89,8 @@ public:
     void setPlaybackTime(double time);
 
     void setActiveEffects(const std::vector<AppliedEffect>& effects);
+    // Plugin ids of effects baked into the decoded frame (datamosh, CPU bitwise).
+    void setDecoderEffectIds(const std::vector<std::string>& ids) { m_decoderEffectIds = ids; }
     void setShowOverlay(bool show);
     void setAsyncTextureUploads(bool enabled);
     bool asyncTextureUploads() const { return m_asyncTextureUploads; }
@@ -167,6 +169,9 @@ private:
 
     GLuint videoTexture = 0;
     GLuint videoTexture2 = 0;
+    GLuint baseTexture = 0;
+    bool hasBaseTexture = false;
+    std::vector<std::string> m_decoderEffectIds;
     GLuint maskTexture = 0;
     std::array<GLuint, 3> uploadPbos{};
     unsigned int nextUploadPbo = 0;
@@ -188,6 +193,8 @@ private:
     std::vector<std::string> m_detectionMaskEffectIds;
     std::vector<ClipMask> m_clipMasks;
     double m_clipMaskLocalTime = 0.0;
+    std::unordered_map<uint64_t, std::vector<uint8_t>> m_maskRasterCache;
+    uint64_t m_uploadedMaskSignature = 0;
 
     bool m_showDetections = true;
     DetectionShape m_detectionShape = DetectionShape::Rectangle;
@@ -198,6 +205,7 @@ private:
     QOpenGLFramebufferObject* fboPing = nullptr;
     QOpenGLFramebufferObject* fboPong = nullptr;
     QOpenGLFramebufferObject* fboFeedback = nullptr;
+    QOpenGLFramebufferObject* fboMask = nullptr;
     QOpenGLFramebufferObject* exportFbo = nullptr;
     GLuint renderedTexture = 0;
 

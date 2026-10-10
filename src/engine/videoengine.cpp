@@ -80,6 +80,41 @@ void VideoEngine::requestFrameAsync(const std::string& clipId, double timestamp)
     }
 }
 
+std::shared_ptr<const DecodedVideoFrame> VideoEngine::tryGetCachedFramePtr(const std::string& clipId, double timestamp) {
+    {
+        std::lock_guard<std::mutex> lock(engineMutex);
+        const auto decoder = decoderForClipLocked(clipId, false);
+        if (decoder && !decoder->canUseAsyncFrameCache()) return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    for (const auto& entry : frameCache) {
+        if (entry.clipId == clipId && std::abs(entry.timestamp - timestamp) < 0.045) {
+            return entry.frame;
+        }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<const DecodedVideoFrame> VideoEngine::tryGetNearestCachedFramePtr(const std::string& clipId, double timestamp, double maxAgeSeconds) {
+    {
+        std::lock_guard<std::mutex> lock(engineMutex);
+        const auto decoder = decoderForClipLocked(clipId, false);
+        if (decoder && !decoder->canUseAsyncFrameCache()) return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    const CacheEntry* best = nullptr;
+    double bestDistance = maxAgeSeconds;
+    for (const auto& entry : frameCache) {
+        if (entry.clipId != clipId) continue;
+        const double distance = std::abs(timestamp - entry.timestamp);
+        if (distance <= bestDistance && (!best || distance < bestDistance)) {
+            bestDistance = distance;
+            best = &entry;
+        }
+    }
+    return best ? best->frame : nullptr;
+}
+
 bool VideoEngine::tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     {
         std::lock_guard<std::mutex> lock(engineMutex);
@@ -212,6 +247,7 @@ bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedV
 
     auto framePtr = std::make_shared<DecodedVideoFrame>();
     if (decoder->decodeFrameAt(timestamp, *framePtr)) {
+        attachDatamoshBase(clipId, timestamp, *framePtr, false);
         outFrame = *framePtr;
         addToCache(clipId, timestamp, std::move(framePtr));
         return true;
@@ -432,6 +468,40 @@ void VideoEngine::setCpuNand(const std::string& clipId, bool nandEnabled, double
     qDebug() << "[AsyncDecode] CPU NAND effect" << (nandEnabled ? "ENABLED" : "DISABLED") << "for clip" << QString::fromStdString(clipId);
 }
 
+void VideoEngine::setCaptureBase(const std::string& clipId, bool capture) {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    const auto existing = captureBaseClips.find(clipId);
+    const bool previous = existing != captureBaseClips.end() && existing->second;
+    if (previous == capture) return;
+    captureBaseClips[clipId] = capture;
+    for (auto* map : { &decoders, &asyncDecoders, &datamoshDecoders, &asyncDatamoshDecoders }) {
+        if (auto it = map->find(clipId); it != map->end()) it->second->setCaptureBase(capture);
+    }
+    invalidateCacheForClip(clipId);
+    std::lock_guard<std::mutex> workerLock(workerMutex);
+    ++workerGeneration;
+    workerHasRequest = false;
+}
+
+void VideoEngine::attachDatamoshBase(const std::string& clipId, double timestamp, DecodedVideoFrame& frame, bool asynchronous) {
+    std::shared_ptr<VideoDecoder> plain;
+    {
+        std::lock_guard<std::mutex> lock(engineMutex);
+        const auto capture = captureBaseClips.find(clipId);
+        const auto active = datamoshActive.find(clipId);
+        if (capture == captureBaseClips.end() || !capture->second ||
+            active == datamoshActive.end() || !active->second) {
+            return;
+        }
+        const auto& map = asynchronous ? asyncDecoders : decoders;
+        if (const auto it = map.find(clipId); it != map.end()) plain = it->second;
+    }
+    if (!plain) return;
+    DecodedVideoFrame original;
+    if (!plain->decodeFrameAt(timestamp, original) || original.width != frame.width || original.height != frame.height) return;
+    frame.baseRgb = original.baseRgb.empty() ? std::move(original.rgbData) : std::move(original.baseRgb);
+}
+
 void VideoEngine::setPlaybackQuality(int downscaleFactor) {
     std::lock_guard<std::mutex> lock(engineMutex);
     for (auto& pair : decoders) {
@@ -565,7 +635,7 @@ void VideoEngine::invalidateCacheForClip(const std::string& clipId) {
 }
 
 size_t VideoEngine::frameByteSize(const DecodedVideoFrame& frame) {
-    return frame.rgbData.size() + frame.alphaData.size();
+    return frame.rgbData.size() + frame.alphaData.size() + frame.baseRgb.size();
 }
 
 bool VideoEngine::getFromCache(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
@@ -668,6 +738,7 @@ void VideoEngine::workerLoop() {
             if (!alreadyCached) {
                 DecodedVideoFrame decoded;
                 if (decoder->decodeFrameAt(nextDecodeTime, decoded)) {
+                    attachDatamoshBase(clipId, nextDecodeTime, decoded, true);
                     {
                         std::lock_guard<std::mutex> lock(workerMutex);
                         if (workerStop || !asyncDecodeEnabled || workerGeneration != currentGen || workerHasRequest) {

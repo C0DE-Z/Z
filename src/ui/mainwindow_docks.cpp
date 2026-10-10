@@ -341,7 +341,7 @@ void MainWindow::createDocks() {
     scanHint->setWordWrap(true);
     scanHint->setStyleSheet("color: #918B92; font-size: 10px;");
     detectLayout->addWidget(scanHint);
-    detectionScanIntervalSlider = addSlider("Scan sample interval", 250, 10000, 1000, " ms");
+    detectionScanIntervalSlider = addSlider("Scan sample interval", 1, 10000, 1000, " ms");
     detectEntireClipButton = new QPushButton("Detect Entire Active Clip", detectTab);
     detectEntireClipButton->setStyleSheet("QPushButton { background: #32101F; color: #FFB8D2; border: 1px solid #80324F; padding: 6px; font-weight: bold; border-radius: 3px; } QPushButton:hover { background: #5C1E38; border-color: #FF4F91; }");
     connect(detectEntireClipButton, &QPushButton::clicked, this, &MainWindow::detectEntireActiveClip);
@@ -361,7 +361,7 @@ void MainWindow::createDocks() {
     });
     detectLayout->addWidget(liveDetectCheck);
 
-    liveDetectionIntervalSlider = addSlider("Detection interval", 250, 2000, 750, " ms");
+    liveDetectionIntervalSlider = addSlider("Detection interval", 1, 2000, 750, " ms");
 
     QLabel* fallbackHint = new QLabel("Motion-region layer controls", detectTab);
     fallbackHint->setStyleSheet("color: #918B92; font-size: 10px; padding-top: 3px;");
@@ -565,8 +565,9 @@ void MainWindow::createDocks() {
         if (it == clip->masks.end() || pointIndex < 0 || pointIndex >= static_cast<int>(it->points.size())) return;
         it->points[static_cast<size_t>(pointIndex)].x = newX;
         it->points[static_cast<size_t>(pointIndex)].y = newY;
-        glWidget->setActiveEditMask(&*it);
-        onTimelineScrubbed(currentPlayhead);
+        // Re-selecting the edit mask here would cancel the active drag, so only
+        // refresh the renderer's mask copy; a full scrub would re-decode the frame.
+        glWidget->setClipMasks(clip->masks, std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration));
     });
     connect(glWidget, &GLWidget::maskDrawn, this,
         [this](MaskShapeType shape, double posX, double posY, double scaleX, double scaleY) {
@@ -588,9 +589,8 @@ void MainWindow::createDocks() {
         applyTransformValue(it->scaleXCurve, it->scaleX, scaleX);
         applyTransformValue(it->scaleYCurve, it->scaleY, scaleY);
         applyTransformValue(it->rotationCurve, it->rotation, rotation);
-        glWidget->setActiveEditMask(&*it);
         glWidget->setEditMaskClipTime(localTime);
-        onTimelineScrubbed(currentPlayhead);
+        glWidget->setClipMasks(clip->masks, localTime);
     });
 
     sidebarLayout->addWidget(sidebarTabs);

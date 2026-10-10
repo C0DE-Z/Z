@@ -113,7 +113,7 @@ void DetectionWorker::requestClipScan(
     job.sourceClipId = std::move(sourceClipId);
     job.sourceTime = std::max(0.0, sourceStart);
     job.sourceDuration = std::max(0.0, sourceDuration);
-    job.sampleInterval = std::max(0.10, sampleInterval);
+    job.sampleInterval = std::max(0.01, sampleInterval);
 
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_stopping) return;

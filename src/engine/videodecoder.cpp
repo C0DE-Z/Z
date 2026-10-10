@@ -132,6 +132,11 @@ void VideoDecoder::setCpuNand(bool nandEnabled, double nandValue, double intensi
     this->cpuNandIntensity = intensity;
 }
 
+void VideoDecoder::setCaptureBase(bool capture) {
+    std::lock_guard<std::mutex> lock(decodeMutex);
+    captureBase = capture;
+}
+
 void VideoDecoder::setPlaybackQuality(int downscaleFactor) {
     if (downscaleFactor < 1) downscaleFactor = 1;
     if (playbackQualityScale != downscaleFactor) {
@@ -817,6 +822,12 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
                 outFrame.hasAlpha = false;
             }
 
+            if (captureBase && (opticalSmearEnabled || cpuXorEnabled || cpuOrEnabled ||
+                    cpuAndEnabled || cpuXnorEnabled || cpuNandEnabled)) {
+                outFrame.baseRgb = outFrame.rgbData;
+            } else {
+                outFrame.baseRgb.clear();
+            }
             if (opticalSmearEnabled && !referenceFrameRgb.empty()) {
                 CpuEffects::blendWithPreviousFrame(outFrame.rgbData, referenceFrameRgb, mergeStrength, smearStrength, bleedStrength, lumaStrength);
             }
@@ -866,6 +877,7 @@ bool VideoDecoder::decodeFrameAt(double timestamp, DecodedVideoFrame& outFrame) 
         outFrame.width = width / playbackQualityScale;
         outFrame.height = height / playbackQualityScale;
         outFrame.rgbData = referenceFrameRgb;
+        outFrame.baseRgb.clear();
         outFrame.alphaData = referenceFrameAlpha;
         outFrame.hasAlpha = referenceFrameHasAlpha;
         return true;

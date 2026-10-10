@@ -1817,21 +1817,24 @@ void MainWindow::onTimelineScrubbed(double time) {
         bool gotFrame = false;
         const bool asyncPlayback = isPlaying && VideoEngine::instance().isAsyncDecodeEnabled();
         const bool clipCacheable = VideoEngine::instance().isClipCacheable(clipKey);
+        std::shared_ptr<const DecodedVideoFrame> cachedFrame;
         if (asyncPlayback && clipCacheable) {
-            gotFrame = VideoEngine::instance().tryGetCachedFrame(clipKey, localTime, frame);
-            if (!gotFrame) {
-                gotFrame = VideoEngine::instance().tryGetNearestCachedFrame(clipKey, localTime, frame, 0.08);
-                if (!gotFrame) {
-                    gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
-                }
-            }
+            cachedFrame = VideoEngine::instance().tryGetCachedFramePtr(clipKey, localTime);
+            if (!cachedFrame) cachedFrame = VideoEngine::instance().tryGetNearestCachedFramePtr(clipKey, localTime, 0.08);
+            if (!cachedFrame) gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
             VideoEngine::instance().requestFrameAsync(clipKey, localTime);
         } else {
             gotFrame = VideoEngine::instance().getFrame(clipKey, localTime, frame);
         }
 
-        if (gotFrame && frame.width > 0 && frame.height > 0 && !frame.rgbData.empty()) {
-            auto sharedFrame = std::make_shared<DecodedVideoFrame>(std::move(frame));
+        std::shared_ptr<const DecodedVideoFrame> sharedFrame;
+        if (cachedFrame) {
+            sharedFrame = cachedFrame;
+        } else if (gotFrame) {
+            sharedFrame = std::make_shared<DecodedVideoFrame>(std::move(frame));
+        }
+
+        if (sharedFrame && sharedFrame->width > 0 && sharedFrame->height > 0 && !sharedFrame->rgbData.empty()) {
             latestDetectionFrame = sharedFrame;
             latestDetectionFrameClipId = QString::fromStdString(topClip->id);
             latestDetectionFrameSourceTime = localTime;
@@ -2556,6 +2559,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     Q_UNUSED(activeTrack);
     if (!activeTrack) {
         glWidget->clearFrame();
+        glWidget->setDecoderEffectIds({});
         glWidget->setActiveEffects({});
         glWidget->setClipMasks({}, 0.0);
         return;
@@ -2564,6 +2568,7 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
         return p.curve.getKeyframes().empty() ? p.currentVal : p.curve.evaluate(time);
     };
     if (!activeClip) {
+        glWidget->setDecoderEffectIds({});
         glWidget->setActiveEffects({});
         glWidget->setClipMasks({}, 0.0);
         return;
@@ -2663,6 +2668,21 @@ void MainWindow::applyEffectsToRenderer(double time, const TimelineTrack* active
     VideoEngine::instance().setCpuAnd(mediaId, andEnabled, andValue, andIntensity);
     VideoEngine::instance().setCpuXnor(mediaId, xnorEnabled, xnorValue, xnorIntensity);
     VideoEngine::instance().setCpuNand(mediaId, nandEnabled, nandValue, nandIntensity);
+
+    // Decoder-side effects are baked into the frame, so the renderer needs the
+    // untouched frame to let clip masks restrict them.
+    std::vector<std::string> decoderEffectIds;
+    if (datamoshEnabled) decoderEffectIds.push_back("datamosh");
+    if (smearEnabled) decoderEffectIds.push_back("optical_smear");
+    if (xorEnabled) decoderEffectIds.push_back("cpu_xor");
+    if (orEnabled) decoderEffectIds.push_back("cpu_or");
+    if (andEnabled) decoderEffectIds.push_back("cpu_and");
+    if (xnorEnabled) decoderEffectIds.push_back("cpu_xnor");
+    if (nandEnabled) decoderEffectIds.push_back("cpu_nand");
+    const bool hasEnabledMask = std::any_of(activeClip->masks.begin(), activeClip->masks.end(),
+        [](const ClipMask& m) { return m.enabled && !m.maskSourceClip; });
+    VideoEngine::instance().setCaptureBase(mediaId, hasEnabledMask && !decoderEffectIds.empty());
+    glWidget->setDecoderEffectIds(hasEnabledMask ? decoderEffectIds : std::vector<std::string>{});
     glWidget->setActiveEffects(shaderEffects);
 }
 
@@ -2793,7 +2813,7 @@ void MainWindow::onEffectSelected(const QString& targetId) {
         })) {
         AppState::instance().pushUndoState();
         AppliedEffect effect = createEffectTemplate(targetId);
-        effect.startOffset = std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration);
+        effect.startOffset = 0.0;
         effects->push_back(std::move(effect));
     }
 
@@ -3229,8 +3249,64 @@ void MainWindow::exportVideo() {
     );
 }
 
+void MainWindow::runExportDetection() {
+    const QString clipId = latestDetectionFrameClipId;
+    const double sourceTime = latestDetectionFrameSourceTime;
+    const bool resetTracking = clipId != detectionWorkerTrackClipId ||
+        detectionWorkerTrackSourceTime < 0.0 ||
+        sourceTime + 0.001 < detectionWorkerTrackSourceTime ||
+        sourceTime - detectionWorkerTrackSourceTime > 3.0;
+    detectionWorkerTrackClipId = clipId;
+    detectionWorkerTrackSourceTime = sourceTime;
+    auto promise = std::make_shared<std::promise<DetectionWorkerResult>>();
+    auto future = promise->get_future();
+    detectionWorker->requestFrameDetection(latestDetectionFrame, clipId.toStdString(), sourceTime,
+        currentDetectionSettings(), resetTracking, ++detectionGeneration,
+        [promise](DetectionWorkerResult&& result) { promise->set_value(std::move(result)); });
+    if (future.wait_for(std::chrono::seconds(30)) == std::future_status::ready) {
+        try {
+            DetectionWorkerResult result = future.get();
+            if (result.success) {
+                applyDetectionResults(std::move(result.detections), clipId, sourceTime, result.width, result.height);
+            }
+        } catch (const std::future_error&) {
+            // Job was dropped (worker stopping); keep the previous detections.
+        }
+    }
+}
+
 void MainWindow::prepareExportFrame(double time) {
     onTimelineScrubbed(time);
+
+    // Live detection is throttled and asynchronous for preview. An export must
+    // instead detect every rendered frame and wait for the answer, otherwise the
+    // mask lags behind or skips frames.
+    const bool hasPrecomputed = !latestDetectionFrameClipId.isEmpty() &&
+        clipDetectionCaches.contains(latestDetectionFrameClipId.toStdString()) &&
+        !clipDetectionCaches[latestDetectionFrameClipId.toStdString()].samples.empty();
+    if (detectionWorker && liveDetectEnabled && !hasPrecomputed &&
+        latestDetectionFrame && !latestDetectionFrameClipId.isEmpty()) {
+        // Adaptive stride: when detection is slower than ~40 ms, run it every Nth
+        // frame and hold the previous boxes in between instead of stalling export.
+        static double lastExportTime = -1.0;
+        static int framesSinceDetect = 1 << 20;
+        static double avgDetectMs = 0.0;
+        if (time <= lastExportTime) {
+            framesSinceDetect = 1 << 20;
+            avgDetectMs = 0.0;
+        }
+        lastExportTime = time;
+        const int stride = std::clamp(static_cast<int>(std::ceil(avgDetectMs / 40.0)), 1, 30);
+        ++framesSinceDetect;
+        if (framesSinceDetect >= stride) {
+            framesSinceDetect = 0;
+            QElapsedTimer detectTimer;
+            detectTimer.start();
+            runExportDetection();
+            const double ms = detectTimer.nsecsElapsed() / 1.0e6;
+            avgDetectMs = avgDetectMs <= 0.0 ? ms : avgDetectMs * 0.7 + ms * 0.3;
+        }
+    }
 
     // Mask construction is normally offloaded to keep preview playback fluid.
     // Export instead builds it deterministically for the just-selected tracked

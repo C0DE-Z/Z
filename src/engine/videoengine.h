@@ -24,6 +24,8 @@ public:
     bool getFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     void requestFrameAsync(const std::string& clipId, double timestamp);
     bool tryGetCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
+    std::shared_ptr<const DecodedVideoFrame> tryGetCachedFramePtr(const std::string& clipId, double timestamp);
+    std::shared_ptr<const DecodedVideoFrame> tryGetNearestCachedFramePtr(const std::string& clipId, double timestamp, double maxAgeSeconds = 0.08);
     bool tryGetNearestCachedFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame, double maxAgeSeconds = 0.08);
     void requestCursorFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame);
     bool isCursorFrameAvailable(const std::string& clipId, double timestamp);
@@ -40,6 +42,7 @@ public:
     void setCpuXnor(const std::string& clipId, bool xnorEnabled, double xnorValue, double intensity);
     void setCpuNand(const std::string& clipId, bool nandEnabled, double nandValue, double intensity);
     void setPlaybackQuality(int downscaleFactor);
+    void setCaptureBase(const std::string& clipId, bool capture);
 
     double getDuration(const std::string& clipId);
 
@@ -60,6 +63,8 @@ private:
     std::map<std::string, std::shared_ptr<VideoDecoder>> asyncDatamoshDecoders;
     std::map<std::string, bool> datamoshActive;
     std::map<std::string, bool> directDatamoshSources;
+    std::map<std::string, bool> captureBaseClips;
+    void attachDatamoshBase(const std::string& clipId, double timestamp, DecodedVideoFrame& frame, bool asynchronous);
     struct DatamoshSettings {
         bool active = false;
         double iDropProb = 0.0;

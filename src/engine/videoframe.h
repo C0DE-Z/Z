@@ -10,4 +10,5 @@ struct DecodedVideoFrame {
     std::vector<uint8_t> rgbData;
     std::vector<uint8_t> alphaData;
     bool hasAlpha = false;
+    std::vector<uint8_t> baseRgb;
 };
