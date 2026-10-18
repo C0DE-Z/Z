@@ -1507,4 +1507,1063 @@ void main() {
     FragColor = vec4(finalRGB, baseColor.a);
 }
 )");
+
+    // --- Analog & FPV ---
+    writeFrag("Analog & FPV/fpv_analog_feed", R"(#version 330 core
+// @name FPV Analog Video Feed
+// @desc 5.8GHz analog drone video feed simulation with RF multipath and motion smear
+// @param signalStrength Signal Strength 0.0 1.0 0.9
+// @param channelNoise Adjacent Channel Noise 0.0 1.0 0.1
+// @param multipath Multipath Interference 0.0 1.0 0.0
+// @param analogLatency Motion Smear (Latency Sim) 0.0 0.5 0.05
+// @param lensCurve Camera Lens Distortion 0.0 0.3 0.05
+// @param exposurePump Auto-Exposure Pump 0.0 1.0 0.1
+// @param active Enable FPV Feed 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform sampler2D feedbackTexture;
+uniform vec2 resolution;
+uniform float time;
+uniform float signalStrength;
+uniform float channelNoise;
+uniform float multipath;
+uniform float analogLatency;
+uniform float lensCurve;
+uniform float exposurePump;
+uniform float active;
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
+
+float hash11(float p) {
+    p = fract(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = baseColor;
+        return;
+    }
+
+    // 1. Camera lens barrel distortion (FPV wide-angle lens)
+    vec2 centered = TexCoord - 0.5;
+    float r2 = dot(centered, centered);
+    vec2 lensUV = TexCoord + centered * (r2 * lensCurve * 2.0);
+
+    // 2. Multipath interference (RF signal cancellation behind obstacles)
+    float mpFlutter = sin(time * 37.0) * cos(time * 19.0 + TexCoord.y * 15.0);
+    float mpBurst = step(0.85, hash11(floor(time * 14.0))) * (0.5 + 0.5 * sin(time * 50.0));
+    float mpPenalty = multipath * clamp(mpFlutter * 0.35 + mpBurst * 0.65, 0.0, 1.0);
+    float effSignal = clamp(signalStrength - mpPenalty, 0.0, 1.0);
+    float loss = 1.0 - effSignal;
+
+    // 3. Horizontal tearing and sync loss
+    float scanLine = floor(lensUV.y * 280.0);
+    float lineRand = hash12(vec2(scanLine, floor(time * 60.0)));
+    float lineTear = step(1.0 - smoothstep(0.2, 0.7, loss) * 0.45, lineRand) * (lineRand - 0.5) * smoothstep(0.2, 0.8, loss) * 0.08;
+
+    // Block breakup in low signal
+    vec2 blockCoord = floor(lensUV * vec2(16.0, 9.0));
+    float blockRand = hash12(blockCoord + floor(time * 15.0));
+    float blockShift = step(1.0 - smoothstep(0.5, 0.9, loss) * 0.5, blockRand) * (blockRand - 0.5) * smoothstep(0.5, 0.9, loss) * 0.15;
+
+    vec2 sampleUV = clamp(lensUV + vec2(lineTear + blockShift, 0.0), 0.0, 1.0);
+
+    // 4. Sample current frame and feedback texture for latency smear
+    vec4 curFrame = texture(videoTexture, sampleUV);
+    vec4 feedFrame = texture(feedbackTexture, sampleUV);
+    vec3 videoCol = mix(curFrame.rgb, feedFrame.rgb, clamp(analogLatency, 0.0, 0.5));
+
+    // 5. Camera exposure pumping and highlight clipping (FPV CMOS sensor AGC)
+    float pumpOsc = 1.0 + exposurePump * (sin(time * 2.5) * 0.2 + sin(time * 5.3) * 0.08);
+    videoCol *= pumpOsc;
+    videoCol = mix(videoCol, clamp(videoCol * 1.3 - 0.05, 0.0, 1.0), exposurePump * 0.35);
+
+    // 6. Rolling horizontal static bars (adjacent channel bleed)
+    float barPhase = fract(lensUV.y * 2.5 - time * 0.9);
+    float barMask = smoothstep(0.0, 0.12, barPhase) * smoothstep(0.4, 0.18, barPhase);
+    float barNoise = hash12(lensUV * 260.0 + fract(time * 43.0));
+    float barStatic = barMask * channelNoise;
+
+    // 7. Progressive RF snow and static noise
+    float snowFine = hash12(lensUV * 500.0 + fract(time * 73.0));
+    float hNoiseLines = (sin(lensUV.y * 600.0 + time * 45.0) * 0.5 + 0.5) * hash11(lensUV.y * 400.0 + floor(time * 60.0));
+
+    // Stage a: horizontal noise lines
+    videoCol = mix(videoCol, videoCol + vec3(hNoiseLines * 0.25 - 0.12), smoothstep(0.05, 0.3, loss));
+
+    // Stage b: static snow mixed in
+    float snowBlend = smoothstep(0.18, 0.75, loss) * 0.75;
+    videoCol = mix(videoCol, vec3(snowFine), snowBlend);
+
+    // Stage c: block snow replacement
+    float blockSnow = step(0.35, blockRand) * smoothstep(0.55, 0.95, loss);
+    videoCol = mix(videoCol, vec3(snowFine), blockSnow);
+
+    // Adjacent channel rolling bars overlay
+    videoCol = mix(videoCol, vec3(barNoise), barStatic * 0.85);
+
+    // Stage d: failsafe territory (mostly snow, brief glimpses of video)
+    float failsafeGlimpse = step(0.92, hash11(floor(time * 9.0))) * smoothstep(0.98, 0.8, loss);
+    float nearTotalLoss = smoothstep(0.8, 1.0, loss);
+    videoCol = mix(videoCol, vec3(snowFine), nearTotalLoss * (1.0 - failsafeGlimpse * 0.35));
+
+    FragColor = vec4(clamp(videoCol, 0.0, 1.0), baseColor.a);
+}
+)");
+
+    writeFrag("Analog & FPV/tape_dropout", R"(#version 330 core
+// @name Analog Tape Dropout
+// @desc Magnetic tape oxide loss, helical scan dropouts, edge damage, and head clog
+// @param dropoutRate Dropout Frequency 0.0 1.0 0.15
+// @param dropoutLength Max Dropout Length 0.0 1.0 0.3
+// @param edgeDamage Edge Damage 0.0 1.0 0.1
+// @param stickyBurst Sticky Shed Bursts 0.0 1.0 0.0
+// @param headClog Head Clog Level 0.0 1.0 0.0
+// @param speedWobble Tape Speed Wobble 0.0 1.0 0.0
+// @param active Enable Tape Dropout 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform vec2 resolution;
+uniform float time;
+uniform float dropoutRate;
+uniform float dropoutLength;
+uniform float edgeDamage;
+uniform float stickyBurst;
+uniform float headClog;
+uniform float speedWobble;
+uniform float active;
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = baseColor;
+        return;
+    }
+
+    // 1. Sticky shed burst envelope
+    float burstCycle = fract(time * 0.35);
+    float burstEnv = smoothstep(0.65, 0.8, burstCycle) * (1.0 - smoothstep(0.85, 0.95, burstCycle));
+    float activeSticky = stickyBurst * burstEnv;
+
+    // 2. Tape speed wobble (capstan flutter / wow and binder drag)
+    float totalWobble = speedWobble + activeSticky * 0.7;
+    float flutterY = (sin(time * 30.0) * 0.0015 + sin(time * 6.0) * 0.004) * totalWobble;
+    float stretchY = sin(TexCoord.y * 8.0 + time * 3.5) * 0.003 * totalWobble;
+    float jitterX = sin(time * 48.0 + TexCoord.y * 110.0) * 0.0012 * totalWobble;
+    vec2 uv = TexCoord + vec2(jitterX, flutterY + stretchY);
+
+    // 3. Head clog buildup & sudden dislodgement
+    float clogCycle = fract(time * 0.1);
+    float clogRamp = smoothstep(0.0, 0.82, clogCycle) * (1.0 - step(0.88, clogCycle));
+    float currentClog = headClog * clogRamp;
+
+    // Head clog high-frequency loss (horizontal blurring)
+    vec4 sampledColor = texture(videoTexture, uv);
+    vec3 procCol = sampledColor.rgb;
+    if (currentClog > 0.01) {
+        float bSpread = currentClog * 0.012;
+        vec3 b1 = texture(videoTexture, uv + vec2(-bSpread, 0.0)).rgb;
+        vec3 b2 = texture(videoTexture, uv + vec2(bSpread, 0.0)).rgb;
+        vec3 b3 = texture(videoTexture, uv + vec2(-bSpread * 2.0, 0.0)).rgb;
+        vec3 b4 = texture(videoTexture, uv + vec2(bSpread * 2.0, 0.0)).rgb;
+        procCol = (procCol * 2.0 + b1 + b2 + (b3 + b4) * 0.5) / 5.0;
+    }
+
+    // 4. Edge damage weighting (tape edges crinkling near top and bottom)
+    float distFromEdge = min(uv.y, 1.0 - uv.y);
+    float edgeFactor = 1.0 + edgeDamage * 5.0 * exp(-distFromEdge * 14.0);
+
+    // 5. Helical scanline dropout generation
+    float scanline = floor(uv.y * 480.0);
+    float frameTick = floor(time * 29.97);
+    float effDropRate = clamp(dropoutRate * edgeFactor + activeSticky * 0.45 + currentClog * 0.35, 0.0, 1.0);
+
+    float lineSeed = hash12(vec2(scanline, frameTick));
+    float hasDropout = step(1.0 - effDropRate * 0.4, lineSeed);
+
+    float inDropout = 0.0;
+    float chromaBleed = 0.0;
+
+    if (hasDropout > 0.5) {
+        float startX = hash12(vec2(scanline * 2.71, frameTick * 1.41));
+        float dLen = (0.01 + hash12(vec2(scanline * 5.19, frameTick * 3.17)) * dropoutLength) * (1.0 + activeSticky * 1.5);
+
+        if (uv.x >= startX && uv.x <= startX + dLen) {
+            inDropout = 1.0;
+        }
+
+        // Chroma bleed: horizontal color smear trailing the dropout streak
+        float trail = uv.x - (startX + dLen);
+        if (trail > 0.0 && trail < 0.08) {
+            chromaBleed = 1.0 - trail / 0.08;
+        }
+    }
+
+    // Dropout clustering on nearby scanlines
+    float clusterSeed = hash12(vec2(floor(scanline * 0.5), frameTick * 0.7));
+    if (clusterSeed < effDropRate * 0.3) {
+        float cStartX = hash12(vec2(scanline * 8.33, frameTick * 4.91));
+        float cLen = hash12(vec2(scanline * 11.2, frameTick * 7.13)) * dropoutLength * 0.4;
+        if (uv.x >= cStartX && uv.x <= cStartX + cLen) {
+            inDropout = 1.0;
+        }
+    }
+
+    // Head clog dropout bands
+    if (currentClog > 0.45) {
+        float clogBandY = fract(time * 0.04 + 0.35);
+        if (abs(uv.y - clogBandY) < 0.035 * currentClog) {
+            float clogNoise = hash12(vec2(floor(uv.x * 50.0), scanline + frameTick));
+            if (clogNoise < 0.65) {
+                inDropout = 1.0;
+            }
+        }
+    }
+
+    // 6. Render dropout: replacement signal from DOC (previous line) or white/gray RF spike
+    if (inDropout > 0.5) {
+        vec2 docUV = vec2(uv.x, uv.y - 1.0 / 480.0);
+        vec3 docColor = texture(videoTexture, docUV).rgb;
+        float whiteSpike = step(0.4, hash12(vec2(floor(uv.x * 240.0), scanline)));
+        vec3 streakCol = mix(docColor, vec3(0.92, 0.94, 0.97), whiteSpike * 0.85);
+        procCol = streakCol;
+    } else if (chromaBleed > 0.0) {
+        vec3 smearedCol = texture(videoTexture, uv - vec2(0.025 * chromaBleed, 0.0)).rgb;
+        procCol = mix(procCol, smearedCol, chromaBleed * 0.65);
+    }
+
+    FragColor = vec4(clamp(procCol, 0.0, 1.0), baseColor.a);
+}
+)");
+
+    writeFrag("Analog & FPV/signal_loss", R"(#version 330 core
+// @name Progressive Signal Loss
+// @desc Progressive analog signal degradation from subtle grain to total static loss
+// @param distance Signal Loss / Distance 0.0 1.0 0.0
+// @param instability Signal Instability 0.0 1.0 0.3
+// @param colorFade Color Loss Speed 0.5 3.0 1.5
+// @param active Enable Signal Loss 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform vec2 resolution;
+uniform float time;
+uniform float distance;
+uniform float instability;
+uniform float colorFade;
+uniform float active;
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = baseColor;
+        return;
+    }
+
+    // 1. Distance fluctuation from signal instability
+    float tFlux = sin(time * 2.8) * 0.45 + sin(time * 7.1) * 0.35 + sin(time * 19.4) * 0.2;
+    float effDist = clamp(distance + instability * 0.12 * tFlux, 0.0, 1.0);
+
+    // 2. Horizontal jitter and tearing stages
+    float scanline = floor(TexCoord.y * 360.0);
+    float frameTick = floor(time * 50.0);
+
+    // Subtle jitter (0.1 - 0.25)
+    float minorJitter = (hash12(vec2(scanline, frameTick)) - 0.5) * smoothstep(0.1, 0.25, effDist) * 0.005;
+
+    // Horizontal tearing & displacement (0.25 - 0.6)
+    float tearLineSeed = hash12(vec2(scanline * 0.3, floor(time * 25.0)));
+    float tearActive = step(1.0 - smoothstep(0.25, 0.6, effDist) * 0.35, tearLineSeed);
+    float tearDisplace = (tearLineSeed - 0.5) * tearActive * smoothstep(0.25, 0.6, effDist) * 0.06;
+
+    // Heavy displacement (0.6 - 0.95)
+    float heavyDisplace = (hash12(vec2(floor(TexCoord.y * 25.0), floor(time * 18.0))) - 0.5) * smoothstep(0.6, 0.9, effDist) * 0.22;
+
+    float totalDisplaceX = minorJitter + tearDisplace + heavyDisplace;
+
+    // 3. Vertical hold drift and vertical roll (0.4 - 0.8)
+    float vDrift = sin(time * 2.0) * smoothstep(0.4, 0.6, effDist) * 0.06;
+    float rollSpeed = smoothstep(0.6, 0.8, effDist) * (1.8 + sin(time * 0.6) * 0.4);
+    float vRoll = fract(TexCoord.y + time * rollSpeed + vDrift);
+    float uvY = mix(TexCoord.y + vDrift, vRoll, smoothstep(0.55, 0.75, effDist));
+
+    vec2 sampleUV = fract(vec2(TexCoord.x + totalDisplaceX, uvY));
+
+    // 4. Sample video with ghost image RF multipath echoes (0.25 - 0.55)
+    vec4 sampledColor = texture(videoTexture, sampleUV);
+    float ghostEnv = smoothstep(0.25, 0.38, effDist) * (1.0 - smoothstep(0.55, 0.75, effDist));
+    if (ghostEnv > 0.01) {
+        vec2 ghostUV = fract(sampleUV + vec2(0.045, 0.002));
+        vec4 ghostColor = texture(videoTexture, ghostUV);
+        sampledColor = mix(sampledColor, ghostColor, ghostEnv * 0.35);
+    }
+
+    // 5. Color loss / desaturation (NTSC/PAL color burst threshold loss)
+    float sat = clamp(1.0 - pow(effDist, 1.0 / max(colorFade, 0.2)) * colorFade, 0.0, 1.0);
+    float luma = dot(sampledColor.rgb, vec3(0.299, 0.587, 0.114));
+    vec3 col = mix(vec3(luma), sampledColor.rgb, sat);
+
+    // 6. AGC brightness fluctuation (0.4 - 0.6)
+    float agcGain = 1.0 + (sin(time * 11.3) * 0.25 + cos(time * 17.1) * 0.15) * smoothstep(0.38, 0.65, effDist) * (1.0 - smoothstep(0.75, 0.9, effDist));
+    col *= clamp(agcGain, 0.5, 1.5);
+
+    // 7. Static snow generation across stages
+    float snowFine = hash12(TexCoord * 600.0 + fract(time * 59.3));
+    float snowCoarse = hash12(floor(TexCoord * 200.0) + fract(time * 31.7));
+    float snowPattern = mix(snowFine, snowCoarse, 0.35);
+
+    float snowMix = smoothstep(0.08, 0.95, effDist);
+
+    // Brief flashes / glimpses of recognizable image at 0.6 - 0.95
+    float glimpseFlicker = step(0.9, hash12(vec2(floor(time * 9.0), 3.14))) * (1.0 - smoothstep(0.85, 0.96, effDist));
+    snowMix = clamp(snowMix - glimpseFlicker * 0.35, 0.0, 1.0);
+
+    vec3 result = mix(col, vec3(snowPattern), snowMix);
+
+    // 8. Complete signal loss (0.95 - 1.0)
+    float completeLoss = smoothstep(0.95, 1.0, effDist);
+    float blackOrStatic = hash12(vec2(floor(time * 2.0), 7.0));
+    vec3 finalLoss = mix(vec3(snowPattern * 0.7), vec3(0.02), step(0.5, blackOrStatic));
+    result = mix(result, finalLoss, completeLoss);
+
+    FragColor = vec4(clamp(result, 0.0, 1.0), baseColor.a);
+}
+)");
+
+    writeFrag("Analog & FPV/analog_reception", R"(#version 330 core
+// @name Analog TV Reception
+// @desc Authentic over-the-air analog television reception simulation with multipath ghosting, Gaussian static, and sync instability
+// @param ghostStrength Ghost Image Strength 0.0 0.5 0.1
+// @param ghostOffset Ghost Horizontal Offset 0.001 0.05 0.02
+// @param snow Snow/Static Level 0.0 1.0 0.15
+// @param vHoldDrift Vertical Hold Drift 0.0 1.0 0.0
+// @param hSyncJitter H-Sync Instability 0.0 1.0 0.05
+// @param agcPump AGC Pumping 0.0 1.0 0.0
+// @param impulseNoise Impulse Noise 0.0 1.0 0.02
+// @param active Enable Analog Reception 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform float time;
+uniform vec2 resolution;
+uniform float ghostStrength;
+uniform float ghostOffset;
+uniform float snow;
+uniform float vHoldDrift;
+uniform float hSyncJitter;
+uniform float agcPump;
+uniform float impulseNoise;
+uniform float active;
+
+vec2 hash2(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+float hash1(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float gaussianNoise(vec2 p) {
+    vec2 u = hash2(p);
+    float r = sqrt(max(1e-7, -2.0 * log(clamp(u.x, 1e-7, 0.99999))));
+    float phi = 6.28318530718 * u.y;
+    return r * cos(phi);
+}
+
+void main() {
+    vec4 orig = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = orig;
+        return;
+    }
+
+    vec2 res = (resolution.x > 1.0 && resolution.y > 1.0) ? resolution : vec2(textureSize(videoTexture, 0));
+    if (res.x < 1.0) res = vec2(1920.0, 1080.0);
+
+    vec2 uv = TexCoord;
+
+    // 1. Vertical Hold Drift: rolls vertically and catches near frame boundary
+    float vbiMask = 0.0;
+    if (vHoldDrift > 0.001) {
+        float rollSpeed = vHoldDrift * 0.75;
+        float rawRoll = time * rollSpeed;
+        float rollCycle = fract(rawRoll);
+        float stutter = sin(rollCycle * 6.2831853) * 0.06 * min(vHoldDrift * 2.0, 1.0);
+        float vShift = fract(rawRoll + stutter);
+        uv.y = fract(uv.y + vShift);
+        float bar = smoothstep(0.0, 0.015, uv.y) * (1.0 - smoothstep(0.92, 0.94, uv.y));
+        vbiMask = 1.0 - bar;
+    }
+
+    // 2. Horizontal Sync Instability (jitter & flag waving)
+    float scanline = floor(uv.y * res.y);
+    float frameTick = floor(time * 30.0);
+    if (hSyncJitter > 0.001) {
+        float hNoise = (hash1(vec2(scanline, frameTick)) - 0.5) * 2.0;
+        float wave = sin(uv.y * 14.0 + time * 6.0) * cos(uv.y * 4.0 - time * 3.0);
+        float tearProb = hash1(vec2(floor(time * 15.0), scanline * 0.02));
+        float tear = (tearProb > 0.988) ? (hash1(vec2(scanline, time * 2.0)) - 0.5) * 0.05 : 0.0;
+        float totalJitter = (hNoise * 0.003 + wave * 0.003 + tear) * hSyncJitter;
+        uv.x = clamp(uv.x + totalJitter, 0.0, 1.0);
+    }
+
+    vec3 signal = texture(videoTexture, uv).rgb;
+    if (vbiMask > 0.0) {
+        signal = mix(signal, vec3(0.04), vbiMask);
+        if (vbiMask > 0.5 && uv.x > 0.3 && uv.x < 0.7) signal = vec3(0.0);
+    }
+
+    // 3. Multipath Ghosting
+    if (ghostStrength > 0.001) {
+        vec2 gUV1 = vec2(clamp(uv.x + ghostOffset, 0.0, 1.0), uv.y);
+        vec2 gUV2 = vec2(clamp(uv.x + ghostOffset * 2.15, 0.0, 1.0), uv.y);
+        vec3 ghost1 = texture(videoTexture, gUV1).rgb;
+        vec3 ghost2 = texture(videoTexture, gUV2).rgb;
+        signal = signal + (ghost1 * 0.85 - ghost2 * 0.25) * ghostStrength;
+    }
+
+    // 4. AGC Pumping
+    if (agcPump > 0.001) {
+        float agcOsc = sin(time * 1.8) * 0.4 + sin(time * 0.6 + 1.7) * 0.35 + sin(time * 4.3) * 0.25;
+        float agcGain = 1.0 + agcOsc * (agcPump * 0.4);
+        signal = signal * agcGain + vec3(max(0.0, agcGain - 1.0) * 0.1 * agcPump);
+    }
+
+    // 5. Impulse Noise
+    if (impulseNoise > 0.001) {
+        float impRand = hash1(vec2(scanline, floor(time * 60.0)));
+        if (impRand > (1.0 - impulseNoise * 0.04)) {
+            float streakStart = hash1(vec2(scanline * 2.3, floor(time * 60.0)));
+            float streakLen = 0.03 + hash1(vec2(scanline * 5.1, floor(time * 60.0))) * 0.18;
+            if (uv.x >= streakStart && uv.x <= streakStart + streakLen) {
+                float trail = 1.0 - (uv.x - streakStart) / streakLen;
+                signal += vec3(trail * 1.6);
+            }
+        }
+    }
+
+    // 6. Snow / Static Noise
+    if (snow > 0.001) {
+        vec2 pixelCoord = uv * res;
+        vec2 seedFine = pixelCoord + vec2(time * 137.15, time * 269.83);
+        vec2 seedLine = vec2(pixelCoord.x * 0.35, scanline) + vec2(time * 91.31, 0.0);
+        float gFine = gaussianNoise(seedFine);
+        float gLine = gaussianNoise(seedLine);
+        float gaussianSum = gFine * 0.7 + gLine * 0.55;
+
+        float luma = dot(signal, vec3(0.299, 0.587, 0.114));
+        signal = mix(signal, vec3(luma), clamp(snow * 1.25, 0.0, 0.85));
+        signal += vec3(gaussianSum * snow * 0.45);
+    }
+
+    FragColor = vec4(clamp(signal, 0.0, 1.0), orig.a);
+}
+)");
+
+    writeFrag("Analog & FPV/ntsc_composite", R"(#version 330 core
+// @name NTSC Composite Artifacts
+// @desc Authentic NTSC composite video artifacts including dot crawl, cross-color rainbows, and chroma bandwidth limiting
+// @param dotCrawl Dot Crawl 0.0 1.0 0.3
+// @param crossColor Cross-Color Rainbows 0.0 1.0 0.2
+// @param chromaBlur Chroma Bandwidth Limit 0.0 1.0 0.4
+// @param edgeRinging Edge Ringing 0.0 1.0 0.2
+// @param signalNoise Signal Noise Floor 0.0 0.5 0.05
+// @param active Enable NTSC Artifacts 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform float time;
+uniform vec2 resolution;
+uniform float dotCrawl;
+uniform float crossColor;
+uniform float chromaBlur;
+uniform float edgeRinging;
+uniform float signalNoise;
+uniform float active;
+
+vec3 rgb2yiq(vec3 c) {
+    return vec3(
+        0.299 * c.r + 0.587 * c.g + 0.114 * c.b,
+        0.596 * c.r - 0.274 * c.g - 0.322 * c.b,
+        0.211 * c.r - 0.523 * c.g + 0.312 * c.b
+    );
+}
+
+vec3 yiq2rgb(vec3 yiq) {
+    return vec3(
+        yiq.x + 0.956 * yiq.y + 0.621 * yiq.z,
+        yiq.x - 0.272 * yiq.y - 0.647 * yiq.z,
+        yiq.x - 1.106 * yiq.y + 1.703 * yiq.z
+    );
+}
+
+float hash1(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void main() {
+    vec4 orig = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = orig;
+        return;
+    }
+
+    vec2 res = (resolution.x > 1.0 && resolution.y > 1.0) ? resolution : vec2(textureSize(videoTexture, 0));
+    if (res.x < 1.0) res = vec2(640.0, 480.0);
+
+    float lineIdx = floor(TexCoord.y * res.y);
+    float frameIdx = floor(time * 29.97);
+
+    float scFreq = 227.5 * 6.28318530718;
+    float scPhase = TexCoord.x * scFreq + lineIdx * 3.14159265 + frameIdx * 3.14159265;
+
+    vec3 centerCol = orig.rgb;
+    vec3 centerYiq = rgb2yiq(centerCol);
+    float yCenter = centerYiq.x;
+
+    // 1. Chroma Bandwidth Limiting
+    float dx = (1.0 / res.x) * (1.0 + chromaBlur * 6.0);
+    float chromaDelay = (1.0 / res.x) * 1.5 * chromaBlur;
+    vec2 chromaAccum = vec2(0.0);
+    float weights[7] = float[7](0.061, 0.121, 0.242, 0.382, 0.242, 0.121, 0.061);
+    float totalW = 0.0;
+    for (int i = -3; i <= 3; ++i) {
+        float offset = float(i) * dx - chromaDelay;
+        vec3 sYiq = rgb2yiq(texture(videoTexture, TexCoord + vec2(offset, 0.0)).rgb);
+        float w = weights[i + 3];
+        chromaAccum += sYiq.yz * w;
+        totalW += w;
+    }
+    vec2 filteredChroma = chromaAccum / totalW;
+
+    // 2. Edge Ringing
+    float ringDx = 1.0 / res.x;
+    float yL2 = rgb2yiq(texture(videoTexture, TexCoord - vec2(ringDx * 2.0, 0.0)).rgb).x;
+    float yL1 = rgb2yiq(texture(videoTexture, TexCoord - vec2(ringDx, 0.0)).rgb).x;
+    float yR1 = rgb2yiq(texture(videoTexture, TexCoord + vec2(ringDx, 0.0)).rgb).x;
+    float yR2 = rgb2yiq(texture(videoTexture, TexCoord + vec2(ringDx * 2.0, 0.0)).rgb).x;
+    float yRinging = yCenter + ((yCenter - yL1) * 0.35 - (yL1 - yL2) * 0.18 + (yCenter - yR1) * 0.35 - (yR1 - yR2) * 0.18) * edgeRinging;
+
+    // 3. Dot Crawl & Cross-Luminance
+    vec2 chromaDiff = abs(filteredChroma - centerYiq.yz);
+    float chromaEdge = length(chromaDiff) * 3.5 + length(filteredChroma) * 0.35;
+    float crawlMod = sin(scPhase) * chromaEdge * dotCrawl * 0.55;
+    yRinging += crawlMod;
+
+    // 4. Cross-Color Rainbow Banding
+    float highFreqLuma = (2.0 * yCenter - yL1 - yR1);
+    float falseI = highFreqLuma * cos(scPhase) * crossColor * 1.8;
+    float falseQ = highFreqLuma * sin(scPhase) * crossColor * 1.8;
+    filteredChroma.x += falseI;
+    filteredChroma.y += falseQ;
+
+    // 5. Signal Noise Floor
+    if (signalNoise > 0.001) {
+        vec2 nSeed = TexCoord * res + vec2(time * 73.1, time * 37.9);
+        float nLuma = (hash1(nSeed) - 0.5) * signalNoise * 0.5;
+        float nI = (hash1(nSeed + vec2(13.7, 42.1)) - 0.5) * signalNoise * 1.2;
+        float nQ = (hash1(nSeed + vec2(57.3, 89.4)) - 0.5) * signalNoise * 1.2;
+        yRinging += nLuma;
+        filteredChroma.x += nI;
+        filteredChroma.y += nQ;
+    }
+
+    vec3 finalRgb = yiq2rgb(vec3(yRinging, filteredChroma.x, filteredChroma.y));
+    FragColor = vec4(clamp(finalRgb, 0.0, 1.0), orig.a);
+}
+)");
+
+    writeFrag("Analog & FPV/rf_interference", R"(#version 330 core
+// @name RF Interference
+// @desc Realistic radio frequency interference including herringbone patterns, power line hum bars, motor whine, and ignition noise
+// @param herringbone Herringbone Pattern 0.0 1.0 0.0
+// @param humbars Power Line Hum Bars 0.0 1.0 0.0
+// @param motorWhine Motor Whine Lines 0.0 1.0 0.0
+// @param ignitionNoise Ignition Noise 0.0 1.0 0.0
+// @param digitalBleed Digital Clock Bleed 0.0 1.0 0.0
+// @param signalBeat Signal Beat Frequency 0.1 20.0 2.0
+// @param active Enable RF Interference 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform float time;
+uniform vec2 resolution;
+uniform float herringbone;
+uniform float humbars;
+uniform float motorWhine;
+uniform float ignitionNoise;
+uniform float digitalBleed;
+uniform float signalBeat;
+uniform float active;
+
+float hash1(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+void main() {
+    vec4 orig = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = orig;
+        return;
+    }
+
+    vec2 res = (resolution.x > 1.0 && resolution.y > 1.0) ? resolution : vec2(textureSize(videoTexture, 0));
+    if (res.x < 1.0) res = vec2(1920.0, 1080.0);
+
+    // 1. Signal Beating
+    float beatEnv = 0.82 + 0.18 * sin(time * signalBeat * 6.2831853);
+
+    vec2 uv = TexCoord;
+
+    // 2. Power Line Hum Bars
+    float humLuma = 0.0;
+    if (humbars > 0.001) {
+        float humPhase = uv.y * 1.5 - time * 0.22;
+        float humCycle = humPhase * 6.2831853;
+        float hWarp = cos(humCycle) * 0.006 * humbars;
+        uv.x = clamp(uv.x + hWarp, 0.0, 1.0);
+        humLuma = sin(humCycle) * 0.18 * humbars * beatEnv;
+    }
+
+    vec3 signal = texture(videoTexture, uv).rgb;
+    signal *= (1.0 + (beatEnv - 1.0) * 0.15);
+    signal += vec3(humLuma);
+
+    // 3. Herringbone Pattern
+    if (herringbone > 0.001) {
+        float a1 = (uv.x * 125.0 + uv.y * 85.0) * 3.14159265 + time * 16.0;
+        float a2 = (uv.x * 125.0 - uv.y * 85.0) * 3.14159265 - time * 13.0;
+        float chevron = sin(a1) * cos(a2);
+        chevron += sin(a1 * 2.0 + 1.2) * 0.25;
+        signal += vec3(chevron * herringbone * 0.28 * beatEnv);
+    }
+
+    // 4. Motor Whine Lines
+    if (motorWhine > 0.001) {
+        float rpmFlutter = sin(time * 7.5) * 6.0;
+        float whinePhase = (uv.x * 65.0 + uv.y * 290.0 + time * (130.0 + rpmFlutter));
+        float whine1 = pow(0.5 + 0.5 * sin(whinePhase), 14.0);
+        float whine2 = pow(0.5 + 0.5 * sin(whinePhase * 1.5 - time * 45.0), 18.0) * 0.45;
+        signal += vec3((whine1 + whine2) * motorWhine * 0.45 * beatEnv);
+    }
+
+    // 5. Ignition Noise
+    if (ignitionNoise > 0.001) {
+        float scanline = floor(uv.y * res.y);
+        float frameTick = floor(time * 60.0);
+        float sparkRand = hash1(vec2(scanline, frameTick));
+        if (sparkRand > (1.0 - ignitionNoise * 0.055)) {
+            float sparkX = hash1(vec2(scanline * 3.7, frameTick));
+            float sparkLen = 0.025 + hash1(vec2(scanline * 7.1, frameTick)) * 0.14;
+            if (uv.x >= sparkX && uv.x <= sparkX + sparkLen) {
+                float d = (uv.x - sparkX) / sparkLen;
+                float pulse = exp(-d * 3.2) * (1.0 + sin(d * 24.0) * 0.5);
+                signal += vec3(pulse * 1.35 * beatEnv);
+            }
+        }
+    }
+
+    // 6. Digital Clock Bleed
+    if (digitalBleed > 0.001) {
+        float colPos = fract(uv.x * 45.0);
+        float clockLine = smoothstep(0.0, 0.08, colPos) * smoothstep(0.16, 0.08, colPos);
+        float busNoise = hash1(vec2(floor(uv.x * 45.0), floor(time * 35.0) + floor(uv.y * 28.0)));
+        float clockStripe = clockLine * (0.6 + 0.4 * busNoise);
+        signal += vec3(clockStripe * digitalBleed * 0.35 * beatEnv);
+    }
+
+    FragColor = vec4(clamp(signal, 0.0, 1.0), orig.a);
+}
+)");
+
+    writeFrag("Analog & FPV/fpv_osd", R"(#version 330 core
+// @name FPV Drone OSD
+// @desc Realistic Betaflight/INAV analog drone OSD overlay with MAX7456 bitmap font
+// @param batteryVoltage Battery Voltage 10.0 17.0 14.8
+// @param rssi RSSI Signal 0.0 100.0 85.0
+// @param throttle Throttle % 0.0 100.0 50.0
+// @param flightMode Flight Mode 0.0 2.0 0.0
+// @param showCrosshair Show Crosshair 0.0 1.0 1.0 bool
+// @param osdOpacity OSD Opacity 0.0 1.0 0.85
+// @param fontScale Font Scale 0.5 3.0 1.0
+// @param horizonTilt Horizon Tilt Angle -45.0 45.0 0.0
+// @param active Enable OSD 0.0 1.0 1.0 bool
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D videoTexture;
+uniform vec2 resolution;
+uniform float time;
+uniform float batteryVoltage;
+uniform float rssi;
+uniform float throttle;
+uniform float flightMode;
+uniform float showCrosshair;
+uniform float osdOpacity;
+uniform float fontScale;
+uniform float horizonTilt;
+uniform float active;
+
+// Pack 5x7 glyph: 25 bits in .x (rows 0-4), 10 bits in .y (rows 5-6)
+uvec2 fontGlyph(int ch) {
+    switch (ch) {
+        case 48: return uvec2(20637230u, 465u); // 0
+        case 49: return uvec2(4329668u, 452u);  // 1
+        case 50: return uvec2(4473390u, 994u);  // 2
+        case 51: return uvec2(17252879u, 496u); // 3
+        case 52: return uvec2(32811400u, 264u); // 4
+        case 53: return uvec2(17316927u, 465u); // 5
+        case 54: return uvec2(18318382u, 465u); // 6
+        case 55: return uvec2(2236959u, 66u);   // 7
+        case 56: return uvec2(18302510u, 465u); // 8
+        case 57: return uvec2(17778222u, 464u); // 9
+        case 58: return uvec2(4198528u, 4u);    // :
+        case 46: return uvec2(0u, 198u);        // .
+        case 37: return uvec2(4264307u, 826u);  // %
+        case 47: return uvec2(2236688u, 34u);   // /
+        case 45: return uvec2(1015808u, 0u);    // -
+        case 43: return uvec2(5214336u, 4u);    // +
+        case 32: return uvec2(0u, 0u);          // space
+        case 65: return uvec2(18859566u, 561u); // A
+        case 66: return uvec2(18335279u, 497u); // B
+        case 67: return uvec2(1082926u, 465u);  // C
+        case 68: return uvec2(18400815u, 497u); // D
+        case 69: return uvec2(1541183u, 993u);  // E
+        case 70: return uvec2(1541183u, 33u);   // F
+        case 71: return uvec2(18777646u, 465u); // G
+        case 72: return uvec2(18859569u, 561u); // H
+        case 73: return uvec2(4329614u, 452u);  // I
+        case 74: return uvec2(8659228u, 201u);  // J
+        case 75: return uvec2(5346609u, 553u);  // K
+        case 76: return uvec2(1082401u, 993u);  // L
+        case 77: return uvec2(18405233u, 561u); // M
+        case 78: return uvec2(18667121u, 561u); // N
+        case 79: return uvec2(18400814u, 465u); // O
+        case 80: return uvec2(1558063u, 33u);   // P
+        case 81: return uvec2(22595118u, 713u); // Q
+        case 82: return uvec2(5752367u, 553u);  // R
+        case 83: return uvec2(17237550u, 465u); // S
+        case 84: return uvec2(4329631u, 132u);  // T
+        case 85: return uvec2(18400817u, 465u); // U
+        case 86: return uvec2(18400817u, 138u); // V
+        case 87: return uvec2(22726193u, 571u); // W
+        case 88: return uvec2(4329809u, 554u);  // X
+        case 89: return uvec2(4336177u, 132u);  // Y
+        case 90: return uvec2(2236959u, 993u);  // Z
+        default: return uvec2(0u, 0u);
+    }
+}
+
+bool getGlyphBit(uvec2 g, int x, int y) {
+    if (x < 0 || x > 4 || y < 0 || y > 6) return false;
+    if (y < 5) {
+        return ((g.x >> uint(y * 5 + x)) & 1u) != 0u;
+    } else {
+        return ((g.y >> uint((y - 5) * 5 + x)) & 1u) != 0u;
+    }
+}
+
+uvec2 pack4(int c0, int c1, int c2, int c3) {
+    return uvec2(uint(c0) | (uint(c1) << 8u) | (uint(c2) << 16u) | (uint(c3) << 24u), 0u);
+}
+uvec2 pack5(int c0, int c1, int c2, int c3, int c4) {
+    return uvec2(uint(c0) | (uint(c1) << 8u) | (uint(c2) << 16u) | (uint(c3) << 24u), uint(c4));
+}
+uvec2 pack7(int c0, int c1, int c2, int c3, int c4, int c5, int c6) {
+    return uvec2(uint(c0) | (uint(c1) << 8u) | (uint(c2) << 16u) | (uint(c3) << 24u),
+                 uint(c4) | (uint(c5) << 8u) | (uint(c6) << 16u));
+}
+uvec2 pack8(int c0, int c1, int c2, int c3, int c4, int c5, int c6, int c7) {
+    return uvec2(uint(c0) | (uint(c1) << 8u) | (uint(c2) << 16u) | (uint(c3) << 24u),
+                 uint(c4) | (uint(c5) << 8u) | (uint(c6) << 16u) | (uint(c7) << 24u));
+}
+
+void drawText8(inout vec4 osd, vec2 pix, vec2 pos, vec2 cellSize, float pixSize, uvec2 pack, int len, vec3 textColor) {
+    float totalW = float(len) * cellSize.x;
+    float totalH = cellSize.y;
+    if (pix.x < pos.x || pix.x >= pos.x + totalW || pix.y < pos.y || pix.y >= pos.y + totalH) {
+        return;
+    }
+    int charIdx = int((pix.x - pos.x) / cellSize.x);
+    if (charIdx < 0 || charIdx >= len) return;
+
+    int ch = int((charIdx < 4 ? (pack.x >> uint(charIdx * 8)) : (pack.y >> uint((charIdx - 4) * 8))) & 0xFFu);
+    if (ch <= 32) return;
+
+    vec2 charOrigin = pos + vec2(float(charIdx) * cellSize.x, 0.0);
+    vec2 localPix = (pix - charOrigin) / pixSize;
+    ivec2 gc = ivec2(floor(localPix));
+
+    int gx = gc.x - 1;
+    int gy = gc.y - 1;
+
+    uvec2 g = fontGlyph(ch);
+    vec4 cellCol;
+    if (getGlyphBit(g, gx, gy)) {
+        cellCol = vec4(textColor, 1.0);
+    } else {
+        bool border = false;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (getGlyphBit(g, gx + dx, gy + dy)) {
+                    border = true;
+                    break;
+                }
+            }
+            if (border) break;
+        }
+        if (border) {
+            cellCol = vec4(0.0, 0.0, 0.0, 0.95);
+        } else {
+            cellCol = vec4(0.0, 0.0, 0.0, 0.45);
+        }
+    }
+
+    osd.rgb = mix(osd.rgb, cellCol.rgb, cellCol.a);
+    osd.a = max(osd.a, cellCol.a);
+}
+
+void drawRssiBars(inout vec4 osd, vec2 pix, vec2 pos, float pixSize, float rssiVal) {
+    float barW = pixSize * 2.0;
+    float barGap = pixSize * 1.5;
+    float maxH = pixSize * 8.0;
+    float totalW = 4.0 * barW + 3.0 * barGap;
+
+    if (pix.x < pos.x - pixSize || pix.x >= pos.x + totalW + pixSize ||
+        pix.y < pos.y - pixSize || pix.y >= pos.y + maxH + pixSize) {
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        float bx = pos.x + float(i) * (barW + barGap);
+        float hRatio = float(i + 1) * 0.25;
+        float bh = maxH * hRatio;
+        float by = pos.y + (maxH - bh);
+
+        bool inBar = (pix.x >= bx && pix.x < bx + barW && pix.y >= by && pix.y < pos.y + maxH);
+        bool inBorder = (pix.x >= bx - pixSize && pix.x < bx + barW + pixSize &&
+                         pix.y >= by - pixSize && pix.y < pos.y + maxH + pixSize);
+
+        float thresh = float(i + 1) * 23.0;
+        bool lit = (rssiVal >= thresh);
+
+        if (inBar) {
+            vec3 bColor = lit ? vec3(0.2, 1.0, 0.4) : vec3(0.25, 0.25, 0.25);
+            osd.rgb = mix(osd.rgb, bColor, 1.0);
+            osd.a = max(osd.a, 1.0);
+        } else if (inBorder) {
+            osd.rgb = mix(osd.rgb, vec3(0.0), 0.95);
+            osd.a = max(osd.a, 0.95);
+        }
+    }
+}
+
+void drawCrosshair(inout vec4 osd, vec2 pix, vec2 center, float pixSize) {
+    vec2 d = abs(pix - center);
+    float armLen = pixSize * 9.0;
+    float gap = pixSize * 2.5;
+    float th = pixSize * 0.75;
+    float borderTh = pixSize * 1.75;
+
+    bool hTick = (d.x >= gap && d.x <= armLen && d.y <= th);
+    bool hBorder = (d.x >= gap - pixSize && d.x <= armLen + pixSize && d.y <= borderTh);
+
+    bool vTick = (d.y >= gap && d.y <= armLen && d.x <= th);
+    bool vBorder = (d.y >= gap - pixSize && d.y <= armLen + pixSize && d.x <= borderTh);
+
+    bool cDot = (d.x <= th && d.y <= th);
+    bool cBorder = (d.x <= borderTh && d.y <= borderTh);
+
+    if (hTick || vTick || cDot) {
+        osd.rgb = mix(osd.rgb, vec3(1.0), 1.0);
+        osd.a = max(osd.a, 1.0);
+    } else if (hBorder || vBorder || cBorder) {
+        osd.rgb = mix(osd.rgb, vec3(0.0), 0.95);
+        osd.a = max(osd.a, 0.95);
+    }
+}
+
+void drawHorizon(inout vec4 osd, vec2 pix, vec2 center, float tiltDeg, float pixSize, float screenW) {
+    float rad = radians(tiltDeg);
+    float cosA = cos(rad);
+    float sinA = sin(rad);
+    vec2 d = pix - center;
+    vec2 r = vec2(d.x * cosA + d.y * sinA, -d.x * sinA + d.y * cosA);
+
+    float halfSpan = screenW * 0.16;
+    float gap = screenW * 0.04;
+    float th = pixSize * 0.75;
+    float bTh = pixSize * 1.75;
+
+    float ax = abs(r.x);
+    bool onLine = (ax >= gap && ax <= halfSpan && abs(r.y) <= th);
+    bool onBorder = (ax >= gap - pixSize && ax <= halfSpan + pixSize && abs(r.y) <= bTh);
+
+    float notchH = pixSize * 3.5;
+    bool onNotch = (ax >= halfSpan - pixSize * 1.5 && ax <= halfSpan && r.y >= 0.0 && r.y <= notchH);
+    bool onNotchBorder = (ax >= halfSpan - pixSize * 2.5 && ax <= halfSpan + pixSize && r.y >= -pixSize && r.y <= notchH + pixSize);
+
+    if (onLine || onNotch) {
+        osd.rgb = mix(osd.rgb, vec3(1.0), 1.0);
+        osd.a = max(osd.a, 1.0);
+    } else if (onBorder || onNotchBorder) {
+        osd.rgb = mix(osd.rgb, vec3(0.0), 0.95);
+        osd.a = max(osd.a, 0.95);
+    }
+}
+
+void main() {
+    vec4 baseColor = texture(videoTexture, TexCoord);
+    if (active < 0.5) {
+        FragColor = baseColor;
+        return;
+    }
+
+    vec2 res = (resolution.x > 1.0 && resolution.y > 1.0) ? resolution : vec2(1920.0, 1080.0);
+    vec2 pix = vec2(TexCoord.x, 1.0 - TexCoord.y) * res;
+
+    float baseUnit = res.y / 480.0;
+    float pixSize = max(1.0, floor(baseUnit * clamp(fontScale, 0.4, 3.0)));
+    vec2 cellSize = vec2(7.0 * pixSize, 9.0 * pixSize);
+
+    vec4 osd = vec4(0.0);
+
+    // 1. Top-left: Battery voltage (with green/yellow/red color)
+    int bv = int(clamp(batteryVoltage, 0.0, 99.9) * 10.0 + 0.5);
+    int b1 = (bv / 100) % 10;
+    int b2 = (bv / 10) % 10;
+    int b3 = bv % 10;
+    int cellS = (batteryVoltage >= 13.0) ? 52 : 51; // '4' or '3'
+    uvec2 battStr = pack8(cellS, 83, 32, 48 + b1, 48 + b2, 46, 48 + b3, 86);
+    vec3 voltCol = (batteryVoltage >= 14.0) ? vec3(0.2, 1.0, 0.2) :
+                   (batteryVoltage >= 13.0) ? vec3(1.0, 0.9, 0.1) :
+                                              vec3(1.0, 0.25, 0.2);
+
+    float marginX = res.x * 0.07;
+    float marginY = res.y * 0.07;
+    drawText8(osd, pix, vec2(marginX, marginY), cellSize, pixSize, battStr, 8, voltCol);
+
+    // 2. Top-center: Flight Mode
+    uvec2 modeStr;
+    int modeLen;
+    if (flightMode < 0.5) {
+        modeStr = pack4(65, 67, 82, 79); // ACRO
+        modeLen = 4;
+    } else if (flightMode < 1.5) {
+        modeStr = pack5(65, 78, 71, 76, 69); // ANGLE
+        modeLen = 5;
+    } else {
+        modeStr = pack7(72, 79, 82, 73, 90, 79, 78); // HORIZON
+        modeLen = 7;
+    }
+    float modeX = res.x * 0.5 - float(modeLen) * cellSize.x * 0.5;
+    drawText8(osd, pix, vec2(modeX, marginY), cellSize, pixSize, modeStr, modeLen, vec3(1.0));
+
+    // 3. Top-right: RSSI Signal + Bars
+    int rVal = int(clamp(rssi, 0.0, 99.0));
+    uvec2 rssiStr = pack7(82, 83, 83, 73, 32, 48 + (rVal / 10), 48 + (rVal % 10)); // RSSI XX
+    float rssiX = res.x - marginX - float(7) * cellSize.x - pixSize * 15.0;
+    drawText8(osd, pix, vec2(rssiX, marginY), cellSize, pixSize, rssiStr, 7, vec3(1.0));
+    drawRssiBars(osd, pix, vec2(rssiX + float(7) * cellSize.x + pixSize * 2.5, marginY + pixSize * 0.5), pixSize, rssi);
+
+    // 4. Artificial Horizon (Upper/top area)
+    vec2 hCenter = vec2(res.x * 0.5, res.y * 0.38);
+    drawHorizon(osd, pix, hCenter, horizonTilt, pixSize, res.x);
+
+    // 5. Center Reticle
+    if (showCrosshair > 0.5) {
+        drawCrosshair(osd, pix, res * 0.5, pixSize);
+    }
+
+    // 6. Bottom-left: Flight Timer (MM:SS)
+    int totalSec = int(max(time, 0.0));
+    int tmMin = (totalSec / 60) % 100;
+    int tmSec = totalSec % 60;
+    uvec2 timerStr = pack5(48 + (tmMin / 10), 48 + (tmMin % 10), 58, 48 + (tmSec / 10), 48 + (tmSec % 10));
+    float botY = res.y - marginY - cellSize.y;
+    drawText8(osd, pix, vec2(marginX, botY), cellSize, pixSize, timerStr, 5, vec3(1.0));
+
+    // 7. Bottom-center: Throttle %
+    int thrVal = int(clamp(throttle, 0.0, 100.0));
+    uvec2 thrStr;
+    int thrLen;
+    if (thrVal >= 100) {
+        thrStr = pack8(84, 72, 82, 32, 49, 48, 48, 37); // THR 100%
+        thrLen = 8;
+    } else {
+        thrStr = pack7(84, 72, 82, 32, 48 + (thrVal / 10), 48 + (thrVal % 10), 37); // THR XX%
+        thrLen = 7;
+    }
+    float thrX = res.x * 0.5 - float(thrLen) * cellSize.x * 0.5;
+    drawText8(osd, pix, vec2(thrX, botY), cellSize, pixSize, thrStr, thrLen, vec3(1.0));
+
+    // 8. Bottom-right: Altitude & Speed
+    int altVal = int(clamp(25.0 + throttle * 0.4 + sin(time * 0.7) * 4.0, 0.0, 999.0));
+    uvec2 altStr;
+    int altLen;
+    if (altVal >= 100) {
+        altStr = pack8(65, 76, 84, 32, 48 + (altVal / 100), 48 + ((altVal / 10) % 10), 48 + (altVal % 10), 77);
+        altLen = 8;
+    } else {
+        altStr = pack7(65, 76, 84, 32, 48 + (altVal / 10), 48 + (altVal % 10), 77);
+        altLen = 7;
+    }
+
+    int spdVal = int(clamp(throttle * 0.75 + cos(time * 0.5) * 5.0, 0.0, 999.0));
+    uvec2 spdStr;
+    int spdLen;
+    if (spdVal >= 100) {
+        spdStr = pack8(83, 80, 68, 32, 48 + (spdVal / 100), 48 + ((spdVal / 10) % 10), 48 + (spdVal % 10), 75);
+        spdLen = 8;
+    } else {
+        spdStr = pack7(83, 80, 68, 32, 48 + (spdVal / 10), 48 + (spdVal % 10), 75);
+        spdLen = 7;
+    }
+
+    float rightX = res.x - marginX - float(8) * cellSize.x;
+    drawText8(osd, pix, vec2(rightX, botY - cellSize.y * 1.3), cellSize, pixSize, altStr, altLen, vec3(1.0));
+    drawText8(osd, pix, vec2(rightX, botY), cellSize, pixSize, spdStr, spdLen, vec3(1.0));
+
+    // Overlay onto base video with opacity preservation
+    vec3 finalRGB = mix(baseColor.rgb, osd.rgb, osd.a * clamp(osdOpacity, 0.0, 1.0));
+    FragColor = vec4(finalRGB, baseColor.a);
+}
+)");
+}
+

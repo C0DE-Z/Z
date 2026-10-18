@@ -1,7 +1,9 @@
 #include "core/project.h"
+#include "engine/pluginmanager.h"
 #include <cassert>
 #include <iostream>
 #include <QFile>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -199,11 +201,64 @@ void testCutPrecisionMath() {
     std::cout << "[PASS] testCutPrecisionMath\n";
 }
 
+void testAnalogShaderPlugins() {
+    const std::string testDir = "test_analog_plugins";
+    QDir(QString::fromStdString(testDir)).removeRecursively();
+
+    auto& pm = PluginManager::instance();
+    pm.createDefaultPlugins(testDir);
+    pm.createDefaultPlugins("plugins");
+    pm.scanPluginsDir(testDir);
+
+    const std::vector<std::string> expectedPluginIds = {
+        "fpv_osd",
+        "fpv_analog_feed",
+        "tape_dropout",
+        "signal_loss",
+        "analog_reception",
+        "ntsc_composite",
+        "rf_interference"
+    };
+
+    for (const auto& id : expectedPluginIds) {
+        ShaderPlugin* plugin = pm.findPlugin(id);
+        assert(plugin != nullptr && "Plugin must be found");
+        assert(!plugin->name.empty() && "Plugin must have a display name");
+        assert(plugin->category == "Analog & FPV" && "Plugin category must be Analog & FPV");
+        assert(!plugin->parameters.empty() && "Plugin must expose parameters");
+    }
+
+    // Verify FPV OSD parameters
+    ShaderPlugin* osd = pm.findPlugin("fpv_osd");
+    assert(osd != nullptr);
+    bool hasVolt = false, hasRssi = false, hasThrottle = false, hasHorizon = false;
+    for (const auto& param : osd->parameters) {
+        if (param.name == "batteryVoltage") hasVolt = true;
+        if (param.name == "rssi") hasRssi = true;
+        if (param.name == "throttle") hasThrottle = true;
+        if (param.name == "horizonTilt") hasHorizon = true;
+    }
+    assert(hasVolt && hasRssi && hasThrottle && hasHorizon);
+
+    // Verify FPV Analog Feed latency parameter
+    ShaderPlugin* feed = pm.findPlugin("fpv_analog_feed");
+    assert(feed != nullptr);
+    bool hasLatency = false;
+    for (const auto& param : feed->parameters) {
+        if (param.name == "analogLatency") hasLatency = true;
+    }
+    assert(hasLatency);
+
+    QDir(QString::fromStdString(testDir)).removeRecursively();
+    std::cout << "[PASS] testAnalogShaderPlugins\n";
+}
+
 int main() {
     std::cout << "=== Running Project Serialization and Cut Precision Unit Tests ===\n";
     testProjectSerialization();
     testAudioTrackAndLegacyCompatibility();
     testCutPrecisionMath();
+    testAnalogShaderPlugins();
     std::cout << "=== All Project Tests Passed ===\n";
     return 0;
 }
