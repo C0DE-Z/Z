@@ -28,12 +28,10 @@ function setReleaseUI(release) {
     const tagName = release?.tag_name || 'Latest';
     const downloadUrl = pickAssetForOS(release?.assets, os)?.browser_download_url || release?.html_url || FALLBACK_DOWNLOAD_URL;
     const platform = { windows: 'Windows', macos: 'macOS', linux: 'Linux' }[os] || 'your platform';
-    document.querySelectorAll('.brand-tag').forEach(el => { el.textContent = tagName; });
-    document.querySelectorAll('.download-version').forEach(el => { el.textContent = `Z VIDEO EDITOR — ${tagName.toUpperCase()}`; });
-    document.querySelectorAll('.btn-download-nav').forEach(el => { el.href = '#download'; });
+    document.querySelectorAll('.download-version').forEach(el => { el.textContent = `release ${tagName}`; });
     document.querySelectorAll('.btn-download-main').forEach(el => {
         el.href = downloadUrl;
-        el.textContent = `Download ${tagName} for ${platform}`;
+        el.firstChild.nodeValue = `download Z for ${platform} `;
         el.setAttribute('aria-label', `Download Z ${tagName} for ${platform}`);
     });
 }
@@ -54,17 +52,4 @@ async function fetchLatestRelease() {
     }
 }
 
-function setupNavigation() {
-    const toggle = document.querySelector('.nav-toggle');
-    const menu = document.querySelector('#nav-menu');
-    toggle?.addEventListener('click', () => {
-        const open = menu.classList.toggle('is-open');
-        toggle.setAttribute('aria-expanded', String(open));
-    });
-    menu?.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
-        menu.classList.remove('is-open');
-        toggle?.setAttribute('aria-expanded', 'false');
-    }));
-}
-
-document.addEventListener('DOMContentLoaded', () => { setupNavigation(); fetchLatestRelease(); });
+document.addEventListener('DOMContentLoaded', fetchLatestRelease);
