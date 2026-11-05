@@ -3,7 +3,7 @@
 Z is a native, experimental non-linear video editor built for real-time GLSL effects, compositing, and datamosh workflows. It is written in C++20 with Qt 6, OpenGL, FFmpeg, PortAudio, and SQLite.
 
 > Z is under active development. Keep copies of source media and project files while you work.
-
+    Mac and Linux Builds for Z are untested please report crashes.
 ## What it includes
 
 - Multi-track editing with clips, transitions, keyframes, and undo/redo state.
@@ -75,12 +75,6 @@ void main() {
 
 Read the [Shader Plugin Developer Guide](docs/shader_plugin_guide.html) for the complete annotation and uniform reference.
 
-## Documentation
-
-- [Build guide](docs/building/BUILDING.md)
-- [System architecture](docs/architecture/ARCHITECTURE.md)
-- [Shader Plugin Developer Guide](docs/shader_plugin_guide.html)
-- [Brand guide](docs/BRAND.md)
 
 ## Website and releases
 

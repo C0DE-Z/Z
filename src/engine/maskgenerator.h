@@ -16,7 +16,8 @@ public:
         const std::vector<ClipMask>& masks,
         double clipLocalTime,
         const std::string& targetEffectId = "",
-        bool targetSourceClip = false
+        bool targetSourceClip = false,
+        const std::string& targetPluginId = ""
     );
 
     static uint64_t signature(
@@ -25,7 +26,8 @@ public:
         const std::vector<ClipMask>& masks,
         double clipLocalTime,
         const std::string& targetEffectId = "",
-        bool targetSourceClip = false
+        bool targetSourceClip = false,
+        const std::string& targetPluginId = ""
     );
 
     static ClipMask createRectangleMask(const std::string& id, const std::string& name = "Mask 1");

@@ -52,6 +52,10 @@ void Project::fromJson(const QJsonObject& root) {
             for (int e = 0; e < clipEffectsArray.size(); ++e) {
                 QJsonObject effectObj = clipEffectsArray[e].toObject();
                 AppliedEffect effect;
+                effect.instanceId = effectObj.value("instanceId").toString().toStdString();
+                if (effect.instanceId.empty()) {
+                    effect.instanceId = clip.id + "_effect_" + std::to_string(e);
+                }
                 effect.pluginId = effectObj.value("pluginId").toString().toStdString();
                 effect.startOffset = std::max(0.0, effectObj.value("startOffset").toDouble(0.0));
 
@@ -175,6 +179,27 @@ void Project::fromJson(const QJsonObject& root) {
                 clip.masks.push_back(mask);
             }
 
+            for (auto& mask : clip.masks) {
+                std::vector<std::string> migratedTargets;
+                for (const auto& targetId : mask.targetEffectIds) {
+                    const bool isInstanceId = std::any_of(clip.effects.begin(), clip.effects.end(),
+                        [&targetId](const AppliedEffect& effect) { return effect.instanceId == targetId; });
+                    if (isInstanceId) {
+                        migratedTargets.push_back(targetId);
+                        continue;
+                    }
+                    bool foundPlugin = false;
+                    for (const auto& effect : clip.effects) {
+                        if (effect.pluginId == targetId) migratedTargets.push_back(effect.instanceId);
+                        if (effect.pluginId == targetId) foundPlugin = true;
+                    }
+                    if (!foundPlugin) migratedTargets.push_back(targetId);
+                }
+                std::sort(migratedTargets.begin(), migratedTargets.end());
+                migratedTargets.erase(std::unique(migratedTargets.begin(), migratedTargets.end()), migratedTargets.end());
+                mask.targetEffectIds = std::move(migratedTargets);
+            }
+
             track.clips.push_back(clip);
         }
 
@@ -182,6 +207,10 @@ void Project::fromJson(const QJsonObject& root) {
         for (int j = 0; j < effectsArray.size(); ++j) {
             QJsonObject effectObj = effectsArray[j].toObject();
             AppliedEffect effect;
+            effect.instanceId = effectObj.value("instanceId").toString().toStdString();
+            if (effect.instanceId.empty()) {
+                effect.instanceId = "track_" + std::to_string(track.id) + "_effect_" + std::to_string(j);
+            }
             effect.pluginId = effectObj.value("pluginId").toString().toStdString();
             effect.startOffset = std::max(0.0, effectObj.value("startOffset").toDouble(0.0));
 
@@ -369,6 +398,7 @@ QJsonObject Project::toJson() const {
             QJsonArray clipEffectsArray;
             for (const auto& effect : clip.effects) {
                 QJsonObject effectObj;
+                effectObj["instanceId"] = QString::fromStdString(effect.instanceId);
                 effectObj["pluginId"] = QString::fromStdString(effect.pluginId);
                 effectObj["startOffset"] = effect.startOffset;
 
@@ -478,6 +508,7 @@ QJsonObject Project::toJson() const {
         QJsonArray effectsArray;
         for (const auto& effect : track.effects) {
             QJsonObject effectObj;
+            effectObj["instanceId"] = QString::fromStdString(effect.instanceId);
             effectObj["pluginId"] = QString::fromStdString(effect.pluginId);
             effectObj["startOffset"] = effect.startOffset;
 

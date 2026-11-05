@@ -41,6 +41,7 @@
 #include <QJsonObject>
 #include <QDesktopServices>
 #include <QSettings>
+#include <QUuid>
 #include <QUrl>
 #include "ui/preferencesdialog.h"
 #include <algorithm>
@@ -395,8 +396,9 @@ void MainWindow::updateRenderStats() {
     );
 }
 
-void MainWindow::openPreferences() {
+void MainWindow::openPreferences(const QString& initialTab) {
     PreferencesDialog dlg(this);
+    if (!initialTab.isEmpty()) dlg.showTab(initialTab);
     if (dlg.exec() == QDialog::Accepted) {
         statusBar()->showMessage("Preferences updated.", 3000);
     }
@@ -450,7 +452,7 @@ void MainWindow::createActions() {
 
     prefAct = new QAction("Preferences...", this);
     prefAct->setIcon(VectorIcon::create(VectorIcon::Type::Settings, QColor(220, 220, 235), QSize(16, 16)));
-    connect(prefAct, &QAction::triggered, this, &MainWindow::openPreferences);
+    connect(prefAct, &QAction::triggered, this, [this] { openPreferences(); });
 
     playPauseAct = new QAction("Toggle Play / Pause", this);
     connect(playPauseAct, &QAction::triggered, this, &MainWindow::togglePlayback);
@@ -624,6 +626,8 @@ void MainWindow::createMenus() {
     viewMenu->addAction(zoomOutAct);
     viewMenu->addAction(zoomFitAct);
 
+    createWindowMenu();
+
     QMenu* helpMenu = menuBar()->addMenu("&Help");
     helpMenu->addAction("Check for Updates...", this, [this] { checkForUpdates(true); });
     helpMenu->addAction("&About Z...", this, [this]() {
@@ -637,6 +641,7 @@ void MainWindow::createMenus() {
 
     VideoEngine::instance().setAsyncDecodeEnabled(true);
     QToolBar* mainToolBar = addToolBar("Main Toolbar");
+    mainToolBar->setObjectName("mainToolBar");
     mainToolBar->addWidget(new QLabel(" Playback Quality: ", this));
     QComboBox* qualityCombo = new QComboBox(this);
     qualityCombo->addItem("100% (Full)");
@@ -723,10 +728,17 @@ void MainWindow::selectCustomMask() {
             customMaskEffectTargets->clear();
             if (clip) {
                 for (const auto& effect : clip->effects) {
-                    auto* item = new QListWidgetItem(
-                        effectDisplayNameForId(QString::fromStdString(effect.pluginId)), customMaskEffectTargets);
-                    item->setData(Qt::UserRole, QString::fromStdString(effect.pluginId));
+                    auto* item = new QListWidgetItem(customMaskEffectTargets);
+                    const std::string instanceId = effect.instanceId.empty() ? effect.pluginId : effect.instanceId;
+                    const QString shortId = QString::fromStdString(
+                        instanceId.substr(0, std::min<size_t>(8, instanceId.size())));
+                    item->setText(QString("%1 · %2")
+                        .arg(effectDisplayNameForId(QString::fromStdString(effect.pluginId)), shortId));
+                    item->setData(Qt::UserRole, QString::fromStdString(instanceId));
+                    item->setToolTip(QString("Effect instance: %1").arg(QString::fromStdString(instanceId)));
                     const bool applies = selectedMask->targetEffectIds.empty() ||
+                        std::find(selectedMask->targetEffectIds.begin(), selectedMask->targetEffectIds.end(), instanceId) !=
+                            selectedMask->targetEffectIds.end() ||
                         std::find(selectedMask->targetEffectIds.begin(), selectedMask->targetEffectIds.end(), effect.pluginId) !=
                             selectedMask->targetEffectIds.end();
                     item->setSelected(applies);
@@ -757,12 +769,17 @@ void MainWindow::createCustomMask() {
 
     const auto shape = customMaskShapeCombo
         ? static_cast<MaskShapeType>(customMaskShapeCombo->currentData().toInt()) : MaskShapeType::Rectangle;
-    if (shape == MaskShapeType::Rectangle || shape == MaskShapeType::Ellipse) {
+    if (shape == MaskShapeType::Rectangle || shape == MaskShapeType::Ellipse ||
+        shape == MaskShapeType::Bezier) {
         if (glWidget) glWidget->beginMaskDrawing(shape);
-        if (statusBar()) statusBar()->showMessage(
-            shape == MaskShapeType::Rectangle
+        if (statusBar()) {
+            const QString message = shape == MaskShapeType::Rectangle
                 ? "Drag in Preview to draw the new rectangle mask."
-                : "Drag in Preview to draw the new ellipse mask.", 5000);
+                : shape == MaskShapeType::Ellipse
+                    ? "Drag in Preview to draw the new ellipse mask."
+                    : "Click-drag to place smooth Bézier points; click the first point, right-click, or press Enter to finish.";
+            statusBar()->showMessage(message, 6000);
+        }
         return;
     }
 
@@ -828,6 +845,35 @@ void MainWindow::createCustomMaskFromPreview(
     if (glWidget) glWidget->setActiveEditMask(&clip->masks.back());
     onTimelineScrubbed(currentPlayhead);
     if (statusBar()) statusBar()->showMessage("Mask created. Drag its centre, points, or rotation handle to refine it.", 4000);
+}
+
+void MainWindow::createCustomMaskFromPreviewPath(const std::vector<MaskPoint>& points) {
+    ProjectClip* clip = currentClip();
+    if (!clip || points.size() < 3) return;
+
+    const int number = static_cast<int>(clip->masks.size()) + 1;
+    std::string id = "mask_" + clip->id + "_" + std::to_string(number);
+    while (std::any_of(clip->masks.begin(), clip->masks.end(),
+        [&id](const ClipMask& mask) { return mask.id == id; })) {
+        id += "_";
+    }
+    ClipMask mask = MaskGenerator::createPolygonMask(
+        id, points, "Pen " + std::to_string(number));
+    mask.shapeType = MaskShapeType::Bezier;
+
+    AppState::instance().pushUndoState();
+    clip->masks.push_back(std::move(mask));
+    refreshCustomMaskList();
+    for (int row = 0; row < customMaskList->count(); ++row) {
+        if (customMaskList->item(row)->data(Qt::UserRole).toString() == QString::fromStdString(id)) {
+            customMaskList->setCurrentRow(row);
+            break;
+        }
+    }
+    if (customMaskEditCheck) customMaskEditCheck->setChecked(true);
+    onTimelineScrubbed(currentPlayhead);
+    if (statusBar()) statusBar()->showMessage(
+        "Bézier mask created. Drag its points and handles to refine the curve.", 4500);
 }
 
 void MainWindow::createCustomMaskFromDetection() {
@@ -2989,6 +3035,7 @@ bool MainWindow::trackHasEffect(const TimelineTrack& track, const QString& effec
 
 AppliedEffect MainWindow::createEffectTemplate(const QString& effectId) const {
     AppliedEffect effect;
+    effect.instanceId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     effect.pluginId = effectId.toStdString();
     if (effectId == "datamosh") {
         auto make = [](const std::string& name, const std::string& label, double minV, double maxV, double defV, bool isBool = false) {

@@ -18,17 +18,22 @@
 #include <QStatusBar>
 
 void MainWindow::createDocks() {
-    QDockWidget* sidebarDock = new QDockWidget("Library", this);
-    sidebarDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    sidebarDock->setTitleBarWidget(new QWidget());
+    setDockNestingEnabled(true);
+    setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowTabbedDocks | QMainWindow::AllowNestedDocks | QMainWindow::GroupedDragging);
+    setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
-    QWidget* sidebarWidget = new QWidget(sidebarDock);
-    QVBoxLayout* sidebarLayout = new QVBoxLayout(sidebarWidget);
-    sidebarLayout->setContentsMargins(2, 2, 2, 2);
-    sidebarLayout->setSpacing(2);
-
-    QTabWidget* sidebarTabs = new QTabWidget(sidebarWidget);
-    sidebarTabs->setTabPosition(QTabWidget::North);
+    auto makePanel = [this](const QString& title, const QString& id, QWidget* content, Qt::DockWidgetArea area) {
+        auto* dock = new QDockWidget(title, this);
+        dock->setObjectName(id);
+        dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+        dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
+        dock->setWidget(content);
+        addDockWidget(area, dock);
+        panelDocks.append(dock);
+        return dock;
+    };
+    QList<QDockWidget*> leftPanels;
+    QWidget* sidebarTabs = this;
 
     QWidget* projectTab = new QWidget(sidebarTabs);
     QVBoxLayout* projectLayout = new QVBoxLayout(projectTab);
@@ -63,19 +68,16 @@ void MainWindow::createDocks() {
     connect(trackControl, &TrackControl::deleteClipRequested, this, [this]() { deleteSelectedClip(); });
     projectLayout->addWidget(trackControl, 1);
 
-    sidebarTabs->addTab(projectTab, "Project");
+    leftPanels << makePanel("Project", "panelProject", projectTab, Qt::LeftDockWidgetArea);
 
     effectsBrowser = new EffectsBrowser(sidebarTabs);
     connect(effectsBrowser, &EffectsBrowser::effectDoubleClicked, this, &MainWindow::onEffectSelected);
-    sidebarTabs->addTab(effectsBrowser, "Effects");
+    leftPanels << makePanel("Effects", "panelEffects", effectsBrowser, Qt::LeftDockWidgetArea);
 
     QWidget* activeContainer = new QWidget(sidebarTabs);
     activeContainer->setObjectName("activeContainer");
     QVBoxLayout* activeLayout = new QVBoxLayout(activeContainer);
     activeLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* activeTitle = new QLabel("ACTIVE EFFECTS", activeContainer);
-    activeTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
-    activeLayout->addWidget(activeTitle);
     activeEffectsList = new QListWidget(activeContainer);
     connect(activeEffectsList, &QListWidget::itemDoubleClicked, this, &MainWindow::onActiveEffectSelected);
     activeLayout->addWidget(activeEffectsList, 1);
@@ -85,7 +87,7 @@ void MainWindow::createDocks() {
     connect(removeEffectButton, &QPushButton::clicked, this, &MainWindow::removeSelectedEffect);
     activeLayout->addWidget(removeEffectButton);
 
-    sidebarTabs->addTab(activeContainer, "Active FX");
+    leftPanels << makePanel("Active Effects", "panelActiveEffects", activeContainer, Qt::LeftDockWidgetArea);
 
     auto* masksTab = new QWidget(sidebarTabs);
     auto* masksLayout = new QVBoxLayout(masksTab);
@@ -103,10 +105,11 @@ void MainWindow::createDocks() {
     customMaskShapeCombo->addItem("Rectangle", static_cast<int>(MaskShapeType::Rectangle));
     customMaskShapeCombo->addItem("Ellipse", static_cast<int>(MaskShapeType::Ellipse));
     customMaskShapeCombo->addItem("Freeform Polygon", static_cast<int>(MaskShapeType::Polygon));
+    customMaskShapeCombo->addItem("Pen (Bézier)", static_cast<int>(MaskShapeType::Bezier));
     masksLayout->addWidget(customMaskShapeCombo);
     auto* maskButtons = new QHBoxLayout();
     auto* addMaskButton = new QPushButton("+ New Mask — Draw in Preview", masksTab);
-    addMaskButton->setToolTip("Choose Rectangle or Ellipse above, click here, then drag the shape in Preview.");
+    addMaskButton->setToolTip("Draw a rectangle or ellipse by dragging, or place Bézier points with Pen. Right-click or press Enter to finish a Pen path.");
     auto* removeMaskButton = new QPushButton("Remove", masksTab);
     maskButtons->addWidget(addMaskButton);
     maskButtons->addWidget(removeMaskButton);
@@ -134,6 +137,7 @@ void MainWindow::createDocks() {
     customMaskModeCombo->addItem("Add / Union", static_cast<int>(MaskMode::Add));
     customMaskModeCombo->addItem("Subtract", static_cast<int>(MaskMode::Subtract));
     customMaskModeCombo->addItem("Intersect", static_cast<int>(MaskMode::Intersect));
+    customMaskModeCombo->addItem("Difference", static_cast<int>(MaskMode::Difference));
     customMaskAllEffectsCheck = new QCheckBox("Apply to all effects", masksTab);
     customMaskEffectTargets = new QListWidget(masksTab);
     customMaskEffectTargets->setSelectionMode(QAbstractItemView::MultiSelection);
@@ -164,30 +168,81 @@ void MainWindow::createDocks() {
     masksLayout->addWidget(trackSelectedMaskButton);
     connect(trackSelectedMaskButton, &QPushButton::clicked, this, &MainWindow::trackSelectedCustomMaskFromDetection);
     connect(customMaskEditCheck, &QCheckBox::toggled, this, [this](bool) { selectCustomMask(); });
-    connect(customMaskEnabledCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
-    connect(customMaskInvertCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
+    connect(customMaskEnabledCheck, &QCheckBox::toggled, this, [this](bool) {
+        if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        updateSelectedCustomMask();
+    });
+    connect(customMaskInvertCheck, &QCheckBox::toggled, this, [this](bool) {
+        if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        updateSelectedCustomMask();
+    });
     connect(customMaskFeatherSlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
     connect(customMaskOpacitySlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
     connect(customMaskExpansionSlider, &QSlider::valueChanged, this, [this](int) { updateSelectedCustomMask(); });
-    connect(customMaskModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { updateSelectedCustomMask(); });
-    connect(customMaskAllEffectsCheck, &QCheckBox::toggled, this, [this](bool) { updateSelectedCustomMask(); });
-    connect(customMaskEffectTargets, &QListWidget::itemSelectionChanged, this, [this] { updateSelectedCustomMask(); });
-    sidebarTabs->addTab(masksTab, "Masks");
+    for (QSlider* slider : { customMaskFeatherSlider, customMaskOpacitySlider, customMaskExpansionSlider }) {
+        connect(slider, &QSlider::sliderPressed, this, [this] {
+            if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        });
+        connect(slider, &QSlider::actionTriggered, this, [this, slider](int) {
+            if (!syncingCustomMaskControls && !slider->isSliderDown()) {
+                AppState::instance().pushUndoState();
+            }
+        });
+    }
+    connect(customMaskModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        updateSelectedCustomMask();
+    });
+    connect(customMaskAllEffectsCheck, &QCheckBox::toggled, this, [this](bool) {
+        if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        updateSelectedCustomMask();
+    });
+    connect(customMaskEffectTargets, &QListWidget::itemSelectionChanged, this, [this] {
+        if (!syncingCustomMaskControls) AppState::instance().pushUndoState();
+        updateSelectedCustomMask();
+    });
+    leftPanels << makePanel("Masks", "panelMasks", masksTab, Qt::LeftDockWidgetArea);
 
-    auto* detectScroll = new QScrollArea(sidebarTabs);
-    detectScroll->setWidgetResizable(true);
-    detectScroll->setFrameShape(QFrame::NoFrame);
-    QWidget* detectTab = new QWidget(detectScroll);
-    QVBoxLayout* detectLayout = new QVBoxLayout(detectTab);
-    detectLayout->setContentsMargins(8, 8, 8, 8);
-    detectLayout->setSpacing(8);
+    auto* detectTab = new QWidget(sidebarTabs);
+    auto* detectRootLayout = new QVBoxLayout(detectTab);
+    detectRootLayout->setContentsMargins(6, 6, 6, 6);
+    detectRootLayout->setSpacing(6);
 
-    const auto addSection = [detectTab, detectLayout](const QString& title) {
+    auto* detectTitle = new QLabel("DETECT & TRACK", detectTab);
+    detectTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
+    detectRootLayout->addWidget(detectTitle);
+    auto* detectHint = new QLabel("Analyze footage, review tracks, then choose what appears in Preview or drives an effect mask.", detectTab);
+    detectHint->setWordWrap(true);
+    detectHint->setStyleSheet("color: #918B92; font-size: 10px;");
+    detectRootLayout->addWidget(detectHint);
+
+    auto* detectTabs = new QTabWidget(detectTab);
+    detectTabs->setDocumentMode(true);
+    detectRootLayout->addWidget(detectTabs, 1);
+    const auto makeDetectPage = [detectTabs](const QString& title) {
+        auto* scroll = new QScrollArea(detectTabs);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        auto* page = new QWidget(scroll);
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(8, 8, 8, 8);
+        layout->setSpacing(8);
+        scroll->setWidget(page);
+        detectTabs->addTab(scroll, title);
+        return layout;
+    };
+    QVBoxLayout* detectLayout = makeDetectPage("Model");
+    QVBoxLayout* modelPageLayout = detectLayout;
+    QVBoxLayout* reviewLayout = makeDetectPage("Tracks");
+    QVBoxLayout* overlayLayout = makeDetectPage("Overlay");
+    QVBoxLayout* effectMaskLayout = makeDetectPage("Effect mask");
+
+    const auto addSection = [detectTab, &detectLayout](const QString& title) {
         auto* section = new QLabel(title, detectTab);
-        section->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 10px; letter-spacing: 0.6px; padding-top: 6px;");
+        section->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 10px; letter-spacing: 0.6px; padding-top: 6px; border-bottom: 1px solid #383039; padding-bottom: 4px;");
         detectLayout->addWidget(section);
     };
-    const auto addSlider = [detectTab, detectLayout](const QString& title, int minimum, int maximum,
+    const auto addSlider = [detectTab, &detectLayout](const QString& title, int minimum, int maximum,
                                                        int initial, const QString& suffix = QString()) {
         auto* row = new QHBoxLayout();
         row->setContentsMargins(0, 0, 0, 0);
@@ -209,7 +264,7 @@ void MainWindow::createDocks() {
         detectLayout->addLayout(row);
         return slider;
     };
-    const auto addCombo = [detectTab, detectLayout](const QString& title, QComboBox* combo) {
+    const auto addCombo = [detectTab, &detectLayout](const QString& title, QComboBox* combo) {
         auto* row = new QHBoxLayout();
         row->setContentsMargins(0, 0, 0, 0);
         auto* label = new QLabel(title, detectTab);
@@ -218,15 +273,6 @@ void MainWindow::createDocks() {
         row->addWidget(combo, 1);
         detectLayout->addLayout(row);
     };
-
-    QLabel* detectTitle = new QLabel("DETECT & MASK", detectTab);
-    detectTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
-    detectLayout->addWidget(detectTitle);
-
-    QLabel* detectHint = new QLabel("Recommended: the official YOLOv5x6 COCO model (about 282 MB), verified in Z at 640 px with its OpenCV backend. It recognizes 80 COCO classes; choose the classes and reviewed tracks that remain active. All model work, clip scanning, and mask building run outside the UI thread.", detectTab);
-    detectHint->setWordWrap(true);
-    detectHint->setStyleSheet("color: #918B92; font-size: 10px;");
-    detectLayout->addWidget(detectHint);
 
     QHBoxLayout* modelLayout = new QHBoxLayout();
     yoloModelPathEdit = new QLineEdit(detectTab);
@@ -336,7 +382,8 @@ void MainWindow::createDocks() {
     });
     detectLayout->addLayout(classButtons);
 
-    addSection("WHOLE-CLIP REVIEW");
+    detectLayout = reviewLayout;
+    addSection("CLIP SCAN");
     QLabel* scanHint = new QLabel("Pre-detect a clip on the background worker, then uncheck a stable track below to remove it from the preview and effect mask.", detectTab);
     scanHint->setWordWrap(true);
     scanHint->setStyleSheet("color: #918B92; font-size: 10px;");
@@ -351,7 +398,7 @@ void MainWindow::createDocks() {
     connect(cancelDetectionScanButton, &QPushButton::clicked, this, &MainWindow::cancelDetectionScan);
     detectLayout->addWidget(cancelDetectionScanButton);
 
-    addSection("TRACKING");
+    addSection("LIVE DETECTION & MOTION REGIONS");
     liveDetectCheck = new QCheckBox("Live detection during playback", detectTab);
     liveDetectCheck->setStyleSheet("color: #C3BEC3;");
     connect(liveDetectCheck, &QCheckBox::toggled, this, [this](bool on) {
@@ -381,6 +428,7 @@ void MainWindow::createDocks() {
     detectMinAreaSlider = addSlider("Minimum region area", 1, 40, 12, " ‰");
     connect(detectMinAreaSlider, &QSlider::valueChanged, this, &MainWindow::onDetectionSettingsChanged);
 
+    detectLayout = overlayLayout;
     addSection("OVERLAY & TRACERS");
     showBoxesCheck = new QCheckBox("Show detection overlay", detectTab);
     showBoxesCheck->setChecked(true);
@@ -465,6 +513,7 @@ void MainWindow::createDocks() {
     detectionLinkDistanceSlider = addSlider("Link distance", 5, 100, 25, "%");
     connect(detectionLinkDistanceSlider, &QSlider::valueChanged, this, [this](int) { applyDetectionOverlayOptions(); });
 
+    detectLayout = effectMaskLayout;
     addSection("EFFECT MASK");
     detectionShapeCombo = new QComboBox(detectTab);
     detectionShapeCombo->addItem("Rectangle", static_cast<int>(DetectionShape::Rectangle));
@@ -508,8 +557,10 @@ void MainWindow::createDocks() {
     maskOutlineWidthSlider = addSlider("Outline mask width", 1, 80, 6, " px");
     connect(maskOutlineWidthSlider, &QSlider::valueChanged, this, [this](int) { refreshDetectionMask(); });
 
-    addSection("CURRENT OBJECTS & TRACK REVIEW");
+    detectLayout = reviewLayout;
+    addSection("CURRENT OBJECTS");
     detectionList = new QListWidget(detectTab);
+    detectionList->setMinimumHeight(150);
     detectionList->setStyleSheet("QListWidget { background: #08080A; border: 1px solid #303036; }");
     connect(detectionList, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
         if (!item || detectionSourceClipId.isEmpty()) return;
@@ -550,13 +601,18 @@ void MainWindow::createDocks() {
     connect(clearDetectBtn, &QPushButton::clicked, this, &MainWindow::clearDetections);
     detectLayout->addWidget(clearDetectBtn);
 
-    detectLayout->addStretch();
-    detectScroll->setWidget(detectTab);
-    sidebarTabs->addTab(detectScroll, "Detect");
+    modelPageLayout->addStretch();
+    reviewLayout->addStretch();
+    overlayLayout->addStretch();
+    effectMaskLayout->addStretch();
+    leftPanels << makePanel("Detect", "panelDetect", detectTab, Qt::LeftDockWidgetArea);
     applyDetectionOverlayOptions();
     refreshCustomMaskList();
     refreshDetectionMaskTargets();
 
+    connect(glWidget, &GLWidget::maskEditStarted, this, [] {
+        AppState::instance().pushUndoState();
+    });
     connect(glWidget, &GLWidget::maskPointMoved, this, [this](int pointIndex, float newX, float newY) {
         ProjectClip* clip = currentClip();
         if (!clip || !customMaskList || !customMaskList->currentItem()) return;
@@ -569,10 +625,32 @@ void MainWindow::createDocks() {
         // refresh the renderer's mask copy; a full scrub would re-decode the frame.
         glWidget->setClipMasks(clip->masks, std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration));
     });
+    connect(glWidget, &GLWidget::maskPointHandleMoved, this,
+        [this](int pointIndex, bool incoming, float offsetX, float offsetY) {
+            ProjectClip* clip = currentClip();
+            if (!clip || !customMaskList || !customMaskList->currentItem()) return;
+            const std::string maskId = customMaskList->currentItem()->data(Qt::UserRole).toString().toStdString();
+            const auto it = std::find_if(clip->masks.begin(), clip->masks.end(),
+                [&maskId](const ClipMask& mask) { return mask.id == maskId; });
+            if (it == clip->masks.end() || pointIndex < 0 ||
+                pointIndex >= static_cast<int>(it->points.size())) return;
+            auto& point = it->points[static_cast<size_t>(pointIndex)];
+            if (incoming) {
+                point.inHandleX = offsetX;
+                point.inHandleY = offsetY;
+            } else {
+                point.outHandleX = offsetX;
+                point.outHandleY = offsetY;
+            }
+            glWidget->setClipMasks(clip->masks,
+                std::clamp(currentPlayhead - clip->timelineStart, 0.0, clip->sourceDuration));
+        });
     connect(glWidget, &GLWidget::maskDrawn, this,
         [this](MaskShapeType shape, double posX, double posY, double scaleX, double scaleY) {
             createCustomMaskFromPreview(shape, posX, posY, scaleX, scaleY);
         });
+    connect(glWidget, &GLWidget::maskPathDrawn, this,
+        [this](const std::vector<MaskPoint>& points) { createCustomMaskFromPreviewPath(points); });
     connect(glWidget, &GLWidget::maskTransformChanged, this, [this](double posX, double posY, double scaleX, double scaleY, double rotation) {
         ProjectClip* clip = currentClip();
         if (!clip || !customMaskList || !customMaskList->currentItem()) return;
@@ -593,21 +671,19 @@ void MainWindow::createDocks() {
         glWidget->setClipMasks(clip->masks, localTime);
     });
 
-    sidebarLayout->addWidget(sidebarTabs);
-    sidebarWidget->setLayout(sidebarLayout);
-    sidebarDock->setWidget(sidebarWidget);
-    addDockWidget(Qt::LeftDockWidgetArea, sidebarDock);
+    for (int i = 1; i < leftPanels.size(); ++i) tabifyDockWidget(leftPanels.first(), leftPanels[i]);
+    leftPanels.first()->raise();
+    QDockWidget* sidebarDock = leftPanels.first();
 
     QDockWidget* inspectorDock = new QDockWidget("Inspector", this);
-    inspectorDock->setTitleBarWidget(new QWidget());
+    inspectorDock->setObjectName("panelInspector");
+    inspectorDock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    panelDocks.append(inspectorDock);
 
     QWidget* controlContainer = new QWidget(inspectorDock);
     controlContainer->setObjectName("controlContainer");
     QVBoxLayout* controlLayout = new QVBoxLayout(controlContainer);
     controlLayout->setContentsMargins(8, 8, 8, 8);
-    QLabel* controlTitle = new QLabel("INSPECTOR", controlContainer);
-    controlTitle->setStyleSheet("font-weight: bold; color: #FF72AA; font-size: 11px; letter-spacing: 0.5px;");
-    controlLayout->addWidget(controlTitle);
 
     inspectorPanel = new Inspector(controlContainer);
     inspectorPanel->setStyleSheet("background: transparent; border: none;");
@@ -689,8 +765,10 @@ void MainWindow::createDocks() {
     inspectorDock->setWidget(controlContainer);
     addDockWidget(Qt::RightDockWidgetArea, inspectorDock);
 
-    QDockWidget* bottomDock = new QDockWidget("Workspaces", this);
-    bottomDock->setTitleBarWidget(new QWidget());
+    QDockWidget* bottomDock = new QDockWidget("Timeline", this);
+    bottomDock->setObjectName("panelTimeline");
+    bottomDock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    panelDocks.append(bottomDock);
     QWidget* bottomContainer = new QWidget(bottomDock);
     QVBoxLayout* bottomLayout = new QVBoxLayout(bottomContainer);
     bottomLayout->setContentsMargins(4, 4, 4, 4);

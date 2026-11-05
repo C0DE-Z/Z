@@ -10,6 +10,9 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QToolButton>
+#include <QDockWidget>
+#include <QMenu>
+#include <QByteArray>
 #include "core/project.h"
 #include "engine/glwidget.h"
 #include "ui/components/timeline.h"
@@ -58,7 +61,7 @@ private slots:
     void onParameterChanged(const QString& effectId, const QString& paramName, double value);
     void onPlaybackQualityChanged(int index);
     void onToggleFpsOverlay(bool checked);
-    void openPreferences();
+    void openPreferences(const QString& initialTab = QString());
     void importMediaFile(const QString& filePath, int targetTrack = -1, double targetTime = -1.0);
     void runDetectionOnCurrentFrame();
     void onDetectionSettingsChanged();
@@ -69,7 +72,24 @@ private slots:
     void cancelDetectionScan();
     void checkForUpdates();
 
+protected:
+    void closeEvent(QCloseEvent* event) override;
+
 private:
+    QList<QDockWidget*> panelDocks;
+    QByteArray defaultWorkspaceState;
+    QByteArray defaultWorkspaceGeometry;
+    QMenu* workspaceMenu = nullptr;
+    QMenu* themeMenu = nullptr;
+    QDockWidget* panelByName(const QString& objectName) const;
+    void createWindowMenu();
+    void initializeWorkspaces();
+    void rebuildWorkspaceMenu();
+    void rebuildThemeMenu();
+    void saveCurrentLayout();
+    bool applyWorkspace(const QString& name);
+    void applyWorkspacePreset(const QString& preset);
+
     QTimer* playbackTimer = nullptr;
     QElapsedTimer playbackWallClock;
     double playbackStartPlayhead = 0.0;
@@ -248,6 +268,7 @@ private:
     void createCustomMask();
     void createCustomMaskFromDetection();
     void createCustomMaskFromPreview(MaskShapeType shape, double posX, double posY, double scaleX, double scaleY);
+    void createCustomMaskFromPreviewPath(const std::vector<MaskPoint>& points);
     void trackSelectedCustomMaskFromDetection();
     void removeSelectedCustomMask();
     void updateSelectedCustomMask();

@@ -14,7 +14,7 @@ void testOddWidthMaskUsesPackedRows() {
     assert(pixels[0] == 0);
 }
 
-void testFirstIntersectMaskUsesWhiteIdentity() {
+void testSingleIntersectMaskRendersNormally() {
     ClipMask ellipse = MaskGenerator::createEllipseMask("ellipse");
     ellipse.feather = 0.0;
     ellipse.mode = MaskMode::Intersect;
@@ -23,6 +23,22 @@ void testFirstIntersectMaskUsesWhiteIdentity() {
     assert(pixels.size() == 63);
     assert(pixels[3 * 9 + 4] > 0);
     assert(pixels.front() == 0);
+}
+
+void testBezierHandlesChangeTheRenderedContour() {
+    const std::vector<MaskPoint> points = {
+        {0.25f, 0.25f, 0, 0, 0.25f, 0.0f},
+        {0.75f, 0.25f, 0.0f, 0.25f, 0, 0},
+        {0.75f, 0.75f, 0, 0, 0, 0},
+        {0.25f, 0.75f, 0, 0, 0, 0}
+    };
+    ClipMask bezier = MaskGenerator::createPolygonMask("bezier", points);
+    bezier.shapeType = MaskShapeType::Bezier;
+    bezier.feather = 0.0;
+    ClipMask polygon = bezier;
+    polygon.shapeType = MaskShapeType::Polygon;
+    assert(MaskGenerator::renderMask(80, 80, {bezier}, 0.0) !=
+        MaskGenerator::renderMask(80, 80, {polygon}, 0.0));
 }
 
 void testMasksCanTargetIndividualEffects() {
@@ -34,6 +50,34 @@ void testMasksCanTargetIndividualEffects() {
     assert(targeted.size() == 63);
     assert(targeted[3 * 9 + 4] > 0);
     assert(unrelated.empty());
+}
+
+void testMaskAssignmentsDistinguishEffectInstances() {
+    ClipMask mask = MaskGenerator::createRectangleMask("instance-target");
+    mask.feather = 0.0;
+    mask.targetEffectIds = {"blur-instance-1"};
+    assert(MaskGenerator::renderMask(
+        9, 7, {mask}, 0.0, "blur-instance-2", false, "gaussian_blur").empty());
+    const auto selected = MaskGenerator::renderMask(
+        9, 7, {mask}, 0.0, "blur-instance-1", false, "gaussian_blur");
+    assert(selected.size() == 63);
+    assert(selected[3 * 9 + 4] > 0);
+}
+
+void testMaskBlendModesUseAlphaCompositing() {
+    ClipMask first = MaskGenerator::createRectangleMask("first");
+    first.feather = 0.0;
+    first.opacity = 0.5;
+    const auto compositeWith = [&first](MaskMode mode) {
+        ClipMask second = first;
+        second.mode = mode;
+        return MaskGenerator::renderMask(32, 24, {first, second}, 0.0);
+    };
+    const size_t center = 12 * 32 + 16;
+    assert(compositeWith(MaskMode::Add)[center] == 191);
+    assert(compositeWith(MaskMode::Subtract)[center] == 63);
+    assert(compositeWith(MaskMode::Intersect)[center] == 63);
+    assert(compositeWith(MaskMode::Difference)[center] == 127);
 }
 
 void testOpacityAndExpansion() {
@@ -88,8 +132,11 @@ void testOutlineFallbackReturnsEditablePolygon() {
 
 int main() {
     testOddWidthMaskUsesPackedRows();
-    testFirstIntersectMaskUsesWhiteIdentity();
+    testSingleIntersectMaskRendersNormally();
+    testBezierHandlesChangeTheRenderedContour();
     testMasksCanTargetIndividualEffects();
+    testMaskAssignmentsDistinguishEffectInstances();
+    testMaskBlendModesUseAlphaCompositing();
     testOpacityAndExpansion();
     testInvalidSizeReturnsNoMask();
     testPolygonPositionMovesTheRenderedMask();

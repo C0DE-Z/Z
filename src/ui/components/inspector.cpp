@@ -15,6 +15,10 @@
 #include <QDebug>
 #include <functional>
 #include <algorithm>
+#include "ui/thememanager.h"
+
+// Painting colours follow the active theme (see ThemedColor).
+#define QColor ThemedColor
 
 namespace {
 class CurvePreviewWidget : public QWidget {

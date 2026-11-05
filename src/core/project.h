@@ -10,6 +10,7 @@
 #include <QJsonArray>
 
 struct AppliedEffect {
+    std::string instanceId;
     std::string pluginId;
     // Seconds from the start of the owning clip. Effects added at the
     // playhead affect the rest of that clip only.
@@ -27,7 +28,8 @@ enum class MaskShapeType {
 enum class MaskMode {
     Add,
     Subtract,
-    Intersect
+    Intersect,
+    Difference
 };
 
 struct MaskPoint {

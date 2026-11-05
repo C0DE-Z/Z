@@ -9,11 +9,38 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QKeySequenceEdit>
+#include <QColorDialog>
+#include <QFileDialog>
+#include <QGridLayout>
+#include <QMessageBox>
+#include <QPixmap>
+#include <QDir>
+
+namespace {
+struct ColorField {
+    const char* key;
+    const char* label;
+    QColor Theme::*member;
+};
+const ColorField kColorFields[] = {
+    {"canvas", "Background", &Theme::canvas},
+    {"surface", "Panels", &Theme::surface},
+    {"raised", "Controls", &Theme::raised},
+    {"line", "Dividers", &Theme::line},
+    {"lineStrong", "Control borders", &Theme::lineStrong},
+    {"ink", "Text", &Theme::ink},
+    {"inkMuted", "Secondary text", &Theme::inkMuted},
+    {"inkSubtle", "Hints", &Theme::inkSubtle},
+    {"accent", "Accent", &Theme::accent},
+};
+}
 
 PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle("Preferences");
-    resize(580, 420);
+    resize(640, 520);
     setModal(true);
+    originalThemeName = ThemeManager::instance().current().name;
+    editingTheme = ThemeManager::instance().current();
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 12, 12, 12);
@@ -34,6 +61,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
     promptExitCheck = new QCheckBox("Prompt to save changes before closing", generalTab);
     generalLayout->addRow("", promptExitCheck);
     tabWidget->addTab(generalTab, "General");
+    buildAppearanceTab();
 
     QWidget* playbackTab = new QWidget(tabWidget);
     QFormLayout* playbackLayout = new QFormLayout(playbackTab);
@@ -217,7 +245,194 @@ void PreferencesDialog::savePreferences() {
     settings.setValue("Export/Crf", exportQualityCombo->currentData().toInt());
 
     saveShortcuts();
+
+    if (!editingTheme.builtIn) {
+        QString error;
+        if (!ThemeManager::instance().saveCustomTheme(editingTheme, &error)) {
+            QMessageBox::warning(this, "Theme", error);
+            return;
+        }
+    }
+    ThemeManager::instance().setCurrent(editingTheme.name, true);
     accept();
+}
+
+void PreferencesDialog::reject() {
+    // Colour edits are previewed live, so cancelling must put the saved theme back.
+    if (!ThemeManager::instance().setCurrent(originalThemeName, false)) {
+        ThemeManager::instance().setCurrent("Z Pink", false);
+    }
+    QDialog::reject();
+}
+
+void PreferencesDialog::showTab(const QString& title) {
+    for (int i = 0; i < tabWidget->count(); ++i) {
+        if (tabWidget->tabText(i) == title) {
+            tabWidget->setCurrentIndex(i);
+            return;
+        }
+    }
+}
+
+void PreferencesDialog::buildAppearanceTab() {
+    QWidget* tab = new QWidget(tabWidget);
+    QVBoxLayout* layout = new QVBoxLayout(tab);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+
+    QHBoxLayout* themeRow = new QHBoxLayout();
+    themeRow->addWidget(new QLabel("Theme:", tab));
+    themeCombo = new QComboBox(tab);
+    themeRow->addWidget(themeCombo, 1);
+    layout->addLayout(themeRow);
+
+    QHBoxLayout* actionRow = new QHBoxLayout();
+    duplicateThemeBtn = new QPushButton("Duplicate", tab);
+    deleteThemeBtn = new QPushButton("Delete", tab);
+    QPushButton* importThemeBtn = new QPushButton("Import...", tab);
+    exportThemeBtn = new QPushButton("Export...", tab);
+    for (QPushButton* button : {duplicateThemeBtn, deleteThemeBtn, importThemeBtn, exportThemeBtn}) actionRow->addWidget(button);
+    actionRow->addStretch();
+    layout->addLayout(actionRow);
+
+    QLabel* hint = new QLabel("Built-in themes are read-only. Duplicate one to make your own, or import a theme file.", tab);
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #918B92; font-size: 10px;");
+    layout->addWidget(hint);
+
+    QGridLayout* grid = new QGridLayout();
+    grid->setHorizontalSpacing(12);
+    grid->setVerticalSpacing(8);
+    int index = 0;
+    for (const ColorField& field : kColorFields) {
+        const QString key = field.key;
+        QPushButton* swatch = new QPushButton(tab);
+        swatch->setMinimumWidth(110);
+        connect(swatch, &QPushButton::clicked, this, [this, key] { pickColor(key); });
+        colorSwatches.insert(key, swatch);
+        const int row = index / 2;
+        const int column = (index % 2) * 2;
+        grid->addWidget(new QLabel(field.label, tab), row, column);
+        grid->addWidget(swatch, row, column + 1);
+        ++index;
+    }
+    layout->addLayout(grid);
+
+    QFormLayout* metrics = new QFormLayout();
+    radiusSpin = new QSpinBox(tab);
+    radiusSpin->setRange(0, 12);
+    radiusSpin->setSuffix(" px");
+    metrics->addRow("Corner radius:", radiusSpin);
+    fontSizeSpin = new QSpinBox(tab);
+    fontSizeSpin->setRange(9, 16);
+    fontSizeSpin->setSuffix(" px");
+    metrics->addRow("Interface text size:", fontSizeSpin);
+    layout->addLayout(metrics);
+    layout->addStretch();
+
+    connect(themeCombo, &QComboBox::currentTextChanged, this, [this](const QString& name) {
+        if (!syncingAppearance && !name.isEmpty()) selectTheme(name);
+    });
+    connect(radiusSpin, &QSpinBox::valueChanged, this, [this](int value) {
+        if (syncingAppearance) return;
+        editingTheme.cornerRadius = value;
+        previewEditingTheme();
+    });
+    connect(fontSizeSpin, &QSpinBox::valueChanged, this, [this](int value) {
+        if (syncingAppearance) return;
+        editingTheme.fontSize = value;
+        previewEditingTheme();
+    });
+    connect(duplicateThemeBtn, &QPushButton::clicked, this, [this] {
+        Theme copy = editingTheme;
+        copy.name = ThemeManager::instance().uniqueName(editingTheme.name + " Copy");
+        copy.builtIn = false;
+        copy.fixedPalette.reset();
+        QString error;
+        if (!ThemeManager::instance().saveCustomTheme(copy, &error)) {
+            QMessageBox::warning(this, "Theme", error);
+            return;
+        }
+        refreshThemeCombo(copy.name);
+    });
+    connect(deleteThemeBtn, &QPushButton::clicked, this, [this] {
+        const QString name = editingTheme.name;
+        if (QMessageBox::question(this, "Delete Theme", QString("Delete the theme \"%1\"?").arg(name)) != QMessageBox::Yes) return;
+        if (originalThemeName == name) originalThemeName = "Z Pink";
+        ThemeManager::instance().deleteCustomTheme(name);
+        refreshThemeCombo(ThemeManager::instance().current().name);
+    });
+    connect(importThemeBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, "Import Theme", QDir::homePath(), "Z themes (*.json)");
+        if (path.isEmpty()) return;
+        Theme imported;
+        QString error;
+        if (!ThemeManager::instance().importTheme(path, &imported, &error)) {
+            QMessageBox::warning(this, "Import Theme", error);
+            return;
+        }
+        refreshThemeCombo(imported.name);
+    });
+    connect(exportThemeBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getSaveFileName(this, "Export Theme", QDir::homePath() + "/" + editingTheme.name + ".json", "Z themes (*.json)");
+        if (path.isEmpty()) return;
+        QString error;
+        if (!ThemeManager::instance().exportTheme(editingTheme, path, &error)) QMessageBox::warning(this, "Export Theme", error);
+    });
+
+    tabWidget->addTab(tab, "Appearance");
+    refreshThemeCombo(editingTheme.name);
+}
+
+void PreferencesDialog::refreshThemeCombo(const QString& select) {
+    syncingAppearance = true;
+    themeCombo->clear();
+    themeCombo->addItems(ThemeManager::instance().themeNames());
+    themeCombo->setCurrentText(select);
+    syncingAppearance = false;
+    selectTheme(themeCombo->currentText());
+}
+
+void PreferencesDialog::selectTheme(const QString& name) {
+    if (!ThemeManager::instance().setCurrent(name, false)) return;
+    editingTheme = ThemeManager::instance().current();
+    syncAppearanceControls();
+}
+
+void PreferencesDialog::syncAppearanceControls() {
+    syncingAppearance = true;
+    const bool editable = !editingTheme.builtIn;
+    for (const ColorField& field : kColorFields) {
+        QPushButton* swatch = colorSwatches.value(field.key);
+        const QColor color = editingTheme.*(field.member);
+        QPixmap pixmap(28, 14);
+        pixmap.fill(color);
+        swatch->setIcon(QIcon(pixmap));
+        swatch->setText(color.name().toUpper());
+        swatch->setEnabled(editable);
+    }
+    radiusSpin->setValue(editingTheme.cornerRadius);
+    fontSizeSpin->setValue(editingTheme.fontSize);
+    radiusSpin->setEnabled(editable);
+    fontSizeSpin->setEnabled(editable);
+    deleteThemeBtn->setEnabled(editable);
+    syncingAppearance = false;
+}
+
+void PreferencesDialog::pickColor(const QString& key) {
+    for (const ColorField& field : kColorFields) {
+        if (key != field.key) continue;
+        const QColor chosen = QColorDialog::getColor(editingTheme.*(field.member), this, QString("Choose %1 colour").arg(field.label));
+        if (!chosen.isValid()) return;
+        editingTheme.*(field.member) = chosen;
+        previewEditingTheme();
+        syncAppearanceControls();
+        return;
+    }
+}
+
+void PreferencesDialog::previewEditingTheme() {
+    ThemeManager::instance().preview(editingTheme);
 }
 
 void PreferencesDialog::resetToDefaults() {
@@ -230,6 +445,7 @@ void PreferencesDialog::resetToDefaults() {
     timecodeFormatCombo->setCurrentIndex(0);
     exportResCombo->setCurrentIndex(0);
     exportQualityCombo->setCurrentIndex(1);
+    refreshThemeCombo("Z Pink");
     ShortcutManager::instance().resetToDefaults();
     populateShortcutsTable();
 }

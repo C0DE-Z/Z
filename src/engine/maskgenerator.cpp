@@ -20,7 +20,8 @@ uint64_t MaskGenerator::signature(
     const std::vector<ClipMask>& masks,
     double clipLocalTime,
     const std::string& targetEffectId,
-    bool targetSourceClip
+    bool targetSourceClip,
+    const std::string& targetPluginId
 ) {
     if (width <= 0 || height <= 0) return 0;
     uint64_t hash = 1469598103934665603ull;
@@ -35,13 +36,18 @@ uint64_t MaskGenerator::signature(
     mixValue(height);
     for (const auto& m : masks) {
         if (!m.enabled || m.maskSourceClip != targetSourceClip) continue;
-        if (!targetSourceClip && !targetEffectId.empty() && !m.targetEffectIds.empty() &&
-            std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetEffectId) == m.targetEffectIds.end()) {
+        const bool targetsEffect = m.targetEffectIds.empty() ||
+            std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetEffectId) != m.targetEffectIds.end() ||
+            (!targetPluginId.empty() &&
+                std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetPluginId) != m.targetEffectIds.end());
+        if (!targetSourceClip && !targetEffectId.empty() && !targetsEffect) {
             continue;
         }
         any = true;
         mixValue(static_cast<int>(m.shapeType));
         mixValue(static_cast<int>(m.mode));
+        mix(targetEffectId.data(), targetEffectId.size());
+        mix(targetPluginId.data(), targetPluginId.size());
         mixValue(m.inverted);
         mixValue(m.closed);
         mixValue(m.evalProp(m.posXCurve, m.posX, clipLocalTime));
@@ -68,7 +74,8 @@ std::vector<uint8_t> MaskGenerator::renderMask(
     const std::vector<ClipMask>& masks,
     double clipLocalTime,
     const std::string& targetEffectId,
-    bool targetSourceClip
+    bool targetSourceClip,
+    const std::string& targetPluginId
 ) {
     if (width <= 0 || height <= 0 || masks.empty()) return {};
 
@@ -81,8 +88,11 @@ std::vector<uint8_t> MaskGenerator::renderMask(
             if (m.maskSourceClip) continue;
         }
         if (!targetSourceClip && !targetEffectId.empty()) {
-            if (!m.targetEffectIds.empty() && 
-                std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetEffectId) == m.targetEffectIds.end()) {
+            const bool targetsEffect = m.targetEffectIds.empty() ||
+                std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetEffectId) != m.targetEffectIds.end() ||
+                (!targetPluginId.empty() &&
+                    std::find(m.targetEffectIds.begin(), m.targetEffectIds.end(), targetPluginId) != m.targetEffectIds.end());
+            if (!targetsEffect) {
                 continue;
             }
         }
@@ -200,26 +210,31 @@ std::vector<uint8_t> MaskGenerator::renderMask(
             }
         }
 
-        // Use the identity element for the first non-additive operation.
-        // In particular, Intersect must start from white rather than zero.
         if (firstMask) {
-            if (mask->mode != MaskMode::Add) {
-                std::fill(composite.begin(), composite.end(), 255);
-            }
+            composite = std::move(layerData);
             firstMask = false;
+            continue;
         }
 
         if (mask->mode == MaskMode::Add) {
             for (size_t i = 0; i < pixelCount; ++i) {
-                composite[i] = static_cast<uint8_t>(std::min(255, composite[i] + layerData[i]));
+                const int a = composite[i];
+                const int b = layerData[i];
+                composite[i] = static_cast<uint8_t>(a + b - (a * b + 127) / 255);
             }
         } else if (mask->mode == MaskMode::Subtract) {
             for (size_t i = 0; i < pixelCount; ++i) {
-                composite[i] = static_cast<uint8_t>(std::max(0, composite[i] - layerData[i]));
+                composite[i] = static_cast<uint8_t>((composite[i] * (255 - layerData[i]) + 127) / 255);
             }
         } else if (mask->mode == MaskMode::Intersect) {
             for (size_t i = 0; i < pixelCount; ++i) {
-                composite[i] = static_cast<uint8_t>((static_cast<int>(composite[i]) * layerData[i]) / 255);
+                composite[i] = static_cast<uint8_t>((composite[i] * layerData[i] + 127) / 255);
+            }
+        } else if (mask->mode == MaskMode::Difference) {
+            for (size_t i = 0; i < pixelCount; ++i) {
+                const int a = composite[i];
+                const int b = layerData[i];
+                composite[i] = static_cast<uint8_t>((a * (255 - b) + b * (255 - a) + 127) / 255);
             }
         }
     }

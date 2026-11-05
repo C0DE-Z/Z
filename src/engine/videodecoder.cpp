@@ -295,8 +295,15 @@ bool VideoDecoder::openFile(const std::string& filePath, bool preloadAudio, bool
             codecCtx->opaque = this;
             codecCtx->get_format = [](AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
                 VideoDecoder* dec = static_cast<VideoDecoder*>(ctx->opaque);
-                for (const enum AVPixelFormat* p = pix_fmts; *p != -1; ++p) {
+                for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
                     if (*p == dec->hwPixFmt) return *p;
+                }
+                // FFmpeg re-invokes this callback without the hardware format
+                // when hwaccel init fails (e.g. d3d11 setup error); fall back
+                // to a software format instead of failing every frame.
+                for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+                    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(*p);
+                    if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
                 }
                 return AV_PIX_FMT_NONE;
             };

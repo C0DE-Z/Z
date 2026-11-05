@@ -10,6 +10,10 @@
 #include <QMap>
 #include <QFileInfo>
 #include <QUrl>
+#include "ui/thememanager.h"
+
+// Painting colours follow the active theme (see ThemedColor).
+#define QColor ThemedColor
 
 namespace {
 std::vector<std::pair<QString, QString>> getTransitionChoices() {

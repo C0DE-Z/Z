@@ -63,6 +63,8 @@ set(Z_SOURCES
     src/ui/components/mediapool.cpp
     src/ui/components/trackcontrol.cpp
     src/ui/preferencesdialog.cpp
+    src/ui/thememanager.cpp
+    src/ui/mainwindow_workspace.cpp
 )
 
 set(Z_HEADERS
@@ -88,6 +90,7 @@ set(Z_HEADERS
     src/ui/mainwindow.h
     src/ui/vector_icons.h
     src/ui/preferencesdialog.h
+    src/ui/thememanager.h
     src/ui/components/timeline.h
     src/ui/components/inspector.h
     src/ui/components/effectsbrowser.h

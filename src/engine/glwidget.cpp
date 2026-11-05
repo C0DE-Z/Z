@@ -6,6 +6,7 @@
 #include <QPaintEvent>
 #include <QPainterPath>
 #include <QPainterPathStroker>
+#include <QKeyEvent>
 #include <QStringList>
 #include <cmath>
 #include <algorithm>
@@ -23,6 +24,7 @@ GLWidget::GLWidget(QWidget* parent) : QOpenGLWidget(parent) {
     setAttribute(Qt::WA_TranslucentBackground, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
     setStyleSheet("background: transparent;");
+    setFocusPolicy(Qt::StrongFocus);
 
     QSurfaceFormat format;
     format.setVersion(3, 3);
@@ -914,8 +916,27 @@ void GLWidget::paintEvent(QPaintEvent* event) {
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setPen(QPen(QColor("#e855f4"), 2.0, Qt::DashLine));
         painter.setBrush(QColor(232, 85, 244, 28));
-        if (m_maskDrawingShape == MaskShapeType::Ellipse) painter.drawEllipse(drawRect.normalized());
-        else painter.drawRect(drawRect.normalized());
+        if (m_maskDrawingShape == MaskShapeType::Bezier) {
+            QPainterPath path;
+            if (!m_maskDrawPath.empty()) {
+                path.moveTo(m_maskDrawPath.front().x * width(), m_maskDrawPath.front().y * height());
+                for (size_t i = 1; i < m_maskDrawPath.size(); ++i) {
+                    path.lineTo(m_maskDrawPath[i].x * width(), m_maskDrawPath[i].y * height());
+                }
+                path.lineTo(current);
+                painter.drawPath(path);
+                for (const auto& point : m_maskDrawPath) {
+                    painter.setBrush(QColor("#e855f4"));
+                    painter.drawEllipse(QPointF(point.x * width(), point.y * height()), 4.0, 4.0);
+                }
+            }
+            painter.setBrush(QColor("#ffffff"));
+            painter.drawEllipse(current, 4.0, 4.0);
+        } else if (m_maskDrawingShape == MaskShapeType::Ellipse) {
+            painter.drawEllipse(drawRect.normalized());
+        } else {
+            painter.drawRect(drawRect.normalized());
+        }
         painter.restore();
     }
 }
@@ -924,9 +945,11 @@ void GLWidget::setActiveEditMask(const ClipMask* mask) {
     m_activeEditMask = mask;
     m_maskDrawing = false;
     m_maskDrawInProgress = false;
+    m_maskDrawPath.clear();
     unsetCursor();
     m_hoveredPointIndex = -1;
     m_draggedPointIndex = -1;
+    m_draggedHandlePointIndex = -1;
     m_draggingMaskCenter = false;
     m_draggingMaskRotate = false;
     m_draggingMaskScale = false;
@@ -938,7 +961,20 @@ void GLWidget::beginMaskDrawing(MaskShapeType shape) {
     m_maskDrawingShape = shape;
     m_maskDrawing = true;
     m_maskDrawInProgress = false;
+    m_maskDrawPath.clear();
+    setFocus(Qt::OtherFocusReason);
     setCursor(Qt::CrossCursor);
+    update();
+}
+
+void GLWidget::finishMaskPath() {
+    if (!m_maskDrawing || m_maskDrawingShape != MaskShapeType::Bezier) return;
+    const std::vector<MaskPoint> points = m_maskDrawPath;
+    m_maskDrawing = false;
+    m_maskDrawInProgress = false;
+    m_maskDrawPath.clear();
+    unsetCursor();
+    if (points.size() >= 3) emit maskPathDrawn(points);
     update();
 }
 
@@ -994,7 +1030,19 @@ void GLWidget::renderMaskDirectOverlay(QPainter& painter) {
                 path.lineTo((curr.x - 0.5f) * w, (curr.y - 0.5f) * h);
             }
         }
-        if (m_activeEditMask->closed) path.closeSubpath();
+        if (m_activeEditMask->closed) {
+            const auto& prev = m_activeEditMask->points.back();
+            const auto& curr = m_activeEditMask->points.front();
+            if (m_activeEditMask->shapeType == MaskShapeType::Bezier &&
+                (prev.outHandleX != 0 || prev.outHandleY != 0 || curr.inHandleX != 0 || curr.inHandleY != 0)) {
+                path.cubicTo(
+                    QPointF((prev.x - 0.5f + prev.outHandleX) * w, (prev.y - 0.5f + prev.outHandleY) * h),
+                    QPointF((curr.x - 0.5f + curr.inHandleX) * w, (curr.y - 0.5f + curr.inHandleY) * h),
+                    QPointF((curr.x - 0.5f) * w, (curr.y - 0.5f) * h));
+            } else {
+                path.closeSubpath();
+            }
+        }
     }
 
     QPainterPath transformedPath = transform.map(path);
@@ -1182,6 +1230,33 @@ void GLWidget::drawDetectionExportOverlay(QPainter& painter, int targetW, int ta
 }
 
 void GLWidget::mousePressEvent(QMouseEvent* event) {
+    if (m_maskDrawing && m_maskDrawingShape == MaskShapeType::Bezier) {
+        if (event->button() == Qt::RightButton) {
+            finishMaskPath();
+            event->accept();
+            return;
+        }
+        if (event->button() == Qt::LeftButton) {
+            const QPointF position(
+                std::clamp(event->position().x(), 0.0, static_cast<double>(width())),
+                std::clamp(event->position().y(), 0.0, static_cast<double>(height())));
+            if (m_maskDrawPath.size() >= 3) {
+                const QPointF first(m_maskDrawPath.front().x * width(), m_maskDrawPath.front().y * height());
+                if (QLineF(position, first).length() <= 12.0) {
+                    finishMaskPath();
+                    event->accept();
+                    return;
+                }
+            }
+            m_maskDrawStart = position;
+            m_maskDrawCurrent = position;
+            m_maskDrawInProgress = true;
+            update();
+            event->accept();
+            return;
+        }
+    }
+
     if (m_maskDrawing && event->button() == Qt::LeftButton) {
         m_maskDrawStart = QPointF(
             std::clamp(event->position().x(), 0.0, static_cast<double>(width())),
@@ -1221,6 +1296,7 @@ void GLWidget::mousePressEvent(QMouseEvent* event) {
             QPointF rotHandle = transform.map(QPointF(0.0, -35.0f));
             if (QLineF(event->position(), rotHandle).length() <= 10.0) {
                 m_draggingMaskRotate = true;
+                emit maskEditStarted();
                 event->accept();
                 return;
             }
@@ -1228,6 +1304,7 @@ void GLWidget::mousePressEvent(QMouseEvent* event) {
             const QPointF scaleHandle = transform.map(QPointF(0.25 * w, 0.25 * h));
             if (QLineF(event->position(), scaleHandle).length() <= 10.0) {
                 m_draggingMaskScale = true;
+                emit maskEditStarted();
                 event->accept();
                 return;
             }
@@ -1236,11 +1313,37 @@ void GLWidget::mousePressEvent(QMouseEvent* event) {
                 m_activeEditMask->shapeType == MaskShapeType::Bezier;
             if (editablePath) {
                 for (size_t i = 0; i < m_activeEditMask->points.size(); ++i) {
+                    if (m_activeEditMask->shapeType == MaskShapeType::Bezier) {
+                        const auto& point = m_activeEditMask->points[i];
+                        const QPointF incomingScreen = transform.map(QPointF(
+                            (point.x - 0.5 + point.inHandleX) * w,
+                            (point.y - 0.5 + point.inHandleY) * h));
+                        const QPointF outgoingScreen = transform.map(QPointF(
+                            (point.x - 0.5 + point.outHandleX) * w,
+                            (point.y - 0.5 + point.outHandleY) * h));
+                        if ((point.inHandleX != 0 || point.inHandleY != 0) &&
+                            QLineF(event->position(), incomingScreen).length() <= 9.0) {
+                            m_draggedHandlePointIndex = static_cast<int>(i);
+                            m_draggingIncomingHandle = true;
+                            emit maskEditStarted();
+                            event->accept();
+                            return;
+                        }
+                        if ((point.outHandleX != 0 || point.outHandleY != 0) &&
+                            QLineF(event->position(), outgoingScreen).length() <= 9.0) {
+                            m_draggedHandlePointIndex = static_cast<int>(i);
+                            m_draggingIncomingHandle = false;
+                            emit maskEditStarted();
+                            event->accept();
+                            return;
+                        }
+                    }
                     QPointF pt = transform.map(QPointF(
                         (m_activeEditMask->points[i].x - 0.5) * w,
                         (m_activeEditMask->points[i].y - 0.5) * h));
                     if (QLineF(event->position(), pt).length() <= 8.0) {
                         m_draggedPointIndex = static_cast<int>(i);
+                        emit maskEditStarted();
                         event->accept();
                         return;
                     }
@@ -1263,6 +1366,7 @@ void GLWidget::mousePressEvent(QMouseEvent* event) {
             }
             if (transform.map(hitPath).contains(event->position())) {
                 m_draggingMaskCenter = true;
+                emit maskEditStarted();
                 event->accept();
                 return;
             }
@@ -1302,6 +1406,28 @@ void GLWidget::mouseMoveEvent(QMouseEvent* event) {
                 float nx = std::clamp(static_cast<float>(localPoint.x() / w + 0.5), 0.0f, 1.0f);
                 float ny = std::clamp(static_cast<float>(localPoint.y() / h + 0.5), 0.0f, 1.0f);
                 emit maskPointMoved(m_draggedPointIndex, nx, ny);
+                update();
+                event->accept();
+                return;
+            } else if (m_draggedHandlePointIndex >= 0 &&
+                m_draggedHandlePointIndex < static_cast<int>(m_activeEditMask->points.size())) {
+                const double px = m_activeEditMask->evalProp(m_activeEditMask->posXCurve, m_activeEditMask->posX, m_editMaskClipTime);
+                const double py = m_activeEditMask->evalProp(m_activeEditMask->posYCurve, m_activeEditMask->posY, m_editMaskClipTime);
+                const double sx = m_activeEditMask->evalProp(m_activeEditMask->scaleXCurve, m_activeEditMask->scaleX, m_editMaskClipTime);
+                const double sy = m_activeEditMask->evalProp(m_activeEditMask->scaleYCurve, m_activeEditMask->scaleY, m_editMaskClipTime);
+                const double rotation = m_activeEditMask->evalProp(m_activeEditMask->rotationCurve, m_activeEditMask->rotation, m_editMaskClipTime);
+                QTransform transform;
+                transform.translate(px * w, py * h);
+                transform.rotate(rotation);
+                transform.scale(sx, sy);
+                bool invertible = false;
+                const QTransform inverse = transform.inverted(&invertible);
+                if (!invertible) return;
+                const QPointF localPoint = inverse.map(event->position());
+                const auto& point = m_activeEditMask->points[static_cast<size_t>(m_draggedHandlePointIndex)];
+                emit maskPointHandleMoved(m_draggedHandlePointIndex, m_draggingIncomingHandle,
+                    static_cast<float>(localPoint.x() / w - (point.x - 0.5)),
+                    static_cast<float>(localPoint.y() / h - (point.y - 0.5)));
                 update();
                 event->accept();
                 return;
@@ -1366,6 +1492,31 @@ void GLWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void GLWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_maskDrawing && m_maskDrawingShape == MaskShapeType::Bezier &&
+        m_maskDrawInProgress && event->button() == Qt::LeftButton) {
+        m_maskDrawCurrent = QPointF(
+            std::clamp(event->position().x(), 0.0, static_cast<double>(width())),
+            std::clamp(event->position().y(), 0.0, static_cast<double>(height())));
+        if (width() > 0 && height() > 0) {
+            const float dx = static_cast<float>((m_maskDrawCurrent.x() - m_maskDrawStart.x()) / width());
+            const float dy = static_cast<float>((m_maskDrawCurrent.y() - m_maskDrawStart.y()) / height());
+            MaskPoint point;
+            point.x = static_cast<float>(m_maskDrawStart.x() / width());
+            point.y = static_cast<float>(m_maskDrawStart.y() / height());
+            if (std::hypot(dx * width(), dy * height()) >= 3.0f) {
+                point.inHandleX = -dx;
+                point.inHandleY = -dy;
+                point.outHandleX = dx;
+                point.outHandleY = dy;
+            }
+            m_maskDrawPath.push_back(point);
+        }
+        m_maskDrawInProgress = false;
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_maskDrawing && m_maskDrawInProgress && event->button() == Qt::LeftButton) {
         m_maskDrawCurrent = QPointF(
             std::clamp(event->position().x(), 0.0, static_cast<double>(width())),
@@ -1389,8 +1540,10 @@ void GLWidget::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
 
-    if (m_draggedPointIndex >= 0 || m_draggingMaskCenter || m_draggingMaskRotate || m_draggingMaskScale) {
+    if (m_draggedPointIndex >= 0 || m_draggedHandlePointIndex >= 0 ||
+        m_draggingMaskCenter || m_draggingMaskRotate || m_draggingMaskScale) {
         m_draggedPointIndex = -1;
+        m_draggedHandlePointIndex = -1;
         m_draggingMaskCenter = false;
         m_draggingMaskRotate = false;
         m_draggingMaskScale = false;
@@ -1399,6 +1552,26 @@ void GLWidget::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     QOpenGLWidget::mouseReleaseEvent(event);
+}
+
+void GLWidget::keyPressEvent(QKeyEvent* event) {
+    if (m_maskDrawing && m_maskDrawingShape == MaskShapeType::Bezier) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            finishMaskPath();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            m_maskDrawing = false;
+            m_maskDrawInProgress = false;
+            m_maskDrawPath.clear();
+            unsetCursor();
+            update();
+            event->accept();
+            return;
+        }
+    }
+    QOpenGLWidget::keyPressEvent(event);
 }
 
 void GLWidget::compileCustomPluginShader(ShaderPlugin& plugin) {
@@ -1646,8 +1819,9 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                 // Clip masks are rasterized for the current output resolution
                 // and effect ID, then applied by the same composite pass in
                 // preview and export. The detector mask remains a fallback.
+                const std::string effectInstanceId = eff.instanceId.empty() ? eff.pluginId : eff.instanceId;
                 const uint64_t maskSignature = MaskGenerator::signature(
-                    w, h, m_clipMasks, m_clipMaskLocalTime, eff.pluginId);
+                    w, h, m_clipMasks, m_clipMaskLocalTime, effectInstanceId, false, eff.pluginId);
                 bool hasClipMask = maskSignature != 0;
                 if (hasClipMask) {
                     if (m_uploadedMaskSignature != maskSignature) {
@@ -1655,7 +1829,7 @@ void GLWidget::renderPipeline(int w, int h, bool toScreen, bool isExport) {
                         if (cached == m_maskRasterCache.end()) {
                             if (m_maskRasterCache.size() > 16) m_maskRasterCache.clear();
                             std::vector<uint8_t> pixels = MaskGenerator::renderMask(
-                                w, h, m_clipMasks, m_clipMaskLocalTime, eff.pluginId);
+                                w, h, m_clipMasks, m_clipMaskLocalTime, effectInstanceId, false, eff.pluginId);
                             cached = m_maskRasterCache.emplace(maskSignature, std::move(pixels)).first;
                         }
                         // MaskGenerator rasterizes with QPainter's top-left origin;
