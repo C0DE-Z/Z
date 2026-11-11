@@ -274,11 +274,78 @@ void testAnalogShaderPlugins() {
     std::cout << "[PASS] testAnalogShaderPlugins\n";
 }
 
+void testLinkedClipSplitAndPersistence() {
+    auto& proj = Project::instance();
+    proj.clear();
+
+    TimelineTrack video; video.id = 1; video.type = TimelineTrackType::Video;
+    TimelineTrack audio; audio.id = 2; audio.type = TimelineTrackType::Audio;
+    ProjectClip v;
+    v.id = "m"; v.mediaId = "m"; v.linkId = "m_link";
+    v.sourceStart = 1.0; v.sourceDuration = 10.0; v.timelineStart = 5.0;
+    ProjectClip a = v;
+    a.id = "m_audio";
+    // Audio component trimmed differently: same timeline span, different source offset.
+    a.sourceStart = 3.0;
+    ProjectClip other;
+    other.id = "other"; other.sourceDuration = 10.0; other.timelineStart = 5.0;
+    video.clips.push_back(v);
+    audio.clips.push_back(a);
+    audio.clips.push_back(other);
+    std::vector<TimelineTrack> tracks = { video, audio };
+
+    assert(!splitLinkedClips(tracks, "m", 5.0));
+    assert(!splitLinkedClips(tracks, "missing", 8.0));
+    assert(splitLinkedClips(tracks, "m_audio", 8.0));
+
+    const auto& vc = tracks[0].clips;
+    const auto& ac = tracks[1].clips;
+    assert(vc.size() == 2 && ac.size() == 3);
+    assert(vc[0].id == "m" && vc[1].id != "m");
+    assert(vc[0].sourceDuration == 3.0 && vc[0].sourceStart == 1.0);
+    assert(vc[1].timelineStart == 8.0 && vc[1].sourceStart == 4.0 && vc[1].sourceDuration == 7.0);
+    // Audio (sorted by start, id): m_audio, m_audio_cut, other share/shift correctly.
+    const ProjectClip* aLeft = nullptr; const ProjectClip* aRight = nullptr; const ProjectClip* unlinked = nullptr;
+    for (const auto& c : ac) {
+        if (c.id == "m_audio") aLeft = &c;
+        else if (c.id == "other") unlinked = &c;
+        else aRight = &c;
+    }
+    assert(aLeft && aRight && unlinked);
+    assert(aLeft->sourceStart == 3.0 && aLeft->sourceDuration == 3.0);
+    assert(aRight->timelineStart == 8.0 && aRight->sourceStart == 6.0 && aRight->sourceDuration == 7.0);
+    assert(unlinked->sourceDuration == 10.0);
+
+    // Left pair keeps the original link; right pair gets a distinct shared link.
+    assert(vc[0].linkId == "m_link" && aLeft->linkId == "m_link");
+    assert(!vc[1].linkId.empty() && vc[1].linkId != "m_link" && vc[1].linkId == aRight->linkId);
+    assert(vc[1].id != aRight->id);
+
+    // Persistence round trip, and legacy projects default to no link.
+    proj.getTracks() = tracks;
+    const QJsonObject json = proj.toJson();
+    proj.clear();
+    proj.fromJson(json);
+    assert(proj.getTracks()[0].clips[0].linkId == "m_link");
+    assert(proj.getTracks()[0].clips[1].linkId == vc[1].linkId);
+
+    QJsonObject legacyClip; legacyClip["id"] = "old";
+    QJsonObject legacyTrack; legacyTrack["id"] = 1; legacyTrack["clips"] = QJsonArray { legacyClip };
+    QJsonObject root; root["tracks"] = QJsonArray { legacyTrack };
+    proj.clear();
+    proj.fromJson(root);
+    assert(proj.getTracks()[0].clips[0].linkId.empty());
+
+    proj.clear();
+    std::cout << "[PASS] testLinkedClipSplitAndPersistence\n";
+}
+
 int main() {
     std::cout << "=== Running Project Serialization and Cut Precision Unit Tests ===\n";
     testProjectSerialization();
     testAudioTrackAndLegacyCompatibility();
     testCutPrecisionMath();
+    testLinkedClipSplitAndPersistence();
     testAnalogShaderPlugins();
     std::cout << "=== All Project Tests Passed ===\n";
     return 0;

@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
+#include <algorithm>
 
 bool Project::load(const std::string& filePath) {
     QFile file(QString::fromStdString(filePath));
@@ -40,6 +41,7 @@ void Project::fromJson(const QJsonObject& root) {
             ProjectClip clip;
             clip.id = clipObj.value("id").toString().toStdString();
             clip.mediaId = clipObj.value("mediaId").toString(QString::fromStdString(clip.id)).toStdString();
+            clip.linkId = clipObj.value("linkId").toString().toStdString();
             clip.name = clipObj.value("name").toString(clipObj.value("id").toString()).toStdString();
             clip.filePath = clipObj.value("filePath").toString().toStdString();
             clip.datamoshProxyPath = clipObj.value("datamoshProxyPath").toString().toStdString();
@@ -387,6 +389,7 @@ QJsonObject Project::toJson() const {
             QJsonObject clipObj;
             clipObj["id"] = QString::fromStdString(clip.id);
             clipObj["mediaId"] = QString::fromStdString(clip.mediaId.empty() ? clip.id : clip.mediaId);
+            if (!clip.linkId.empty()) clipObj["linkId"] = QString::fromStdString(clip.linkId);
             clipObj["name"] = QString::fromStdString(clip.name);
             clipObj["filePath"] = QString::fromStdString(clip.filePath);
             clipObj["datamoshProxyPath"] = QString::fromStdString(clip.datamoshProxyPath);
@@ -630,6 +633,54 @@ void Project::clear() {
     nodes.clear();
     connections.clear();
     modulations.clear();
+}
+
+bool splitLinkedClips(std::vector<TimelineTrack>& tracks, const std::string& clipId, double cutTime) {
+    constexpr double kEps = 0.001;
+    const auto spans = [&](const ProjectClip& c) {
+        return cutTime > c.timelineStart + kEps && cutTime < c.timelineStart + c.sourceDuration - kEps;
+    };
+
+    const ProjectClip* primary = nullptr;
+    for (const auto& track : tracks) {
+        for (const auto& c : track.clips) {
+            if (c.id == clipId) primary = &c;
+        }
+    }
+    if (!primary || !spans(*primary)) return false;
+
+    const std::string linkId = primary->linkId;
+    const std::string suffix = "_cut_" + QString::number(cutTime, 'f', 3).replace('.', '_').toStdString();
+    const std::string rightLinkId = linkId.empty() ? std::string() : linkId + suffix;
+
+    for (auto& track : tracks) {
+        std::vector<ProjectClip> rights;
+        for (auto& c : track.clips) {
+            const bool isTarget = c.id == clipId || (!linkId.empty() && c.linkId == linkId);
+            if (!isTarget || !spans(c)) continue;
+
+            if (!c.useClipEffects) {
+                c.effects = track.effects;
+                c.useClipEffects = true;
+            }
+            const double leftDuration = cutTime - c.timelineStart;
+            ProjectClip right = c;
+            right.id = c.id + suffix;
+            right.linkId = rightLinkId;
+            right.sourceStart = c.sourceStart + leftDuration;
+            right.sourceDuration = c.sourceDuration - leftDuration;
+            right.timelineStart = cutTime;
+            right.effects.clear();
+            right.useClipEffects = true;
+            c.sourceDuration = leftDuration;
+            rights.push_back(std::move(right));
+        }
+        for (auto& r : rights) {
+            track.clips.insert(std::upper_bound(track.clips.begin(), track.clips.end(), r.timelineStart,
+                [](double t, const ProjectClip& c) { return t < c.timelineStart; }), std::move(r));
+        }
+    }
+    return true;
 }
 
 double Project::getDuration() const {

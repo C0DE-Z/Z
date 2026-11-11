@@ -1325,27 +1325,15 @@ void MainWindow::cutClipAtPlayhead() {
         return;
     }
 
-    if (!clip->useClipEffects) {
-        clip->effects = track.effects;
-        clip->useClipEffects = true;
+    // Splits the clip and any linked audio/video partner at the same timeline position.
+    if (!splitLinkedClips(tracks, clip->id, cutTime)) {
+        if (wasPlaying) togglePlayback();
+        return;
     }
-
-    ProjectClip rightClip = *clip;
-    rightClip.id = clip->id + "_cut_" + QString::number(cutTime, 'f', 3).replace('.', '_').toStdString();
-    rightClip.sourceStart = clip->sourceStart + leftDuration;
-    rightClip.sourceDuration = rightDuration;
-    rightClip.timelineStart = cutTime;
-    rightClip.effects.clear();
-    rightClip.useClipEffects = true;
-
-    clip->sourceDuration = leftDuration;
-
-    track.clips.insert(std::upper_bound(track.clips.begin(), track.clips.end(), rightClip.timelineStart,
-        [](double time, const ProjectClip& c) { return time < c.timelineStart; }), rightClip);
 
     currentPlayhead = cutTime;
 
-    sortTrackClips(track);
+    for (auto& t : tracks) sortTrackClips(t);
     refreshTrackList();
     refreshActiveEffectsList();
     timelinePanel->update();
@@ -1507,6 +1495,9 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
             }
 
             videoClip.timelineStart = targetTime >= 0.0 ? targetTime : Project::instance().getDuration();
+            // A fresh import gets a video+audio pair below; link them so edits act on both.
+            if (!droppingOnExistingTrack) videoClip.linkId = videoClip.id + "_link";
+
             if (tracks[trackIdx].type == TimelineTrackType::Video) {
                 tracks[trackIdx].clips.push_back(videoClip);
                 window->sortTrackClips(tracks[trackIdx]);

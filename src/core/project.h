@@ -87,6 +87,9 @@ struct ProjectClip {
     // The decoder/cache key. Audio and video clips can share one media source
     // while remaining independently movable on their own timeline lanes.
     std::string mediaId;
+    // Non-empty when this clip is paired with clips on other tracks (e.g. the
+    // audio and video components of one import). Edits like cut act on the pair.
+    std::string linkId;
     std::string name;
     std::string filePath;
     // Cached H.264 P-frame proxy used by the native Datamosh effect. It is
@@ -145,6 +148,13 @@ struct ModulationBinding {
     std::string sourceName; 
     double scale = 1.0;
 };
+
+// Splits the clip `clipId` and every clip sharing its linkId at `cutTime`
+// (timeline seconds). Each component keeps its own source-relative offset.
+// Left halves keep the original ids/linkId; right halves get new ids and one
+// shared new linkId. Returns false if the clip is not found or the cut is not
+// strictly inside it. Linked partners that don't span cutTime are untouched.
+bool splitLinkedClips(std::vector<TimelineTrack>& tracks, const std::string& clipId, double cutTime);
 
 class Project {
 public:
