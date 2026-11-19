@@ -16,6 +16,7 @@ public:
     }
 
     void pushUndoState();
+    void notifyStateChanged() { emit stateChanged(); }
     bool undo();
     bool redo();
     void clear();
@@ -29,6 +30,7 @@ public:
 
 signals:
     void stateRestored(); // emitted after undo/redo
+    void stateChanged();
 
 private:
     AppState() = default;

@@ -202,7 +202,7 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
         const std::string packetSourcePath = useDirectSource
             ? filePath : datamoshProxyPath;
         if (!packetSourcePath.empty()) {
-
+            // open packet source
             auto datamoshDecoder = std::make_shared<VideoDecoder>();
             if (datamoshDecoder->openFile(packetSourcePath, false, false)) {
                 datamoshDecoders[clipId] = std::move(datamoshDecoder);
@@ -220,17 +220,20 @@ bool VideoEngine::loadVideo(const std::string& clipId, const std::string& filePa
     return false;
 }
 
+// Has packet
 bool VideoEngine::hasDatamoshPacketSource(const std::string& clipId) const {
     std::lock_guard<std::mutex> lock(engineMutex);
     return datamoshDecoders.contains(clipId);
 }
 
+// Direct datamosh check 
 bool VideoEngine::usesDirectDatamoshSource(const std::string& clipId) const {
     std::lock_guard<std::mutex> lock(engineMutex);
     const auto it = directDatamoshSources.find(clipId);
     return it != directDatamoshSources.end() && it->second;
 }
 
+// Grab frame at timestamp
 bool VideoEngine::getFrame(const std::string& clipId, double timestamp, DecodedVideoFrame& outFrame) {
     std::shared_ptr<VideoDecoder> decoder;
     {

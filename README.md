@@ -1,6 +1,6 @@
-# Z Video Editor
+# Z
 
-Z is a native, experimental non-linear video editor built for real-time GLSL effects, compositing, and datamosh workflows. It is written in C++20 with Qt 6, OpenGL, FFmpeg, PortAudio, and SQLite.
+Z is a native, experimental non-linear video editor built for real-time GLSL effects (Shader), compositing, and datamosh workflows. It is written in C++20 with Qt 6, OpenGL, FFmpeg, PortAudio, and SQLite.
 
 > Z is under active development. Keep copies of source media and project files while you work.
     Mac and Linux Builds for Z are untested please report crashes.

@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
+#include <QSaveFile>
 #include <algorithm>
 
 bool Project::load(const std::string& filePath) {
@@ -113,6 +114,9 @@ void Project::fromJson(const QJsonObject& root) {
                     }
                 }
                 clip.effects.push_back(effect);
+            }
+            if (!clipObj.contains("useClipEffects") && !clip.effects.empty()) {
+                clip.useClipEffects = true;
             }
 
             QJsonArray masksArray = clipObj.value("masks").toArray();
@@ -364,14 +368,17 @@ void Project::fromJson(const QJsonObject& root) {
 }
 
 bool Project::save(const std::string& filePath) {
-    QFile file(QString::fromStdString(filePath));
+    QSaveFile file(QString::fromStdString(filePath));
     if (!file.open(QIODevice::WriteOnly)) {
         return false;
     }
 
-    QJsonDocument doc(toJson());
-    file.write(doc.toJson());
-    return true;
+    const QByteArray data = QJsonDocument(toJson()).toJson();
+    if (file.write(data) != data.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 QJsonObject Project::toJson() const {

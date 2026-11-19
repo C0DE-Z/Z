@@ -32,6 +32,36 @@ void testUndoRedoStackBounds() {
     std::cout << "[PASS] testUndoRedoStackBounds\n";
 }
 
+void testStateChangeNotifications() {
+    auto& state = AppState::instance();
+    auto& project = Project::instance();
+    state.clear();
+    project.clear();
+
+    int notifications = 0;
+    const auto connection = QObject::connect(&state, &AppState::stateChanged, &state, [&notifications] {
+        ++notifications;
+    });
+
+    state.pushUndoState();
+    TimelineTrack track;
+    track.id = 1;
+    project.getTracks().push_back(track);
+    state.notifyStateChanged();
+    assert(notifications == 2);
+
+    assert(state.undo());
+    assert(notifications == 3);
+    assert(state.redo());
+    assert(notifications == 4);
+    state.clear();
+    assert(notifications == 5);
+
+    QObject::disconnect(connection);
+    project.clear();
+    std::cout << "[PASS] testStateChangeNotifications\n";
+}
+
 void testLinkedSplitUndoRedo() {
     auto& state = AppState::instance();
     auto& proj = Project::instance();
@@ -70,6 +100,7 @@ void testLinkedSplitUndoRedo() {
 int main() {
     std::cout << "=== Running AppState Unit Tests ===\n";
     testUndoRedoStackBounds();
+    testStateChangeNotifications();
     testLinkedSplitUndoRedo();
     std::cout << "=== All AppState Tests Passed ===\n";
     return 0;

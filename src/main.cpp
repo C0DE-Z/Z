@@ -10,6 +10,7 @@
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Z");
+    app.setApplicationDisplayName("Z Video Editor");
     app.setApplicationVersion(Z_APP_VERSION);
     app.setOrganizationName("Z-Creative");
     app.setOrganizationDomain("codezey.dev");

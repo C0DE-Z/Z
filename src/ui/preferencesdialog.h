@@ -18,10 +18,10 @@ public:
 
     void showTab(const QString& title);
 
-    static int getAutoSaveIntervalMinutes();
     static int getDefaultPlaybackQuality();
     static bool getDefaultFpsOverlay();
     static int getSnappingDistancePx();
+    static int getTimecodeFormat();
     static QString getDefaultExportResolution();
     static int getDefaultExportCrf();
 
@@ -54,14 +54,9 @@ private:
     void pickColor(const QString& key);
     void previewEditingTheme();
 
-    // General
-    QSpinBox* autoSaveSpin = nullptr;
-    QCheckBox* promptExitCheck = nullptr;
-
     // Playback
     QComboBox* playbackQualityCombo = nullptr;
     QCheckBox* fpsOverlayCheck = nullptr;
-    QComboBox* audioBufferSizeCombo = nullptr;
 
     // Timeline
     QSpinBox* snapDistanceSpin = nullptr;

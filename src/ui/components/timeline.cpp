@@ -92,6 +92,10 @@ void Timeline::setDuration(double duration) {
     }
 }
 
+void Timeline::setSnapDistancePx(int pixels) {
+    snapDistancePx = std::clamp(pixels, 5, 50);
+}
+
 void Timeline::zoomIn() {
     double old = pixelsPerSecond;
     pixelsPerSecond = std::clamp(pixelsPerSecond * 1.2, 1.0, 1000.0);
@@ -807,7 +811,7 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
     if (draggingClip && (event->buttons() & Qt::LeftButton)) {
         double targetStart = xToTime(event->pos().x()) - dragClipOffsetTime;
         if (!(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
-            const double snapThreshold = 15.0 / pixelsPerSecond;
+            const double snapThreshold = static_cast<double>(snapDistancePx) / pixelsPerSecond;
             double bestSnapDiff = snapThreshold;
             double snappedStart = targetStart;
             if (std::abs(targetStart - playheadTime) < bestSnapDiff) {

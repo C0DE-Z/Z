@@ -7,6 +7,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTemporaryDir>
+
+void testProjectSaveFailure() {
+    QTemporaryDir tempDir;
+    assert(tempDir.isValid());
+    const QString path = tempDir.filePath("missing/project.json");
+    assert(!Project::instance().save(path.toStdString()));
+    std::cout << "[PASS] testProjectSaveFailure\n";
+}
 
 void testProjectSerialization() {
     auto& proj = Project::instance();
@@ -137,6 +146,7 @@ void testAudioTrackAndLegacyCompatibility() {
     assert(proj.getTracks()[0].type == TimelineTrackType::Video);
     const auto& loadedLegacyClip = proj.getTracks()[0].clips[0];
     assert(loadedLegacyClip.effects.size() == 2);
+    assert(loadedLegacyClip.useClipEffects);
     assert(loadedLegacyClip.effects[0].instanceId == "clip_old_effect_0");
     assert(loadedLegacyClip.effects[1].instanceId == "clip_old_effect_1");
     assert(loadedLegacyClip.masks[0].targetEffectIds.size() == 2);
@@ -342,6 +352,7 @@ void testLinkedClipSplitAndPersistence() {
 
 int main() {
     std::cout << "=== Running Project Serialization and Cut Precision Unit Tests ===\n";
+    testProjectSaveFailure();
     testProjectSerialization();
     testAudioTrackAndLegacyCompatibility();
     testCutPrecisionMath();

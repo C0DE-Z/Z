@@ -158,6 +158,15 @@ void MainWindow::applyWorkspacePreset(const QString& preset) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (importInProgress) {
+        statusBar()->showMessage("Wait for the current media import to finish before closing Z.", 5000);
+        event->ignore();
+        return;
+    }
+    if (!maybeSaveProject()) {
+        event->ignore();
+        return;
+    }
     QSettings settings = appSettings();
     settings.setValue("Layout/Geometry", saveGeometry());
     settings.setValue("Layout/State", saveState(kLayoutVersion));

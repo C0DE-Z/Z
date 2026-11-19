@@ -5,6 +5,7 @@
 #include "engine/glwidget.h"
 #include "ui/preferencesdialog.h"
 #include <QFileDialog>
+#include <QFile>
 #include <QProgressDialog>
 #include <QProcess>
 #include <QCoreApplication>
@@ -52,6 +53,10 @@ public:
         resCombo->addItem("1080p Full HD (1920x1080)", QSize(1920, 1080));
         resCombo->addItem("4K Ultra HD (3840x2160)", QSize(3840, 2160));
         resCombo->addItem("720p HD (1280x720)", QSize(1280, 720));
+        const QString defaultResolution = PreferencesDialog::getDefaultExportResolution();
+        if (defaultResolution.contains("1080", Qt::CaseInsensitive)) resCombo->setCurrentIndex(1);
+        else if (defaultResolution.contains("4K", Qt::CaseInsensitive)) resCombo->setCurrentIndex(2);
+        else if (defaultResolution.contains("720", Qt::CaseInsensitive)) resCombo->setCurrentIndex(3);
         form->addRow("Resolution Preset:", resCombo);
 
         fpsCombo = new QComboBox(this);
@@ -62,11 +67,12 @@ public:
         form->addRow("Framerate:", fpsCombo);
 
         qualityCombo = new QComboBox(this);
-        qualityCombo->addItem("Archival / Master (CRF 16 - Lossless Visual)", 16);
-        qualityCombo->addItem("High Quality (CRF 19 - Recommended)", 19);
-        qualityCombo->addItem("Balanced (CRF 23 - Standard)", 23);
+        qualityCombo->addItem("Archival / Master (CRF 16 - Very High Quality)", 16);
+        qualityCombo->addItem("High Quality (CRF 18 - Recommended)", 18);
+        qualityCombo->addItem("Balanced (CRF 22 - Standard)", 22);
         qualityCombo->addItem("Web / Social (CRF 26 - Small File)", 26);
-        qualityCombo->setCurrentIndex(1);
+        const int qualityIndex = qualityCombo->findData(PreferencesDialog::getDefaultExportCrf());
+        qualityCombo->setCurrentIndex(qualityIndex >= 0 ? qualityIndex : 1);
         form->addRow("Quality & Compression:", qualityCombo);
 
         rangeCombo = new QComboBox(this);
@@ -211,6 +217,8 @@ void MediaExporter::exportVideo(
     QProgressDialog progress("Initializing video render pipeline...", "Cancel Export", 0, totalFrames, parentWindow);
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
     progress.show();
 
     int exportW = settings.width;
@@ -227,6 +235,8 @@ void MediaExporter::exportVideo(
 
     QStringList arguments;
     arguments << "-y"
+              << "-loglevel" << "error"
+              << "-nostats"
               << "-f" << "rawvideo"
               << "-pix_fmt" << "rgba"
               << "-s" << QString("%1x%2").arg(exportW).arg(exportH)
@@ -288,6 +298,7 @@ void MediaExporter::exportVideo(
         QMessageBox::critical(parentWindow, "Export Failed", "Could not start FFmpeg encoder process. Please verify FFmpeg is installed and accessible.");
         VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
         AppLogging::setEnabled(logsWereEnabled);
+        scrubCallback(settings.startTime);
         if (wasPlaying) togglePlaybackCallback();
         return;
     }
@@ -309,14 +320,18 @@ void MediaExporter::exportVideo(
                 reinterpret_cast<const char*>(frame.data() + offset), chunkSize);
             if (accepted < 0) return false;
             if (accepted == 0) {
-                if (!proc.waitForBytesWritten(-1)) return false;
+                proc.waitForBytesWritten(50);
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+                if (progress.wasCanceled() || proc.state() == QProcess::NotRunning) return false;
                 continue;
             }
             offset += accepted;
         }
         // Let FFmpeg drain in the background; only block when the queue is deep.
         while (proc.bytesToWrite() > frameBytes * 3) {
-            if (!proc.waitForBytesWritten(-1)) return false;
+            proc.waitForBytesWritten(50);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+            if (progress.wasCanceled() || proc.state() == QProcess::NotRunning) return false;
         }
         return true;
     };
@@ -332,6 +347,7 @@ void MediaExporter::exportVideo(
             QFile::remove(settings.outputPath);
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
             AppLogging::setEnabled(logsWereEnabled);
+            scrubCallback(settings.startTime);
             if (wasPlaying) togglePlaybackCallback();
             QMessageBox::information(parentWindow, "Export Canceled", "Video export was canceled by user.");
             return;
@@ -346,8 +362,10 @@ void MediaExporter::exportVideo(
         if (!glWidget->renderExportFrame(exportW, exportH, rgbaBuffer)) {
             proc.kill();
             proc.waitForFinished();
+            QFile::remove(settings.outputPath);
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
             AppLogging::setEnabled(logsWereEnabled);
+            scrubCallback(settings.startTime);
             if (wasPlaying) togglePlaybackCallback();
             QMessageBox::critical(parentWindow, "Export Error", QString("Failed to capture GPU frame %1 of %2.").arg(i + 1).arg(totalFrames));
             return;
@@ -358,10 +376,16 @@ void MediaExporter::exportVideo(
         if (!writeFrame(rgbaBuffer)) {
             proc.kill();
             proc.waitForFinished();
+            QFile::remove(settings.outputPath);
             VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
             AppLogging::setEnabled(logsWereEnabled);
+            scrubCallback(settings.startTime);
             if (wasPlaying) togglePlaybackCallback();
-            QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
+            if (progress.wasCanceled()) {
+                QMessageBox::information(parentWindow, "Export Canceled", "Video export was canceled by user.");
+            } else {
+                QMessageBox::critical(parentWindow, "Export Error", "Failed sending frame buffer to video encoder.");
+            }
             return;
         }
         pipeWriteNs += stageTimer.nsecsElapsed();
@@ -388,14 +412,35 @@ void MediaExporter::exportVideo(
 
     proc.closeWriteChannel();
     progress.setLabelText("Finalizing MOV container and encoding audio...");
-    progress.setValue(totalFrames);
+    progress.setRange(0, 0);
 
     QElapsedTimer encoderFinalizeTimer;
     encoderFinalizeTimer.start();
-    const bool encoderFinished = proc.waitForFinished(-1);
+    bool canceledDuringFinalize = false;
+    while (proc.state() != QProcess::NotRunning) {
+        proc.waitForFinished(100);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        if (progress.wasCanceled()) {
+            proc.kill();
+            proc.waitForFinished();
+            canceledDuringFinalize = true;
+            break;
+        }
+    }
+    if (canceledDuringFinalize) {
+        QFile::remove(settings.outputPath);
+        VideoEngine::instance().setAsyncDecodeEnabled(asyncWasEnabled);
+        AppLogging::setEnabled(logsWereEnabled);
+        scrubCallback(settings.startTime);
+        if (wasPlaying) togglePlaybackCallback();
+        QMessageBox::information(parentWindow, "Export Canceled", "Video export was canceled while finalizing.");
+        return;
+    }
+    const bool encoderFinished = proc.state() == QProcess::NotRunning;
     qInfo() << "Export profile: FFmpeg finalization" << encoderFinalizeTimer.elapsed() << "ms";
     if (!encoderFinished || proc.exitCode() != 0) {
         QString errOutput = proc.readAllStandardOutput();
+        QFile::remove(settings.outputPath);
         QMessageBox::critical(parentWindow, "Export Failed", "FFmpeg failed encoding final video:\n" + errOutput);
     } else {
         QMessageBox msg(parentWindow);

@@ -53,6 +53,7 @@
 #include <future>
 #include <chrono>
 #include <optional>
+#include <atomic>
 #include "utils/logging.h"
 #include "engine/videoengine.h"
 #include "engine/maskgenerator.h"
@@ -92,24 +93,15 @@ bool isDeveloperBuild(const std::array<int, 3>& version) {
     return version[0] == 999;
 }
 
-template <typename Fn>
-auto runWithLoader(QWidget* parent, const QString& label, Fn&& fn) {
-    (void)parent;
-    (void)label;
-    using ReturnT = std::invoke_result_t<Fn>;
-    auto future = std::async(std::launch::async, std::forward<Fn>(fn));
-    if constexpr (std::is_void_v<ReturnT>) {
-        future.get();
-    } else {
-        return future.get();
-    }
-}
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setAttribute(Qt::WA_TranslucentBackground, false);
     setAttribute(Qt::WA_NoSystemBackground, false);
-    setWindowTitle("Z");
+    setMinimumSize(1100, 700);
+    timecodeFormat = PreferencesDialog::getTimecodeFormat();
+    savedProjectSnapshot = QJsonDocument(Project::instance().toJson()).toJson(QJsonDocument::Compact);
+    updateWindowTitle();
 
     AudioEngine::instance().init();
     QString pluginsPath = QCoreApplication::applicationDirPath() + "/plugins";
@@ -146,9 +138,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createMenus();
     createTransportToolbar();
     createDocks();
+    onPlaybackQualityChanged(playbackQualityControl->currentIndex());
     applyShortcuts();
 
     connect(&ShortcutManager::instance(), &ShortcutManager::shortcutsChanged, this, &MainWindow::applyShortcuts);
+    connect(&AppState::instance(), &AppState::stateChanged, this, [this] {
+        if (projectStateCheckScheduled) return;
+        projectStateCheckScheduled = true;
+        QTimer::singleShot(0, this, [this] {
+            projectStateCheckScheduled = false;
+            updateProjectModifiedState();
+        });
+    });
 
     playbackTimer = new QTimer(this);
     playbackTimer->setTimerType(Qt::PreciseTimer);
@@ -309,11 +310,20 @@ void MainWindow::updateTimecodeDisplay(double time) {
     int mins = (totalMs % 3600000) / 60000;
     int secs = (totalMs % 60000) / 1000;
     int frames = static_cast<int>((time - std::floor(time)) * 30.0);
-    timecodeLabel->setText(QString("%1:%2:%3.%4")
-        .arg(hours, 2, 10, QChar('0'))
-        .arg(mins, 2, 10, QChar('0'))
-        .arg(secs, 2, 10, QChar('0'))
-        .arg(frames, 2, 10, QChar('0')));
+    if (timecodeFormat == 1) {
+        timecodeLabel->setText(QString("%1:%2.%3")
+            .arg(totalMs / 60000, 2, 10, QChar('0'))
+            .arg(secs, 2, 10, QChar('0'))
+            .arg(totalMs % 1000, 3, 10, QChar('0')));
+    } else if (timecodeFormat == 2) {
+        timecodeLabel->setText(QString("%1 s").arg(std::max(0.0, time), 0, 'f', 3));
+    } else {
+        timecodeLabel->setText(QString("%1:%2:%3:%4")
+            .arg(hours, 2, 10, QChar('0'))
+            .arg(mins, 2, 10, QChar('0'))
+            .arg(secs, 2, 10, QChar('0'))
+            .arg(frames, 2, 10, QChar('0')));
+    }
 }
 
 void MainWindow::updateStatusBar() {
@@ -338,6 +348,23 @@ void MainWindow::updateStatusBar() {
         .arg(AppState::instance().undoStackSize()));
 
     updateRenderStats();
+}
+
+void MainWindow::updateProjectModifiedState() {
+    const QByteArray currentSnapshot = QJsonDocument(Project::instance().toJson()).toJson(QJsonDocument::Compact);
+    const bool modified = currentSnapshot != savedProjectSnapshot;
+    if (modified == projectModified) return;
+    projectModified = modified;
+    updateWindowTitle();
+}
+
+void MainWindow::updateWindowTitle() {
+    QString title = "Z Video Editor";
+    if (!currentProjectPath.isEmpty()) {
+        title += " - " + QFileInfo(currentProjectPath).fileName();
+    }
+    if (projectModified) title += " *";
+    setWindowTitle(title);
 }
 
 void MainWindow::updateRenderStats() {
@@ -400,6 +427,19 @@ void MainWindow::openPreferences(const QString& initialTab) {
     PreferencesDialog dlg(this);
     if (!initialTab.isEmpty()) dlg.showTab(initialTab);
     if (dlg.exec() == QDialog::Accepted) {
+        timecodeFormat = PreferencesDialog::getTimecodeFormat();
+        if (playbackQualityControl) {
+            const int scale = PreferencesDialog::getDefaultPlaybackQuality();
+            const int index = scale == 2 ? 1 : (scale == 4 ? 2 : 0);
+            playbackQualityControl->setCurrentIndex(index);
+        }
+        if (fpsOverlayAction) {
+            fpsOverlayAction->setChecked(PreferencesDialog::getDefaultFpsOverlay());
+        }
+        if (timelinePanel) {
+            timelinePanel->setSnapDistancePx(PreferencesDialog::getSnappingDistancePx());
+        }
+        updateTimecodeDisplay(currentPlayhead);
         statusBar()->showMessage("Preferences updated.", 3000);
     }
 }
@@ -412,8 +452,11 @@ void MainWindow::createActions() {
     openAct = new QAction("&Open Project...", this);
     connect(openAct, &QAction::triggered, this, &MainWindow::openProject);
 
-    saveAct = new QAction("&Save Project...", this);
+    saveAct = new QAction("&Save Project", this);
     connect(saveAct, &QAction::triggered, this, &MainWindow::saveProject);
+
+    saveAsAct = new QAction("Save Project &As...", this);
+    connect(saveAsAct, &QAction::triggered, this, &MainWindow::saveProjectAs);
 
     exportAct = new QAction("&Export Video...", this);
     connect(exportAct, &QAction::triggered, this, &MainWindow::exportVideo);
@@ -535,6 +578,7 @@ void MainWindow::createMenus() {
     fileMenu->addAction(importAct);
     fileMenu->addAction(openAct);
     fileMenu->addAction(saveAct);
+    fileMenu->addAction(saveAsAct);
     fileMenu->addAction(exportAct);
     fileMenu->addSeparator();
     fileMenu->addAction("Exit", this, &QWidget::close);
@@ -643,17 +687,20 @@ void MainWindow::createMenus() {
     QToolBar* mainToolBar = addToolBar("Main Toolbar");
     mainToolBar->setObjectName("mainToolBar");
     mainToolBar->addWidget(new QLabel(" Playback Quality: ", this));
-    QComboBox* qualityCombo = new QComboBox(this);
-    qualityCombo->addItem("100% (Full)");
-    qualityCombo->addItem("50% (Half)");
-    qualityCombo->addItem("25% (Quarter)");
-    connect(qualityCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onPlaybackQualityChanged);
-    mainToolBar->addWidget(qualityCombo);
+    playbackQualityControl = new QComboBox(this);
+    playbackQualityControl->addItem("100% (Full)");
+    playbackQualityControl->addItem("50% (Half)");
+    playbackQualityControl->addItem("25% (Quarter)");
+    const int playbackScale = PreferencesDialog::getDefaultPlaybackQuality();
+    playbackQualityControl->setCurrentIndex(playbackScale == 2 ? 1 : (playbackScale == 4 ? 2 : 0));
+    connect(playbackQualityControl, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onPlaybackQualityChanged);
+    mainToolBar->addWidget(playbackQualityControl);
     mainToolBar->addSeparator();
-    QAction* fpsOverlayAct = mainToolBar->addAction("Show FPS Overlay");
-    fpsOverlayAct->setCheckable(true);
-    fpsOverlayAct->setChecked(true);
-    connect(fpsOverlayAct, &QAction::toggled, this, &MainWindow::onToggleFpsOverlay);
+    fpsOverlayAction = mainToolBar->addAction("Show FPS Overlay");
+    fpsOverlayAction->setCheckable(true);
+    fpsOverlayAction->setChecked(PreferencesDialog::getDefaultFpsOverlay());
+    connect(fpsOverlayAction, &QAction::toggled, this, &MainWindow::onToggleFpsOverlay);
+    onToggleFpsOverlay(fpsOverlayAction->isChecked());
 }
 
 void MainWindow::refreshTrackList() {
@@ -1216,6 +1263,7 @@ void MainWindow::moveSelectedTrack(int direction) {
     int target = index + direction;
     if (index < 0 || target < 0 || target >= static_cast<int>(tracks.size())) return;
 
+    AppState::instance().pushUndoState();
     std::swap(tracks[index], tracks[target]);
     refreshTrackList();
     selectTrackIndex(target);
@@ -1550,8 +1598,18 @@ void MainWindow::importMediaFile(const QString& filePath, int targetTrack, doubl
 }
 
 void MainWindow::openProject() {
-    QString path = QFileDialog::getOpenFileName(this, "Open Project", "", "Project Files (*.json)");
+    if (importInProgress) {
+        statusBar()->showMessage("Wait for the current media import to finish before opening a project.", 5000);
+        return;
+    }
+
+    const QString startPath = currentProjectPath.isEmpty()
+        ? QDir::homePath()
+        : QFileInfo(currentProjectPath).absolutePath();
+    QString path = QFileDialog::getOpenFileName(this, "Open Project", startPath, "Project Files (*.json)");
     if (!path.isEmpty()) {
+        if (!maybeSaveProject()) return;
+
         const bool wasPlaying = isPlaying;
         if (wasPlaying) {
             togglePlayback();
@@ -1560,31 +1618,64 @@ void MainWindow::openProject() {
         if (Project::instance().load(path.toStdString())) {
             if (mediaPool) mediaPool->clearMedia();
             std::set<std::string> mediaIds;
-            for (const auto& track : Project::instance().getTracks()) {
-                for (const auto& clip : track.clips) {
-                    mediaIds.insert(clip.mediaId.empty() ? clip.id : clip.mediaId);
-                }
-            }
-            const int mediaCount = static_cast<int>(mediaIds.size());
-            int idx = 0;
-            QStringList failedMedia;
+            std::vector<std::pair<std::string, ProjectClip>> mediaToLoad;
             for (const auto& track : Project::instance().getTracks()) {
                 for (const auto& clip : track.clips) {
                     const std::string mediaId = clip.mediaId.empty() ? clip.id : clip.mediaId;
-                    if (!mediaIds.erase(mediaId)) continue;
-                    const int currentIndex = ++idx;
-                    QString label = QString("Loading project media (%1/%2)...").arg(currentIndex).arg(std::max(1, mediaCount));
-                    const bool loaded = runWithLoader(this, label, [mediaId, clip]() {
-                        if (!MediaImporter::isUsableVideoFile(QString::fromStdString(clip.filePath))) {
-                            return false;
-                        }
-                        return VideoEngine::instance().loadVideo(
-                            mediaId, clip.filePath, clip.datamoshProxyPath);
-                    });
-                    if (!loaded) {
-                        failedMedia.append(QString::fromStdString(clip.filePath));
+                    if (mediaIds.insert(mediaId).second) {
+                        mediaToLoad.emplace_back(mediaId, clip);
                     }
                 }
+            }
+            QStringList failedMedia;
+            const int mediaCount = static_cast<int>(mediaToLoad.size());
+            if (mediaCount > 0) {
+                std::atomic<int> completedMedia{0};
+                auto loadFuture = std::async(std::launch::async, [&mediaToLoad, &completedMedia] {
+                    QStringList failures;
+                    for (const auto& [mediaId, clip] : mediaToLoad) {
+                        bool loaded = false;
+                        try {
+                            const QString filePath = QString::fromStdString(clip.filePath);
+                            loaded = MediaImporter::isUsableVideoFile(filePath) &&
+                                VideoEngine::instance().loadVideo(mediaId, clip.filePath, clip.datamoshProxyPath);
+                        } catch (const std::exception& error) {
+                            qWarning() << "Could not load project media" << QString::fromStdString(clip.filePath) << error.what();
+                        }
+                        if (!loaded) failures.append(QString::fromStdString(clip.filePath));
+                        ++completedMedia;
+                    }
+                    return failures;
+                });
+
+                QProgressDialog progress("Loading project media...", QString(), 0, mediaCount, this);
+                progress.setWindowTitle("Opening Project");
+                progress.setWindowModality(Qt::WindowModal);
+                progress.setCancelButton(nullptr);
+                progress.setMinimumDuration(0);
+                progress.setAutoClose(false);
+                progress.setAutoReset(false);
+
+                QEventLoop loadingLoop;
+                QTimer progressTimer;
+                connect(&progressTimer, &QTimer::timeout, &loadingLoop, [&] {
+                    const int completed = completedMedia.load();
+                    progress.setValue(completed);
+                    if (completed < mediaCount) {
+                        const QString fileName = QFileInfo(QString::fromStdString(mediaToLoad[completed].second.filePath)).fileName();
+                        progress.setLabelText(QString("Loading project media (%1/%2): %3")
+                            .arg(completed + 1).arg(mediaCount).arg(fileName));
+                    }
+                    if (loadFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        loadingLoop.quit();
+                    }
+                });
+                progress.show();
+                progressTimer.start(100);
+                loadingLoop.exec();
+                progressTimer.stop();
+                progress.setValue(mediaCount);
+                failedMedia = loadFuture.get();
             }
             if (!failedMedia.isEmpty()) {
                 QMessageBox::warning(this, "Media Needs Re-importing",
@@ -1592,21 +1683,39 @@ void MainWindow::openProject() {
                     "\n\nA generated MOV cache may have been interrupted before its final moov atom was written. "
                     "Please remove the affected clip and re-import the original source file. Future imports now validate and atomically finalize cache files.");
             }
+            AppState::instance().clear();
+            currentProjectPath = QFileInfo(path).absoluteFilePath();
+            savedProjectSnapshot = QJsonDocument(Project::instance().toJson()).toJson(QJsonDocument::Compact);
+            projectModified = false;
+            activeClipId.clear();
+            selectedClipId.clear();
+            activeAudioClipId.clear();
+            activeFilePath.clear();
             refreshTrackList();
             const auto& tracks = Project::instance().getTracks();
-            if (!tracks.empty() && !tracks.front().clips.empty()) {
-                const auto& clip = tracks.front().clips.front();
+            timelinePanel->clearSelection();
+            timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
+            int initialTrackIndex = -1;
+            for (int i = 0; i < static_cast<int>(tracks.size()); ++i) {
+                if (tracks[i].type == TimelineTrackType::Video && !tracks[i].clips.empty()) {
+                    initialTrackIndex = i;
+                    break;
+                }
+            }
+            if (initialTrackIndex >= 0) {
+                const auto& clip = tracks[initialTrackIndex].clips.front();
                 activeClipId = QString::fromStdString(clip.id);
                 selectedClipId = activeClipId;
                 activeFilePath = QString::fromStdString(clip.filePath);
                 if (mediaPool) mediaPool->addMedia(activeClipId);
-                timelinePanel->setDuration(std::max(10.0, Project::instance().getDuration() + 5.0));
-                refreshActiveEffectsList();
-                syncEffectStackToRenderer();
-                selectTrackIndex(0);
-                onTimelineScrubbed(0.0);
+                selectTrackIndex(initialTrackIndex);
+            } else if (inspectorPanel) {
+                inspectorPanel->clearInspector();
             }
-            setWindowTitle(QString("Z - %1").arg(QFileInfo(path).fileName()));
+            refreshActiveEffectsList();
+            syncEffectStackToRenderer();
+            onTimelineScrubbed(0.0);
+            updateWindowTitle();
             statusBar()->showMessage(QString("Project '%1' opened.").arg(QFileInfo(path).fileName()), 3000);
             updateStatusBar();
         } else {
@@ -1620,17 +1729,50 @@ void MainWindow::openProject() {
 }
 
 void MainWindow::saveProject() {
-    QString path = QFileDialog::getSaveFileName(this, "Save Project", "", "Project Files (*.json)");
-    if (!path.isEmpty()) {
-        if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".json";
-        if (Project::instance().save(path.toStdString())) {
-            setWindowTitle(QString("Z - %1").arg(QFileInfo(path).fileName()));
-            statusBar()->showMessage("Project saved successfully.", 3000);
-            updateStatusBar();
-        } else {
-            QMessageBox::warning(this, "Save Failed", "Could not save project file to disk.");
-        }
+    if (currentProjectPath.isEmpty()) {
+        saveProjectAs();
+        return;
     }
+    writeProject(currentProjectPath);
+}
+
+void MainWindow::saveProjectAs() {
+    const QString startPath = currentProjectPath.isEmpty() ? QDir::homePath() : currentProjectPath;
+    QString path = QFileDialog::getSaveFileName(this, "Save Project As", startPath, "Project Files (*.json)");
+    if (path.isEmpty()) return;
+    if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".json";
+    writeProject(path);
+}
+
+bool MainWindow::writeProject(const QString& path) {
+    if (!Project::instance().save(path.toStdString())) {
+        QMessageBox::warning(this, "Save Failed", "Could not save the project file. Check that the destination is writable and try again.");
+        return false;
+    }
+    currentProjectPath = QFileInfo(path).absoluteFilePath();
+    savedProjectSnapshot = QJsonDocument(Project::instance().toJson()).toJson(QJsonDocument::Compact);
+    projectModified = false;
+    updateWindowTitle();
+    statusBar()->showMessage("Project saved successfully.", 3000);
+    updateStatusBar();
+    return true;
+}
+
+bool MainWindow::maybeSaveProject() {
+    updateProjectModifiedState();
+    if (!projectModified) return true;
+
+    QMessageBox dialog(QMessageBox::Warning, "Unsaved Changes",
+        "This project has unsaved changes. Save them before continuing?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    dialog.setDefaultButton(QMessageBox::Save);
+    const QMessageBox::StandardButton choice = static_cast<QMessageBox::StandardButton>(dialog.exec());
+    if (choice == QMessageBox::Save) {
+        saveProject();
+        updateProjectModifiedState();
+        return !projectModified;
+    }
+    return choice == QMessageBox::Discard;
 }
 
 void MainWindow::togglePlayback() {
@@ -2778,10 +2920,15 @@ void MainWindow::createDatamoshProxyAsync(const ProjectClip& clip) {
                     window->statusBar()->showMessage("Datamosh proxy could not be created; original video is unchanged.", 6000);
                 }
             } else {
+                bool projectChanged = false;
                 for (auto& track : Project::instance().getTracks()) {
                     for (auto& projectClip : track.clips) {
                         const std::string projectMediaId = projectClip.mediaId.empty() ? projectClip.id : projectClip.mediaId;
                         if (projectMediaId == mediaId) {
+                            if (!projectChanged) {
+                                AppState::instance().pushUndoState();
+                                projectChanged = true;
+                            }
                             projectClip.datamoshProxyPath = proxyPath.toStdString();
                         }
                     }
@@ -2841,17 +2988,19 @@ void MainWindow::onEffectSelected(const QString& targetId) {
     if (!clip) clip = currentClip();
     if (!clip) return;
     selectedClipId = QString::fromStdString(clip->id);
-    clip->useClipEffects = true;
 
     auto* effects = &clip->effects;
-
-    if (std::none_of(effects->begin(), effects->end(), [&](const AppliedEffect& eff) {
-            return QString::fromStdString(eff.pluginId) == targetId;
-        })) {
+    const bool effectExists = std::any_of(effects->begin(), effects->end(), [&](const AppliedEffect& eff) {
+        return QString::fromStdString(eff.pluginId) == targetId;
+    });
+    if (!effectExists || !clip->useClipEffects) {
         AppState::instance().pushUndoState();
-        AppliedEffect effect = createEffectTemplate(targetId);
-        effect.startOffset = 0.0;
-        effects->push_back(std::move(effect));
+        clip->useClipEffects = true;
+        if (!effectExists) {
+            AppliedEffect effect = createEffectTemplate(targetId);
+            effect.startOffset = 0.0;
+            effects->push_back(std::move(effect));
+        }
     }
 
     refreshActiveEffectsList();
@@ -2957,7 +3106,6 @@ const ProjectClip* MainWindow::currentClip() const {
 
 std::vector<AppliedEffect>* MainWindow::activeEffects() {
     if (auto* clip = currentClip()) {
-        clip->useClipEffects = true;
         return &clip->effects;
     }
     return nullptr;
@@ -3261,6 +3409,7 @@ void MainWindow::onParameterChanged(const QString& effectId, const QString& para
                         param.curve.insertKeyframe(currentPlayhead, value);
                         if (timelinePanel) timelinePanel->update(); 
                     }
+                    AppState::instance().notifyStateChanged();
                     if (inspectorPanel) {
                         inspectorPanel->syncParameters(eff.parameters);
                     }

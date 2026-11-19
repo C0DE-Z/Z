@@ -132,13 +132,16 @@ public:
     double getValue() const { return currentVal; }
 
     std::function<void(double)> onValueChanged;
+    std::function<void()> onEditingStarted;
 
 protected:
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton) {
             isDragging = true;
             lastX = event->position().x();
+            if (onEditingStarted) onEditingStarted();
         } else if (event->button() == Qt::RightButton) {
+            if (onEditingStarted) onEditingStarted();
             currentVal = defaultVal;
             updateText();
             if (onValueChanged) onValueChanged(currentVal);
@@ -169,12 +172,14 @@ protected:
             currentVal, minVal, maxVal, 4, &ok
         );
         if (ok) {
+            if (onEditingStarted) onEditingStarted();
             currentVal = std::clamp(val, minVal, maxVal);
             updateText();
             if (onValueChanged) onValueChanged(currentVal);
         }
     }
     void wheelEvent(QWheelEvent* event) override {
+        if (onEditingStarted) onEditingStarted();
         double range = maxVal - minVal;
         double step = (range > 0.0 ? range : 1.0) * 0.05;
         if (event->angleDelta().y() > 0) {
@@ -371,6 +376,7 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
             valLabel->setStyleSheet("color: #918B92; font-family: monospace;");
             rowLayout->addWidget(valLabel);
             connect(checkBox, &QCheckBox::toggled, this, [this, effectId, paramName, valLabel, pIdx](bool checked) {
+                emit parameterEditStarted(effectId, paramName);
                 valLabel->setText(checked ? "ON" : "OFF");
                 if (pIdx < currentParameters.size()) {
                     currentParameters[pIdx].currentVal = checked ? 1.0 : 0.0;
@@ -380,6 +386,9 @@ void Inspector::loadEffect(const QString& effectId, const std::vector<ShaderPara
             });
         } else {
             ScrubLabel* scrub = new ScrubLabel(param.minVal, param.maxVal, param.defaultVal, currentVal, this);
+            scrub->onEditingStarted = [this, effectId, paramName] {
+                emit parameterEditStarted(effectId, paramName);
+            };
             inputWidget = scrub;
             rowLayout->addWidget(scrub, 3);
             scrub->onValueChanged = [this, effectId, paramName, pIdx](double val) {

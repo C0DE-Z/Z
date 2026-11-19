@@ -10,6 +10,7 @@ void AppState::pushUndoState() {
         undoStack.removeFirst();
     }
     redoStack.clear();
+    emit stateChanged();
 }
 
 bool AppState::undo() {
@@ -20,6 +21,7 @@ bool AppState::undo() {
     }
     Project::instance().fromJson(undoStack.takeLast());
     emit stateRestored();
+    emit stateChanged();
     return true;
 }
 
@@ -31,6 +33,7 @@ bool AppState::redo() {
     }
     Project::instance().fromJson(redoStack.takeLast());
     emit stateRestored();
+    emit stateChanged();
     return true;
 }
 
@@ -39,4 +42,5 @@ void AppState::clear() {
     redoStack.clear();
     playhead = 0.0;
     playing = false;
+    emit stateChanged();
 }

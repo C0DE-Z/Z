@@ -49,6 +49,7 @@ private slots:
     void importVideo();
     void openProject();
     void saveProject();
+    void saveProjectAs();
     void exportVideo();
     void togglePlayback();
     void onPlaybackTimer();
@@ -98,6 +99,10 @@ private:
     std::thread importThread;
     std::thread datamoshProxyThread;
     std::set<std::string> datamoshProxyInProgress;
+    QString currentProjectPath;
+    QByteArray savedProjectSnapshot;
+    bool projectModified = false;
+    bool projectStateCheckScheduled = false;
     double currentPlayhead = 0.0;
     bool isPlaying = false;
     bool importInProgress = false;
@@ -230,10 +235,14 @@ private:
     QLabel* projectInfoStatusLabel = nullptr;
     QLabel* renderStatsStatusLabel = nullptr;
     QTimer* renderStatsTimer = nullptr;
+    int timecodeFormat = 0;
+    QComboBox* playbackQualityControl = nullptr;
+    QAction* fpsOverlayAction = nullptr;
 
     QAction* importAct = nullptr;
     QAction* openAct = nullptr;
     QAction* saveAct = nullptr;
+    QAction* saveAsAct = nullptr;
     QAction* exportAct = nullptr;
     QAction* cutAct = nullptr;
     QAction* deleteAct = nullptr;
@@ -300,6 +309,10 @@ private:
     void drainModelDownload(QNetworkReply* reply);
     void updateTimecodeDisplay(double time);
     void updateStatusBar();
+    void updateProjectModifiedState();
+    void updateWindowTitle();
+    bool writeProject(const QString& path);
+    bool maybeSaveProject();
 
     void refreshTrackList();
     void updateEffectsState();

@@ -4,6 +4,7 @@
 #include "engine/audioengine.h"
 #include "engine/pluginmanager.h"
 #include "engine/videoengine.h"
+#include "ui/preferencesdialog.h"
 
 #include <QDockWidget>
 #include <QVBoxLayout>
@@ -55,6 +56,7 @@ void MainWindow::createDocks() {
         track.id = static_cast<int>(Project::instance().getTracks().size()) + 1;
         track.name = (type == TimelineTrackType::Audio ? "Audio " : "Video ") + std::to_string(track.id);
         track.type = type;
+        AppState::instance().pushUndoState();
         Project::instance().getTracks().push_back(track);
         refreshTrackList();
         selectTrackIndex(static_cast<int>(Project::instance().getTracks().size()) - 1);
@@ -689,6 +691,9 @@ void MainWindow::createDocks() {
     inspectorPanel->setStyleSheet("background: transparent; border: none;");
     controlLayout->addWidget(inspectorPanel, 1);
     connect(inspectorPanel, &Inspector::parameterChanged, this, &MainWindow::onParameterChanged);
+    connect(inspectorPanel, &Inspector::parameterEditStarted, this, [this](const QString&, const QString&) {
+        AppState::instance().pushUndoState();
+    });
     connect(inspectorPanel, &Inspector::scrubRequested, this, &MainWindow::onTimelineScrubbed);
     connect(inspectorPanel, &Inspector::keyframeRemoveRequested, this, [this](const QString& effId, const QString& paramName, double time) {
         auto* effects = activeEffects();
@@ -778,6 +783,7 @@ void MainWindow::createDocks() {
     bottomTabs->setTabPosition(QTabWidget::South);
 
     timelinePanel = new Timeline(this);
+    timelinePanel->setSnapDistancePx(PreferencesDialog::getSnappingDistancePx());
     connect(timelinePanel, &Timeline::scrubbed, this, &MainWindow::onTimelineScrubbed);
     connect(timelinePanel, &Timeline::transitionApplyRequested, this, [this](int trackIndex, double cutTime, const QString& transitionId) {
         if (addTransitionAtCut(trackIndex, cutTime, transitionId)) {

@@ -53,13 +53,11 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
     generalLayout->setContentsMargins(12, 12, 12, 12);
     generalLayout->setSpacing(10);
 
-    autoSaveSpin = new QSpinBox(generalTab);
-    autoSaveSpin->setRange(0, 60);
-    autoSaveSpin->setSuffix(" min (0 = Disabled)");
-    generalLayout->addRow("Auto-save interval:", autoSaveSpin);
-
-    promptExitCheck = new QCheckBox("Prompt to save changes before closing", generalTab);
-    generalLayout->addRow("", promptExitCheck);
+    QLabel* projectSafetyHint = new QLabel(
+        "Z asks before closing or replacing a project with unsaved changes. Use Save or Save As to keep a project on disk.",
+        generalTab);
+    projectSafetyHint->setWordWrap(true);
+    generalLayout->addRow(projectSafetyHint);
     tabWidget->addTab(generalTab, "General");
     buildAppearanceTab();
 
@@ -76,12 +74,6 @@ PreferencesDialog::PreferencesDialog(QWidget* parent) : QDialog(parent) {
 
     fpsOverlayCheck = new QCheckBox("Show HUD overlay by default", playbackTab);
     playbackLayout->addRow("", fpsOverlayCheck);
-
-    audioBufferSizeCombo = new QComboBox(playbackTab);
-    audioBufferSizeCombo->addItem("256 frames (Lowest Latency)", 256);
-    audioBufferSizeCombo->addItem("512 frames (Balanced)", 512);
-    audioBufferSizeCombo->addItem("1024 frames (High Stability)", 1024);
-    playbackLayout->addRow("Audio Buffer Size:", audioBufferSizeCombo);
 
     tabWidget->addTab(playbackTab, "Playback & Audio");
 
@@ -207,18 +199,11 @@ void PreferencesDialog::saveShortcuts() {
 
 void PreferencesDialog::loadPreferences() {
     QSettings settings("Z-Creative", "Z");
-    autoSaveSpin->setValue(settings.value("General/AutoSaveMinutes", 5).toInt());
-    promptExitCheck->setChecked(settings.value("General/PromptOnExit", true).toBool());
-
     int qual = settings.value("Playback/QualityScale", 1).toInt();
     int qualIdx = playbackQualityCombo->findData(qual);
     if (qualIdx >= 0) playbackQualityCombo->setCurrentIndex(qualIdx);
 
     fpsOverlayCheck->setChecked(settings.value("Playback/ShowFpsOverlay", true).toBool());
-
-    int buf = settings.value("Playback/AudioBuffer", 512).toInt();
-    int bufIdx = audioBufferSizeCombo->findData(buf);
-    if (bufIdx >= 0) audioBufferSizeCombo->setCurrentIndex(bufIdx);
 
     snapDistanceSpin->setValue(settings.value("Timeline/SnapDistancePx", 15).toInt());
     timecodeFormatCombo->setCurrentIndex(settings.value("Timeline/TimecodeFormat", 0).toInt());
@@ -231,12 +216,12 @@ void PreferencesDialog::loadPreferences() {
 
 void PreferencesDialog::savePreferences() {
     QSettings settings("Z-Creative", "Z");
-    settings.setValue("General/AutoSaveMinutes", autoSaveSpin->value());
-    settings.setValue("General/PromptOnExit", promptExitCheck->isChecked());
+    settings.remove("General/AutoSaveMinutes");
+    settings.remove("General/PromptOnExit");
 
     settings.setValue("Playback/QualityScale", playbackQualityCombo->currentData().toInt());
     settings.setValue("Playback/ShowFpsOverlay", fpsOverlayCheck->isChecked());
-    settings.setValue("Playback/AudioBuffer", audioBufferSizeCombo->currentData().toInt());
+    settings.remove("Playback/AudioBuffer");
 
     settings.setValue("Timeline/SnapDistancePx", snapDistanceSpin->value());
     settings.setValue("Timeline/TimecodeFormat", timecodeFormatCombo->currentIndex());
@@ -436,11 +421,8 @@ void PreferencesDialog::previewEditingTheme() {
 }
 
 void PreferencesDialog::resetToDefaults() {
-    autoSaveSpin->setValue(5);
-    promptExitCheck->setChecked(true);
     playbackQualityCombo->setCurrentIndex(0);
     fpsOverlayCheck->setChecked(true);
-    audioBufferSizeCombo->setCurrentIndex(1);
     snapDistanceSpin->setValue(15);
     timecodeFormatCombo->setCurrentIndex(0);
     exportResCombo->setCurrentIndex(0);
@@ -448,10 +430,6 @@ void PreferencesDialog::resetToDefaults() {
     refreshThemeCombo("Z Pink");
     ShortcutManager::instance().resetToDefaults();
     populateShortcutsTable();
-}
-
-int PreferencesDialog::getAutoSaveIntervalMinutes() {
-    return QSettings("Z-Creative", "Z").value("General/AutoSaveMinutes", 5).toInt();
 }
 
 int PreferencesDialog::getDefaultPlaybackQuality() {
@@ -464,6 +442,10 @@ bool PreferencesDialog::getDefaultFpsOverlay() {
 
 int PreferencesDialog::getSnappingDistancePx() {
     return QSettings("Z-Creative", "Z").value("Timeline/SnapDistancePx", 15).toInt();
+}
+
+int PreferencesDialog::getTimecodeFormat() {
+    return QSettings("Z-Creative", "Z").value("Timeline/TimecodeFormat", 0).toInt();
 }
 
 QString PreferencesDialog::getDefaultExportResolution() {

@@ -15,6 +15,7 @@ public:
     double xToTime(int x) const;
     void setPlayhead(double time);
     void setDuration(double duration);
+    void setSnapDistancePx(int pixels);
     void selectParameter(const QString& effectId, const QString& paramName);
     double hoverTime() const;
     void zoomIn();
@@ -64,6 +65,7 @@ private:
     double playheadTime = 0.0;
     double totalDuration = 30.0; 
     double pixelsPerSecond = 20.0; 
+    int snapDistancePx = 15;
     double inPoint = -1.0;
     double outPoint = -1.0;
     QString activeEffectId;
